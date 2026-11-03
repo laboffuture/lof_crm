@@ -16,12 +16,16 @@ export async function loadUser(repo: Repo, staffId: string): Promise<User | null
   const s = await repo.get<any>('staff', staffId);
   if (!s || s.status === 'Inactive' || s.access === 'Disabled' || !ALL_ROLES.includes(s.role)) return null;
   let scope: string[];
+  const branches = await repo.many<any>('branch');
   if (s.role === 'Management' || s.role === 'System Administrator') {
-    scope = (await repo.many<any>('branch')).map((b) => b.id);
+    scope = branches.map((b) => b.id);
   } else {
     const sc = await repo.setting<Record<string, string[]>>('scope');
     scope = Array.isArray(sc[s.id]) ? sc[s.id] : [s.branch];
   }
+  // Archived branches (Configuration → Branches → Delete) drop out of everyone's access; their records stay stored
+  const archived = new Set(branches.filter((b) => b.archived).map((b) => b.id));
+  scope = scope.filter((id) => !archived.has(id));
   return { id: s.id, name: s.name, role: s.role, branch: s.branch, email: s.email, scope };
 }
 

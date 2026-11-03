@@ -20,7 +20,7 @@ import { COLLECTIONS, SETTINGS_KEYS } from '../lib/indexing';
 import { can, ALL_ROLES } from '../lib/auth';
 import type { Env, Job, User } from '../types';
 import { HttpError } from '../types';
-import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom } from '../domain/core';
+import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify } from '../domain/core';
 import { hashPassword } from '../lib/crypto';
 import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, lmsProblem } from '../domain/terms';
 import { checkEmailTemplates } from '../domain/email-templates';
@@ -50,6 +50,10 @@ const APPROVAL_WF: Record<string, (t: string) => boolean> = {
   'Counsellor Reassignment': (t) => t.startsWith('Counsellor reassignment (Counsellor'),
 };
 const CONFIG_COLLS = ['branches', 'programs', 'fees', 'discounts', 'staff'];
+const BRANCH_USE_LABEL: Record<string, string> = {
+  lead: 'leads', opp: 'opportunities', student: 'students', enrollment: 'enrolments', payment: 'payments', refund: 'refunds', fee: 'fee entries',
+  staff: 'staff', task: 'follow-ups', call: 'calls', comm: 'messages', approval: 'approvals', moodle_sync: 'LMS calls', notification: 'notifications', audit: 'audit entries',
+};
 const NOTIF_TYPES = ['sla', 'none', 'disc', 'moodle', 'new', 'fu', 'transfer', 'pay', 'enr', 'mail', 'assign', 'call', 'erp'];
 const NOTIF_PAGES = ['refunds', 'reports', 'payCollect', 'lead', 'leads', 'tasks', 'approvals', 'approvalHistory', 'integration', 'payRecords', 'student', 'opps', 'enrollments', 'dashboard', 'notifications'];
 /** New business records must carry a number the server already issued (claimed or block-allocated), never a future one. */
@@ -77,6 +81,8 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   const enrolsFor = new Set<string>();
   const leadBranchMoves: { id: string; branch: string }[] = [];
   const staffAuth: { id: string; email: string; temp?: string }[] = [];
+  const staffGone: string[] = []; // deleted users: login removed, sessions ended
+  const staffArchived: string[] = []; // archived users: sessions ended, open work moved to the Unassigned queue
   const usedApprovals = new Set<string>();
   const cslrMoves: { lead: string; cslr: string | null }[] = [];
   const now = nowIso();
@@ -182,6 +188,25 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
       const o = oldOf(c.coll, c.id);
       if (!CONFIG_COLLS.includes(c.coll) || !P('configuration', 'D')) { reject(c, 'Records of this type cannot be deleted'); continue; }
       if (c.coll === 'staff' && c.id === user.id) { reject(c, 'You cannot delete your own user'); continue; }
+      if (c.coll === 'staff' && o) {
+        // Only a user with no work attached is deleted; anyone else is archived (Configuration → Staff & Users)
+        const used = (await env.DB.prepare("SELECT type, COUNT(*) n FROM docs WHERE owner=? AND type IN ('lead','opp','task') GROUP BY type").bind(c.id).all<{ type: string; n: number }>()).results || [];
+        const where = used.map((u) => `${u.n} ${BRANCH_USE_LABEL[u.type] || u.type}`);
+        const enr = await env.DB.prepare("SELECT COUNT(*) n FROM docs WHERE type='enrollment' AND json_extract(data,'$.cslr')=?").bind(c.id).first<{ n: number }>();
+        if (enr?.n) where.push(`${enr.n} enrolments`);
+        const admin = branches.filter((b) => b.admin === c.id).map((b) => b.name);
+        if (admin.length) where.push(`administrator of ${admin.join(', ')}`);
+        if (where.length) { reject(c, `${o.name} has ${where.join(', ')} – archive the user instead`); continue; }
+        staffGone.push(c.id);
+      }
+      if (c.coll === 'branches' && o) {
+        // A branch with records cannot be deleted (they would point at nothing) – it is closed instead
+        const used = (await env.DB.prepare("SELECT type, COUNT(*) n FROM docs WHERE branch=? AND type<>'branch' GROUP BY type ORDER BY n DESC").bind(c.id).all<{ type: string; n: number }>()).results || [];
+        const where = used.map((u) => `${u.n} ${BRANCH_USE_LABEL[u.type] || u.type}`);
+        if (cfg.mailIn?.branch === c.id) where.push('Email Incoming settings');
+        if ((cfg.emailTpls || []).some((t: any) => t.branch === c.id)) where.push('Email Templates');
+        if (where.length) { reject(c, `${o.name} is still used by ${where.join(', ')} – set its operating status to Closed instead`); continue; }
+      }
       if (o) writes.push({ type, doc: { id: c.id, __delete: true }, coll: c.coll });
       continue;
     }
@@ -209,6 +234,22 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           } else if (String(o.email).toLowerCase() !== email) staffAuth.push({ id: d.id, email });
         }
         if (c.coll === 'branches' && !/^[A-Z0-9]{2,5}$/.test(d.id)) { reject(c, 'Branch short ID must be 2–5 capital letters or digits'); break; }
+        if (c.coll === 'staff' && !!d.archived !== !!o?.archived) {
+          // Archive (= "Delete" of a user who has records) and restore
+          if (!o) { reject(c, 'A new user cannot be archived'); break; }
+          if (!P('configuration', 'D')) { reject(c, `${user.role} cannot delete or restore users`); break; }
+          if (d.id === user.id) { reject(c, 'You cannot delete your own user'); break; }
+          if (d.archived) { Object.assign(d, { archived: true, status: 'Inactive', access: 'Disabled', archivedAt: now, archivedBy: user.name }); staffArchived.push(d.id); }
+          else { d.archived = false; delete d.archivedAt; delete d.archivedBy; }
+        } else if (c.coll === 'staff' && o?.archived) Object.assign(d, { archived: true, access: 'Disabled', archivedAt: o.archivedAt, archivedBy: o.archivedBy });
+        if (c.coll === 'branches' && !!d.archived !== !!o?.archived) {
+          // Archive (= "Delete" of a branch that has records) and restore: records stay, the branch leaves everyone's access
+          if (!o) { reject(c, 'A new branch cannot be archived'); break; }
+          if (!P('configuration', 'D')) { reject(c, `${user.role} cannot delete or restore branches`); break; }
+          if (d.archived && cfg.mailIn?.branch === d.id) { reject(c, `${o.name} receives new leads from e-mail – choose another branch under Email Incoming first`); break; }
+          if (d.archived) Object.assign(d, { archived: true, status: 'Closed', archivedAt: now, archivedBy: user.name });
+          else { d.archived = false; delete d.archivedAt; delete d.archivedBy; }
+        } else if (c.coll === 'branches' && o?.archived) Object.assign(d, { archived: true, archivedAt: o.archivedAt, archivedBy: o.archivedBy });
         if (c.coll === 'fees') {
           if (!(num(d.amt) > 0) || !(num(d.tax) >= 0) || !(num(d.extra?.amt) >= 0)) { reject(c, 'Fee, tax and registration must be valid numbers'); break; }
           if (o && (o.amt !== d.amt || o.tax !== d.tax || o.extra?.amt !== d.extra?.amt || o.prog !== d.prog || o.branch !== d.branch) && o.from <= today) {
@@ -690,6 +731,31 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
     }
   }
   for (const mv of leadBranchMoves) await env.DB.prepare("UPDATE docs SET branch=? WHERE type IN ('task','call','comm') AND ref1=?").bind(mv.branch, mv.id).run();
+  for (const id of staffGone) {
+    await env.DB.prepare('DELETE FROM staff_auth WHERE staff_id=?').bind(id).run();
+    await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE staff_id=? AND revoked_at IS NULL').bind(now, id).run();
+  }
+  for (const id of staffArchived) {
+    await env.DB.prepare('UPDATE sessions SET revoked_at=? WHERE staff_id=? AND revoked_at IS NULL').bind(now, id).run();
+    const name = staffList.find((s) => s.id === id)?.name || id;
+    const leads = await repo.many<any>('lead', 'owner=? AND status=?', [id, 'Open']);
+    for (const l of leads) {
+      l.cslr = null;
+      (l.assign ||= []).push({ at: now, from: id, to: '', by: user.name, how: 'Manual', reason: `${name} removed` });
+      addEv(l, 'crit', `${name} was removed – lead moved to the Unassigned queue`, user.name);
+      await repo.put('lead', l);
+      extraDocs.push({ coll: 'leads', doc: l });
+    }
+    for (const x of [...(await repo.many<any>('opp', 'owner=?', [id])).filter((o) => !['Enrolled', 'Lost'].includes(o.stage)), ...(await repo.many<any>('task', 'owner=? AND status=?', [id, 'Pending']))]) {
+      x.cslr = null;
+      await repo.put(x.stage ? 'opp' : 'task', x);
+      extraDocs.push({ coll: x.stage ? 'opps' : 'tasks', doc: x });
+    }
+    for (const b of [...new Set(leads.map((l) => l.branch))]) {
+      const n = leads.filter((l) => l.branch === b).length;
+      await notify(repo, { type: 'none', sev: 'crit', text: `${name} was removed – ${n} open lead${n === 1 ? '' : 's'} moved to the Unassigned queue`, route: { page: 'leads', preset: 'unassigned' }, roles: ['Admissions Head', 'Centre Administrator'], branch: b });
+    }
+  }
   for (const a of staffAuth) {
     if (a.temp) await env.DB.prepare('INSERT INTO staff_auth (staff_id,email,password_hash,must_change) VALUES (?,?,?,1) ON CONFLICT(staff_id) DO UPDATE SET email=excluded.email').bind(a.id, a.email, await hashPassword(a.temp)).run();
     else await env.DB.prepare('UPDATE staff_auth SET email=? WHERE staff_id=?').bind(a.email, a.id).run();

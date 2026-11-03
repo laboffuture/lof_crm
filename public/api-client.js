@@ -1005,6 +1005,156 @@
       .catch(function (e) { toast(e.message, 'err'); });
   };
 
+  // ------------------------------------------------------------------ Configuration → Branches: delete / archive
+  // A branch with no records is deleted. A branch with records (payments can never be deleted) is archived instead:
+  // it leaves every list, dropdown and everyone's branch access, its records stay stored, and it can be restored.
+  var isArchived = function (b) { return !!(b && b.archived); };
+  var _cfgBranches = CFG.branches;
+  CFG.branches = function () {
+    var all = S.branches, html;
+    S.branches = all.filter(function (b) { return !isArchived(b); }); // the table shows active branches only
+    try { html = _cfgBranches(); } finally { S.branches = all; }
+    var gone = all.filter(isArchived);
+    if (gone.length) {
+      html += '<div style="height:14px"></div>' + card('Archived branches', table('cbArch', [
+        { h: 'Branch', f: function (b) { return '<b>' + esc(b.name) + '</b><div class="mono muted xs">' + esc(b.code) + '</div>'; } },
+        { h: 'Country · city', f: function (b) { return esc(b.country + ' · ' + b.city); } },
+        { h: 'Archived', f: function (b) { return (b.archivedAt ? fDT(b.archivedAt) : '—') + (b.archivedBy ? '<div class="muted xs">by ' + esc(b.archivedBy) + '</div>' : ''); } },
+        { h: '', f: function (b) { return can('configuration', 'D') ? '<button class="btn sm" data-act="restoreBranch" data-id="' + esc(b.id) + '">Restore</button>' : ''; } },
+      ], gone, { all: 1 }), { np: 1 }) + '<p class="muted xs">Archived branches and their records are hidden from every screen and kept in the database (Settings → Database). Restoring brings them back with status Closed.</p>';
+    }
+    if (!can('configuration', 'D')) return html;
+    return html.replace(/(<button class="btn sm" data-act="mBranch" data-id="([^"]+)">Edit<\/button>)/g,
+      '<span class="row" style="flex-wrap:nowrap;justify-content:flex-end">$1<button class="btn sm" style="color:var(--crit)" data-act="delBranch" data-id="$2">Delete</button></span>');
+  };
+  function branchUse(id) {
+    var n = function (arr) { return (arr || []).filter(function (x) { return x && x.branch === id; }).length; };
+    var use = [[n(S.leads), 'leads'], [n(S.opps), 'opportunities'], [n(S.students), 'students'], [n(S.enr), 'enrolments'], [n(S.pay), 'payments'], [n(S.staff), 'staff'], [n(S.fees), 'fee entries']]
+      .filter(function (x) { return x[0]; }).map(function (x) { return x[0] + ' ' + x[1]; });
+    if ((S.cfg.mailIn || {}).branch === id) use.push('Email Incoming settings');
+    if ((S.cfg.emailTpls || []).some(function (t) { return t.branch === id; })) use.push('Email Templates');
+    return use;
+  }
+  ACT.delBranch = function (d) {
+    var b = S.branches.find(function (x) { return x.id === d.id; }); if (!b) return;
+    var use = branchUse(b.id);
+    if (use.length) {
+      if ((S.cfg.mailIn || {}).branch === b.id) { toast(b.name + ' receives new leads from e-mail – choose another branch under Email Incoming first', 'err'); return; }
+      confirmBox('Delete branch', '<b>' + esc(b.name) + '</b> has records: ' + esc(use.join(', ')) + '.<br><br>Payments and receipts can never be deleted, so the branch will be <b>removed from every list and from everyone’s branch access</b>, and its records kept safely in the database. You can restore it later under Archived branches.', 'archiveBranch', b.id, 'Delete branch', true);
+      return;
+    }
+    confirmBox('Delete branch', 'Delete <b>' + esc(b.name) + '</b> (' + esc(b.id) + ')? This cannot be undone.', 'delBranch', b.id, 'Delete branch', true);
+  };
+  var afterBranchChange = function () { flush().then(function () { return reload(false); }).catch(function () {}); };
+  CONFIRM.archiveBranch = function (id) {
+    var b = S.branches.find(function (x) { return x.id === id; }); if (!b) return;
+    b.archived = true; b.status = 'Closed';
+    addAudit('Branch deleted (archived)', id, b.name);
+    toast('Branch ' + b.name + ' deleted – its records are kept and can be restored', 'ok');
+    render();
+    afterBranchChange();
+  };
+  ACT.restoreBranch = function (d) {
+    var b = S.branches.find(function (x) { return x.id === d.id; }); if (!b) return;
+    confirmBox('Restore branch', 'Restore <b>' + esc(b.name) + '</b>? It comes back with status Closed and its records reappear for users with access to it. Set it to Operating under Edit when it reopens.', 'restoreBranch', b.id, 'Restore');
+  };
+  CONFIRM.restoreBranch = function (id) {
+    var b = S.branches.find(function (x) { return x.id === id; }); if (!b) return;
+    b.archived = false; delete b.archivedAt; delete b.archivedBy;
+    addAudit('Branch restored', id, b.name);
+    toast('Branch ' + b.name + ' restored', 'ok');
+    render();
+    afterBranchChange();
+  };
+  // ------------------------------------------------------------------ Configuration → Staff & Users: delete / archive
+  // A user with no work attached is deleted (login removed). Anyone else is archived: sign-in disabled at once,
+  // open leads, opportunities and follow-ups move to the Unassigned queue, history keeps their name; restorable.
+  var _cfgStaff = CFG.staff;
+  CFG.staff = function () {
+    var all = S.staff, html;
+    S.staff = all.filter(function (s) { return !isArchived(s); }); // the table shows current users only
+    try { html = _cfgStaff(); } finally { S.staff = all; }
+    var gone = all.filter(isArchived);
+    if (gone.length) {
+      html += '<div style="height:14px"></div>' + card('Archived users', table('csArch', [
+        { h: 'Name', f: function (s) { return '<b>' + esc(s.name) + '</b><div class="muted xs">' + esc(s.emp || '') + ' · ' + esc(s.email || '') + '</div>'; } },
+        { h: 'Role', f: function (s) { return esc(s.role); } },
+        { h: 'Branch', f: function (s) { return esc(branchName(s.branch)); } },
+        { h: 'Archived', f: function (s) { return (s.archivedAt ? fDT(s.archivedAt) : '—') + (s.archivedBy ? '<div class="muted xs">by ' + esc(s.archivedBy) + '</div>' : ''); } },
+        { h: '', f: function (s) { return can('configuration', 'D') ? '<button class="btn sm" data-act="restoreStaff" data-id="' + esc(s.id) + '">Restore</button>' : ''; } },
+      ], gone, { all: 1 }), { np: 1 }) + '<p class="muted xs">Archived users cannot sign in. Their name stays on past leads, payments and history. Restoring brings the user back with access disabled – enable it under Edit.</p>';
+    }
+    if (!can('configuration', 'D')) return html;
+    return html.replace(/(<button class="btn sm" data-act="mStaff" data-id="([^"]+)">Edit<\/button>)/g,
+      '<span class="row" style="flex-wrap:nowrap;justify-content:flex-end">$1<button class="btn sm" style="color:var(--crit)" data-act="delStaff" data-id="$2">Delete</button></span>');
+  };
+  function staffUse(id) {
+    var count = function (arr, f) { return (arr || []).filter(f).length; };
+    var open = { leads: count(S.leads, function (l) { return l.cslr === id && l.status === 'Open'; }), opps: count(S.opps, function (o) { return o.cslr === id && ['Enrolled', 'Lost'].indexOf(o.stage) < 0; }), tasks: count(S.tasks, function (t) { return t.cslr === id && t.status === 'Pending'; }) };
+    var any = count(S.leads, function (l) { return l.cslr === id; }) + count(S.opps, function (o) { return o.cslr === id; }) + count(S.tasks, function (t) { return t.cslr === id; }) +
+      count(S.enr, function (e) { return e.cslr === id; }) + count(S.branches, function (b) { return b.admin === id; });
+    return { open: open, any: any };
+  }
+  ACT.delStaff = function (d) {
+    var s = S.staff.find(function (x) { return x.id === d.id; }); if (!s) return;
+    if (s.id === S.user) { toast('You cannot delete your own user', 'err'); return; }
+    var u = staffUse(s.id);
+    if (!u.any) { confirmBox('Delete user', 'Delete <b>' + esc(s.name) + '</b> (' + esc(s.email) + ')? Their login is removed. This cannot be undone.', 'delStaff', s.id, 'Delete user', true); return; }
+    var moves = [[u.open.leads, 'open lead'], [u.open.opps, 'open opportunit'], [u.open.tasks, 'pending follow-up']].filter(function (x) { return x[0]; })
+      .map(function (x) { return x[0] + ' ' + x[1] + (x[1] === 'open opportunit' ? (x[0] === 1 ? 'y' : 'ies') : (x[0] === 1 ? '' : 's')); });
+    confirmBox('Delete user', '<b>' + esc(s.name) + '</b> has work in the CRM, so their name is kept on past records and the user is <b>archived</b>:<ul class="sm" style="margin:8px 0;padding-left:18px">' +
+      '<li>Sign-in is disabled immediately and open sessions end.</li>' +
+      (moves.length ? '<li>' + esc(moves.join(', ')) + ' move to the <b>Unassigned queue</b> and the Admissions Head is notified.</li>' : '') +
+      '<li>You can restore the user later under Archived users.</li></ul>', 'archiveStaff', s.id, 'Delete user', true);
+  };
+  CONFIRM.delStaff = function (id) {
+    var s = S.staff.find(function (x) { return x.id === id; }); if (!s) return;
+    S.staff = S.staff.filter(function (x) { return x.id !== id; });
+    if (S.scope) delete S.scope[id];
+    if (S.cfg.targets) S.cfg.targets = S.cfg.targets.filter(function (t) { return t.c !== id; });
+    addAudit('User deleted', id, s.name);
+    toast(s.name + ' deleted', 'ok');
+    render();
+  };
+  CONFIRM.archiveStaff = function (id) {
+    var s = S.staff.find(function (x) { return x.id === id; }); if (!s) return;
+    s.archived = true; s.status = 'Inactive'; s.access = 'Disabled';
+    addAudit('User deleted (archived)', id, s.name);
+    toast(s.name + ' deleted – open work moved to the Unassigned queue', 'ok');
+    render();
+    afterBranchChange();
+  };
+  ACT.restoreStaff = function (d) {
+    var s = S.staff.find(function (x) { return x.id === d.id; }); if (!s) return;
+    confirmBox('Restore user', 'Restore <b>' + esc(s.name) + '</b>? The user comes back with access disabled; enable it under Edit to let them sign in. Leads moved to the Unassigned queue are not reassigned automatically.', 'restoreStaff', s.id, 'Restore');
+  };
+  CONFIRM.restoreStaff = function (id) {
+    var s = S.staff.find(function (x) { return x.id === id; }); if (!s) return;
+    s.archived = false; delete s.archivedAt; delete s.archivedBy;
+    addAudit('User restored', id, s.name);
+    toast(s.name + ' restored – enable access under Edit', 'ok');
+    render();
+    afterBranchChange();
+  };
+
+  // Archived branches and users never appear as a choice in any dropdown (records that still show one keep their selection)
+  var _renderAll = window.render;
+  window.render = function () {
+    _renderAll.apply(this, arguments);
+    if (!S || !S.branches) return;
+    var gone = S.branches.filter(isArchived).concat((S.staff || []).filter(isArchived)).map(function (b) { return b.id; });
+    if (!gone.length) return;
+    document.querySelectorAll('select option').forEach(function (o) { if (gone.indexOf(o.value) >= 0 && !o.selected) o.remove(); });
+  };
+  CONFIRM.delBranch = function (id) {
+    var b = S.branches.find(function (x) { return x.id === id; }); if (!b) return;
+    S.branches = S.branches.filter(function (x) { return x.id !== id; });
+    Object.keys(S.scope || {}).forEach(function (k) { if (Array.isArray(S.scope[k])) S.scope[k] = S.scope[k].filter(function (x) { return x !== id; }); });
+    addAudit('Branch deleted', id, b.name);
+    toast('Branch ' + b.name + ' deleted', 'ok');
+    render();
+  };
+
   // ------------------------------------------------------------------ go
   var _closeModal = window.closeModal;
   window.closeModal = function () { _closeModal(); if (deferredRender) { deferredRender = false; render(); } };
