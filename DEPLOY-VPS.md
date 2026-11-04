@@ -31,7 +31,7 @@ DNS **A record** points at the server (for example `crm.yourdomain.com`).
 SSH into the server as root (or a sudo user) and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/karthikeyan-trgdev/lof_crm/main/deploy/vps/server-setup.sh -o setup.sh
+curl -fsSL https://raw.githubusercontent.com/laboffuture/lof_crm/main/deploy/vps/server-setup.sh -o setup.sh
 sudo DOMAIN=crm.yourdomain.com LETSENCRYPT_EMAIL=you@yourdomain.com ADMIN_EMAIL=you@yourdomain.com bash setup.sh
 ```
 
@@ -45,8 +45,9 @@ It asks for the administrator password (typed hidden, only a hash is stored), th
 6. creates the administrator, installs the 5-minute cron job and the nginx site, and gets the HTTPS certificate.
 
 Options: `DATA=demo` loads the prototype's sample data on first setup (a random demo password is printed once).
-For a **private** repository use `REPO_URL=git@github.com:karthikeyan-trgdev/lof_crm.git`. The script prints a
-public key: add it under the repo's *Settings → Deploy keys* (read-only), then run the script again.
+The server reads the code from `git@github.com:laboffuture/lof_crm.git` over SSH. On the first run the script stops
+and prints a public key: add it under the repo's *Settings → Deploy keys* (read-only), then run the script again.
+To read over HTTPS instead (public repository, no deploy key) add `REPO_URL=https://github.com/laboffuture/lof_crm.git`.
 
 The script is safe to run again. Existing data, secrets and logins are kept.
 

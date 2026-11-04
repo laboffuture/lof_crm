@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-time setup of LOF CRM on an Ubuntu / Debian VPS. Run as root; safe to run again. See DEPLOY-VPS.md.
 #
-#   curl -fsSL https://raw.githubusercontent.com/karthikeyan-trgdev/lof_crm/main/deploy/vps/server-setup.sh -o setup.sh
+#   curl -fsSL https://raw.githubusercontent.com/laboffuture/lof_crm/main/deploy/vps/server-setup.sh -o setup.sh
 #   sudo DOMAIN=crm.example.com LETSENCRYPT_EMAIL=you@example.com ADMIN_EMAIL=you@example.com bash setup.sh
 #
 # Env: DOMAIN (required), LETSENCRYPT_EMAIL (enables HTTPS), ADMIN_EMAIL (+ ADMIN_PASSWORD, asked if missing),
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 DOMAIN="${DOMAIN:?Set DOMAIN, e.g. DOMAIN=crm.example.com}"
-REPO_URL="${REPO_URL:-https://github.com/karthikeyan-trgdev/lof_crm.git}"
+REPO_URL="${REPO_URL:-git@github.com:laboffuture/lof_crm.git}"
 APP_USER="${APP_USER:-lofcrm}"
 APP_DIR=/opt/lof-crm
 STATE_DIR=/var/lib/lof-crm/state
