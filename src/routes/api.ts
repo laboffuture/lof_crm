@@ -67,7 +67,14 @@ api.get('/leads', async (c) => {
   const where = [s.sql], binds: unknown[] = [...s.binds];
   const q = c.req.query();
   if (q.status) { where.push('status=?'); binds.push(q.status); }
-  if (q.branch) { where.push('branch=?'); binds.push(q.branch); }
+  if (q.branch) {
+    if (!['Management', 'System Administrator'].includes(c.get('user').role)) {
+      if (!c.get('user').scope.includes(q.branch)) {
+        throw new HttpError(403, 'Branch selection is restricted to System Administrators and Management');
+      }
+    }
+    where.push('branch=?'); binds.push(q.branch);
+  }
   if (q.counsellor) { where.push('owner=?'); binds.push(q.counsellor); }
   if (q.category) { where.push("json_extract(data,'$.cat')=?"); binds.push(q.category); }
   if (q.source) { where.push("json_extract(data,'$.src')=?"); binds.push(q.source); }

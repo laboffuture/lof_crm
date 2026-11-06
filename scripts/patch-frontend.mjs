@@ -9,30 +9,31 @@ let html = readFileSync(new URL('prototype/LOF_CRM_Prototype.html', root), 'utf8
 const patches = [
   // live clock instead of the prototype's frozen "now"
   [
-    "const TZ='Asia/Dubai',BASE=Date.parse('2026-10-09T00:00:00+04:00'),NOW=new Date('2026-10-09T13:53:00+04:00');",
+    /const\s+TZ\s*=\s*'Asia\/Dubai'\s*,\s*BASE\s*=\s*Date\.parse\('2026-10-09T00:00:00\+04:00'\)\s*,\s*NOW\s*=\s*new\s+Date\('2026-10-09T13:53:00\+04:00'\);/,
     "const TZ='Asia/Dubai';let NOW=window.LOF_API?new Date():new Date('2026-10-09T13:53:00+04:00');let BASE=window.LOF_API?Date.parse(new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Dubai'})+'T00:00:00+04:00'):Date.parse('2026-10-09T00:00:00+04:00');",
   ],
-  ['const TODAY=dayKey(NOW.toISOString());', 'let TODAY=dayKey(NOW.toISOString());'],
-  ['const nowIso=()=>NOW.toISOString();', 'const nowIso=()=>(window.LOF_API?new Date():NOW).toISOString();'],
-  ['\nboot();\n</script>', '\nif(!window.LOF_API)boot();\n</script>\n<script src="/vendor/qrcode-generator-1.4.4.js"></script>\n<script src="/api-client.js"></script>'],
+  [/const\s+TODAY\s*=\s*dayKey\(NOW\.toISOString\(\)\);/, 'let TODAY=dayKey(NOW.toISOString());'],
+  [/const\s+nowIso\s*=\s*\(\)\s*=>\s*NOW\.toISOString\(\);/, 'const nowIso=()=>(window.LOF_API?new Date():NOW).toISOString();'],
+  [/\n\s*boot\(\);\s*\n\s*<\/script>/, '\nif(!window.LOF_API)boot();\n</script>\n<script src="/vendor/qrcode-generator-1.4.4.js"></script>\n<script src="/api-client.js"></script>'],
   ['<title>LOF CRM Prototype</title>', '<title>Lab of Future CRM</title>'],
   ['<small>CRM & Sales · Prototype</small>', '<small>CRM & Sales</small>'],
   // long modal forms: let the body scroll so the footer buttons stay on screen
-  ['.hide{display:none!important}', '.hide{display:none!important}\n.modal{max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px)}.modal>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}.modal .mb{min-height:0;flex:1 1 auto}'],
+  [/\.hide\s*\{\s*display:\s*none\s*!important\s*\}/, '.hide{display:none!important}\n.modal{max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px)}.modal>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}.modal .mb{min-height:0;flex:1 1 auto}'],
   // after sign-out the app state is cleared (S=null); global handlers must not touch it
-  ["document.addEventListener('click',e=>{if(S.menu", "document.addEventListener('click',e=>{if(!S)return;if(S.menu"],
-  ["if(e.key==='Escape'&&S.modal&&", "if(e.key==='Escape'&&S&&S.modal&&"],
-  ["if(a){setTimeout(()=>{S.modal=null;render()},0)}", "if(a){setTimeout(()=>{if(S){S.modal=null;render()}},0)}"],
+  [/document\.addEventListener\('click',\s*e\s*=>\s*\{\s*if\s*\(S\.menu/, "document.addEventListener('click',e=>{if(!S)return;if(S.menu"],
+  [/if\s*\(e\.key\s*===\s*'Escape'\s*&&\s*S\.modal\s*&&/, "if(e.key==='Escape'&&S&&S.modal&&"],
+  [/if\s*\(a\)\s*\{\s*setTimeout\(\(\)\s*=>\s*\{\s*S\.modal\s*=\s*null;\s*render\(\)\s*\}\s*,\s*0\)\s*\}/, "if(a){setTimeout(()=>{if(S){S.modal=null;render()}},0)}"],
   // prototype wording that no longer applies
   ['Email and WhatsApp delivery are simulated. Escalation', 'Email and WhatsApp are delivered when those integrations are live (Settings → Testing console). Escalation'],
   [
-    "<script>\n'use strict';",
+    /<script>\s*\n\s*'use strict';/,
     "<script>window.LOF_API=/[?&]demo=1/.test(location.search)?null:{base:'/api/v1'};</script>\n<script>\n'use strict';",
   ],
 ];
 
 for (const [from, to] of patches) {
-  if (!html.includes(from)) throw new Error('Prototype patch point not found: ' + from.slice(0, 80));
+  const matched = typeof from === 'string' ? html.includes(from) : from.test(html);
+  if (!matched) throw new Error('Prototype patch point not found: ' + String(from).slice(0, 80));
   html = html.replace(from, to);
 }
 writeFileSync(new URL('public/index.html', root), html);

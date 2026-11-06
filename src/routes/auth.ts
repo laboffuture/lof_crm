@@ -8,6 +8,7 @@ import { newTotpSecret, otpauthUri, verifyTotp, encryptSecret, decryptSecret } f
 import { addAudit } from '../domain/core';
 import { HttpError } from '../types';
 import type { Env } from '../types';
+import { sendEmail } from '../integrations/gcal-email';
 
 export const auth = new Hono<AppEnv>();
 
@@ -83,6 +84,129 @@ auth.post('/login', async (c) => {
   await audit(c.env, user.name, 'Access', `Signed in from ${ip}${row.mfa_enabled ? ' (two-step verified)' : ''}`);
   c.header('set-cookie', sessionCookie(c.env, token));
   return c.json({ user, stage, mustChangePassword: stage === 'password_change', mfaSetupRequired: stage === 'mfa_setup', ...(browser(c) ? {} : { token }) });
+});
+
+// ---------------------------------------------------------------- self-service password reset
+auth.post('/forgot-password/request', async (c) => {
+  const body = await c.req.json<{ email?: string }>().catch(() => ({} as any));
+  const email = String(body.email || '').trim().toLowerCase();
+  if (!email || !email.includes('@')) throw new HttpError(400, 'A valid work e-mail address is required');
+
+  const ip = clientIp(c.req.raw);
+  if (!(await allow(c.env, 'forgot-ip:' + ip, 15, 900)) || !(await allow(c.env, 'forgot-email:' + email, 5, 900))) {
+    throw new HttpError(429, 'Too many reset requests – please wait 15 minutes before trying again');
+  }
+
+  const row = await c.env.DB.prepare('SELECT staff_id FROM staff_auth WHERE email=?').bind(email).first<{ staff_id: string }>();
+
+  let devCode: string | undefined = undefined;
+  if (row) {
+    // Generate secure 6-digit numeric OTP code
+    const rawNum = (crypto.getRandomValues(new Uint32Array(1))[0] % 900000) + 100000;
+    const code = String(rawNum);
+    const codeHash = await sha256Hex(code);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+    const record = {
+      staff_id: row.staff_id,
+      email,
+      code_hash: codeHash,
+      expires_at: expiresAt,
+      attempts: 0,
+    };
+
+    await c.env.DB.prepare(`
+      INSERT OR REPLACE INTO docs (type, id, data, at, updated_by)
+      VALUES ('pw_reset', ?, ?, ?, 'system')
+    `).bind(email, JSON.stringify(record), nowIso()).run();
+
+    try {
+      const mode = (c.env.INTEGRATION_MODE || 'auto') === 'mock' ? 'mock' : 'live';
+      await sendEmail({ env: c.env, mode, isTest: false }, {
+        to: email,
+        subject: 'Lab of Future CRM – Password Reset Code',
+        text: `Hello,\n\nA password reset request was received for your Lab of Future CRM account.\n\nYour 6-digit verification code is: ${code}\n\nThis code is valid for 15 minutes. If you did not request this reset, you can safely ignore this email.\n\nLab of Future Security Team`,
+        ref: 'pw-reset-' + row.staff_id,
+      });
+    } catch (e: any) {
+      console.warn('Could not send password reset email:', e.message);
+    }
+
+    await audit(c.env, row.staff_id, 'Access', `Self-service password reset requested from ${ip}`);
+
+    if (c.env.APP_ENV !== 'production') {
+      devCode = code;
+    }
+  }
+
+  return c.json({
+    ok: true,
+    message: 'If that email is registered, a 6-digit verification code has been sent.',
+    ...(devCode ? { devCode } : {}),
+  });
+});
+
+auth.post('/forgot-password/confirm', async (c) => {
+  const body = await c.req.json<{ email?: string; code?: string; next?: string }>().catch(() => ({} as any));
+  const email = String(body.email || '').trim().toLowerCase();
+  const code = String(body.code || '').trim();
+  const next = String(body.next || '');
+
+  if (!email || !code || !next) throw new HttpError(400, 'Email, verification code, and new password are required');
+
+  const ip = clientIp(c.req.raw);
+  if (!(await allow(c.env, 'forgot-confirm:' + ip, 20, 900))) {
+    throw new HttpError(429, 'Too many verification attempts – wait 15 minutes');
+  }
+
+  const doc = await c.env.DB.prepare("SELECT data FROM docs WHERE type='pw_reset' AND id=?").bind(email).first<{ data: string }>();
+  if (!doc) {
+    throw new HttpError(400, 'Reset request expired or not found. Please request a new code.');
+  }
+
+  const record = JSON.parse(doc.data);
+  if (record.expires_at < nowIso()) {
+    await c.env.DB.prepare("DELETE FROM docs WHERE type='pw_reset' AND id=?").bind(email).run();
+    throw new HttpError(400, 'Verification code has expired. Please request a new code.');
+  }
+
+  if (record.attempts >= 5) {
+    await c.env.DB.prepare("DELETE FROM docs WHERE type='pw_reset' AND id=?").bind(email).run();
+    throw new HttpError(429, 'Too many invalid attempts. Please request a new code.');
+  }
+
+  const inputHash = await sha256Hex(code);
+  if (inputHash !== record.code_hash) {
+    record.attempts = (record.attempts || 0) + 1;
+    await c.env.DB.prepare("UPDATE docs SET data=? WHERE type='pw_reset' AND id=?").bind(JSON.stringify(record), email).run();
+    throw new HttpError(400, 'The verification code is incorrect');
+  }
+
+  const problem = passwordProblem(next, email);
+  if (problem) throw new HttpError(400, problem);
+
+  const staffAuth = await c.env.DB.prepare('SELECT * FROM staff_auth WHERE staff_id=?').bind(record.staff_id).first<any>();
+  if (!staffAuth) throw new HttpError(404, 'User account not found');
+
+  if (await verifyPassword(next, staffAuth.password_hash)) {
+    throw new HttpError(400, 'Choose a password you have not used just now');
+  }
+
+  const hashed = await hashPassword(next);
+  await c.env.DB.prepare(`
+    UPDATE staff_auth
+    SET password_hash=?, must_change=0, failed_count=0, locked_until=NULL, password_changed_at=?
+    WHERE staff_id=?
+  `).bind(hashed, nowIso(), record.staff_id).run();
+
+  await c.env.DB.prepare("DELETE FROM docs WHERE type='pw_reset' AND id=?").bind(email).run();
+  await revokeAll(c.env, record.staff_id);
+  await audit(c.env, staffAuth.staff_id, 'Access', `Password reset completed via self-service from ${ip}; all sessions revoked`);
+
+  return c.json({
+    ok: true,
+    message: 'Your password has been reset successfully. Please sign in with your new password.',
+  });
 });
 
 auth.post('/logout', requireAuth, async (c) => {

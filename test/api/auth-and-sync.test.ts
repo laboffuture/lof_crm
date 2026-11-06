@@ -35,6 +35,31 @@ describe('authentication', () => {
     const r = await t.call('POST', '/api/v1/auth/login', { body: { email: USERS.priya, password: 'Blue-Kettle-2026' } });
     expect(r.body.mustChangePassword).toBe(false);
   });
+  it('allows self-service password reset with verification code', async () => {
+    t = await setup();
+    const reqRes = await t.call('POST', '/api/v1/auth/forgot-password/request', { body: { email: USERS.priya } });
+    expect(reqRes.status).toBe(200);
+    expect(reqRes.body.ok).toBe(true);
+    const devCode = reqRes.body.devCode;
+    expect(devCode).toBeDefined();
+
+    const badCode = await t.call('POST', '/api/v1/auth/forgot-password/confirm', {
+      body: { email: USERS.priya, code: '000000', next: 'New-Strong-Pw-2026' },
+    });
+    expect(badCode.status).toBe(400);
+
+    const ok = await t.call('POST', '/api/v1/auth/forgot-password/confirm', {
+      body: { email: USERS.priya, code: devCode, next: 'New-Strong-Pw-2026' },
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.body.ok).toBe(true);
+
+    const loginRes = await t.call('POST', '/api/v1/auth/login', {
+      body: { email: USERS.priya, password: 'New-Strong-Pw-2026' },
+    });
+    expect(loginRes.status).toBe(200);
+    expect(loginRes.body.user.email).toBe(USERS.priya);
+  });
   it('allows role preview only when impersonation is enabled', async () => {
     const r = await t.call('POST', '/api/v1/auth/impersonate', { token: await t.login(USERS.admin), body: { staffId: 'S01' } });
     expect(r.status).toBe(200);

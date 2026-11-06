@@ -11,11 +11,1137 @@
  */
 (function () {
   'use strict';
+
+  // ==================================================================
+  // PDF EXPORTS & MULTI-FORMAT REPORTING MODULE
+  // Enables downloadable PDF reports, Excel, CSV, JSON, and print views
+  // across all 22 CRM reports and payment records.
+  // ==================================================================
+  // ==================================================================
+  // BRANCH ACCESS CONTROL HELPERS
+  // Restricts branch selection in dropdowns/filters exclusively to
+  // System Admins and Management. Standard users can only view data
+  // for their assigned branches.
+  // ==================================================================
+  function isBranchPrivileged() {
+    var u = typeof me === 'function' ? me() : null;
+    if (!u) return true;
+    return u.role === 'System Administrator' || u.role === 'Management';
+  }
+
+  function userAssignedBranch() {
+    var u = typeof me === 'function' ? me() : null;
+    return u ? u.branch : null;
+  }
+
+  function userAssignedBranches() {
+    var u = typeof me === 'function' ? me() : null;
+    if (!u) return [];
+    if (isBranchPrivileged()) {
+      return (typeof S !== 'undefined' && S && S.branches ? S.branches : []).map(function (b) { return b.id; });
+    }
+    if (typeof S !== 'undefined' && S && S.scope && Array.isArray(S.scope[u.id])) {
+      return S.scope[u.id];
+    }
+    return u.branch ? [u.branch] : [];
+  }
+
+  function userAssignedBranchNames() {
+    var brs = userAssignedBranches();
+    if (!brs.length) return '';
+    return brs.map(function (id) {
+      return typeof branchName === 'function' ? branchName(id) : id;
+    }).join(', ');
+  }
+
+  function branchLockedBadge() {
+    var names = userAssignedBranchNames();
+    return '<span class="badge info" style="font-weight:600;padding:5px 11px;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent);border-radius:6px;display:inline-flex;align-items:center;gap:6px">' +
+      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>' +
+      'Location: ' + (typeof esc === 'function' ? esc(names) : names) + ' (Assigned)</span>';
+  }
+
+  function isReceptionStaff() {
+    var u = typeof me === 'function' ? me() : null;
+    return !!(u && u.role === 'Reception');
+  }
+
+  function receptionBranch() {
+    return isReceptionStaff() ? userAssignedBranch() : null;
+  }
+
+  function setupReportExports() {
+    // Ensure Reception role has view permission on reports
+    if (typeof S !== 'undefined' && S && S.perms && S.perms.reports) {
+      S.perms.reports.Reception = 'V';
+    }
+
+    function downloadBlob(blob, filename) {
+      var a = document.createElement('a');
+      var url = URL.createObjectURL(blob);
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () {
+        URL.revokeObjectURL(url);
+        a.remove();
+      }, 1200);
+    }
+
+    function sanitizePdf(str) {
+      return String(str == null ? '' : str)
+        .replace(/₹/g, 'INR ')
+        .replace(/[—–]/g, '-')
+        .replace(/[•·]/g, '*')
+        .replace(/[‘’]/g, "'")
+        .replace(/[“”]/g, '"')
+        .replace(/[^\x20-\x7E\xA0-\xFF]/g, ' ');
+    }
+
+    function escapePdf(str) {
+      return sanitizePdf(str)
+        .replace(/\\/g, '\\\\')
+        .replace(/\(/g, '\\(')
+        .replace(/\)/g, '\\)');
+    }
+
+    function isNumericCol(colName, rows, colIdx) {
+      if (/(%|amt|amount|total|collected|target|revenue|balance|paid|price|fee|rate|count|leads|breaches|waiting|min|utilisation)/i.test(colName)) return true;
+      var numCount = 0;
+      for (var r = 0; r < Math.min(rows.length, 10); r++) {
+        var val = String(rows[r] && rows[r][colIdx] != null ? rows[r][colIdx] : '').trim().replace(/^[₹$€AEDINR\s,]+/, '').replace(/%$/, '');
+        if (val !== '' && !isNaN(Number(val))) numCount++;
+      }
+      return numCount >= 3;
+    }
+
+    function buildPdfBlob(options) {
+      var cols = options.cols || [];
+      var rows = options.rows || [];
+      var isLandscape = options.landscape != null ? options.landscape : cols.length > 6;
+
+      var pageWidth = isLandscape ? 841.89 : 595.28;
+      var pageHeight = isLandscape ? 595.28 : 841.89;
+      var margin = 36;
+      var contentWidth = pageWidth - margin * 2;
+
+      var colAlignRight = cols.map(function (c, i) { return isNumericCol(c, rows, i); });
+
+      var minWidth = 45;
+      var weights = cols.map(function (c, i) {
+        var max = String(c).length;
+        for (var r = 0; r < Math.min(rows.length, 40); r++) {
+          var len = String(rows[r] && rows[r][i] != null ? rows[r][i] : '').length;
+          if (len > max) max = len;
+        }
+        return Math.max(max, 5);
+      });
+      var totalWeight = weights.reduce(function (a, b) { return a + b; }, 0) || 1;
+      var colWidths = weights.map(function (w) { return Math.max(minWidth, (w / totalWeight) * contentWidth); });
+      var curTotal = colWidths.reduce(function (a, b) { return a + b; }, 0);
+      var factor = contentWidth / curTotal;
+      colWidths = colWidths.map(function (w) { return w * factor; });
+
+      var rowHeight = 18;
+      var headerHeight = 22;
+      var firstPageTop = pageHeight - margin - 75;
+      var otherPageTop = pageHeight - margin - 35;
+      var bottomLimit = margin + 25;
+
+      var firstPageCap = Math.max(1, Math.floor((firstPageTop - bottomLimit - headerHeight) / rowHeight));
+      var otherPageCap = Math.max(1, Math.floor((otherPageTop - bottomLimit - headerHeight) / rowHeight));
+
+      var pagesRows = [];
+      var curIdx = 0;
+      while (curIdx < rows.length || pagesRows.length === 0) {
+        var limit = pagesRows.length === 0 ? firstPageCap : otherPageCap;
+        pagesRows.push(rows.slice(curIdx, curIdx + limit));
+        curIdx += limit;
+        if (curIdx >= rows.length) break;
+      }
+
+      var totalPages = pagesRows.length;
+      var catalogId = 1;
+      var pagesRootId = 2;
+      var fontNormId = 3;
+      var fontBoldId = 4;
+
+      var pageObjIds = [];
+      var contentObjIds = [];
+      var nextId = 5;
+      for (var i = 0; i < totalPages; i++) {
+        pageObjIds.push(nextId++);
+        contentObjIds.push(nextId++);
+      }
+
+      var pageStreams = [];
+
+      for (var pIdx = 0; pIdx < totalPages; pIdx++) {
+        var pRows = pagesRows[pIdx];
+        var stream = [];
+        var curY = pageHeight - margin;
+
+        if (pIdx === 0) {
+          // Branding Header
+          stream.push('0.114 0.208 0.341 rg'); // #1d3557 deep navy
+          stream.push('BT /F2 15 Tf ' + margin + ' ' + (curY - 14) + ' Td (Lab of Future CRM) Tj ET');
+
+          // Date
+          stream.push('0.45 0.50 0.55 rg');
+          var dateStr = options.date || new Date().toLocaleString('en-GB');
+          stream.push('BT /F1 8.5 Tf ' + (pageWidth - margin - 180).toFixed(2) + ' ' + (curY - 12) + ' Td (' + escapePdf('Generated: ' + dateStr) + ') Tj ET');
+          curY -= 26;
+
+          // Report Title
+          stream.push('0.08 0.12 0.18 rg');
+          stream.push('BT /F2 13 Tf ' + margin + ' ' + (curY - 13) + ' Td (' + escapePdf(options.title || 'Report') + ') Tj ET');
+          curY -= 20;
+
+          // Filter summary / Subtitle
+          var filterLine = [options.filters, options.note ? ('Note: ' + options.note) : ''].filter(Boolean).join('   |   ');
+          if (filterLine) {
+            stream.push('0.40 0.45 0.50 rg');
+            stream.push('BT /F1 8.5 Tf ' + margin + ' ' + (curY - 9) + ' Td (' + escapePdf(filterLine.slice(0, 150)) + ') Tj ET');
+            curY -= 16;
+          }
+          curY -= 6;
+        } else {
+          // Continuation Header
+          stream.push('0.35 0.40 0.45 rg');
+          stream.push('BT /F2 9.5 Tf ' + margin + ' ' + (curY - 12) + ' Td (' + escapePdf((options.title || 'Report') + ' (continued)') + ') Tj ET');
+          curY -= 22;
+        }
+
+        // Table Header Background
+        stream.push('0.114 0.208 0.341 rg');
+        stream.push(margin + ' ' + (curY - headerHeight).toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + headerHeight + ' re f');
+
+        // Column Headers Text
+        stream.push('1 1 1 rg');
+        var colX = margin;
+        for (var c = 0; c < cols.length; c++) {
+          var colW = colWidths[c];
+          var title = String(cols[c] == null ? '' : cols[c]);
+          var isRight = colAlignRight[c];
+          var approxCharWidth = 5.2;
+          var displayTitle = title.slice(0, Math.max(4, Math.floor((colW - 8) / approxCharWidth)));
+          var textX = isRight ? (colX + colW - 6 - (displayTitle.length * approxCharWidth)) : (colX + 6);
+          var textY = curY - headerHeight + 6.5;
+
+          stream.push('BT /F2 8.5 Tf ' + textX.toFixed(2) + ' ' + textY.toFixed(2) + ' Td (' + escapePdf(displayTitle) + ') Tj ET');
+          colX += colW;
+        }
+        curY -= headerHeight;
+
+        // Table Rows
+        for (var r = 0; r < pRows.length; r++) {
+          var row = pRows[r];
+          var isEven = r % 2 === 1;
+
+          if (isEven) {
+            stream.push('0.965 0.975 0.985 rg');
+            stream.push(margin + ' ' + (curY - rowHeight).toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + rowHeight + ' re f');
+          }
+
+          // Row separator line
+          stream.push('0.88 0.90 0.92 RG 0.5 w');
+          stream.push(margin + ' ' + (curY - rowHeight).toFixed(2) + ' m ' + (margin + contentWidth).toFixed(2) + ' ' + (curY - rowHeight).toFixed(2) + ' l S');
+
+          // Cell text
+          stream.push('0.12 0.15 0.20 rg');
+          colX = margin;
+          for (var cIdx = 0; cIdx < cols.length; cIdx++) {
+            var cW = colWidths[cIdx];
+            var val = String(row[cIdx] == null ? '' : row[cIdx]);
+            var rightAlign = colAlignRight[cIdx];
+            var charW = 4.8;
+            var maxChars = Math.max(3, Math.floor((cW - 10) / charW));
+            var displayVal = val.length > maxChars ? val.slice(0, maxChars - 1) + '…' : val;
+            var cellY = curY - rowHeight + 5.5;
+            var cTextX = rightAlign ? (colX + cW - 6 - (displayVal.length * charW)) : (colX + 6);
+
+            stream.push('BT /F1 8 Tf ' + cTextX.toFixed(2) + ' ' + cellY.toFixed(2) + ' Td (' + escapePdf(displayVal) + ') Tj ET');
+            colX += cW;
+          }
+
+          curY -= rowHeight;
+        }
+
+        // Outer table border
+        stream.push('0.80 0.83 0.87 RG 0.75 w');
+        var tableH = headerHeight + pRows.length * rowHeight;
+        stream.push(margin + ' ' + curY.toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + tableH.toFixed(2) + ' re S');
+
+        // Page Footer
+        stream.push('0.50 0.55 0.60 rg');
+        stream.push('BT /F1 7.5 Tf ' + margin + ' ' + margin + ' Td (Lab of Future CRM   •   Confidential) Tj ET');
+        stream.push('BT /F1 7.5 Tf ' + (pageWidth - margin - 70).toFixed(2) + ' ' + margin + ' Td (Page ' + (pIdx + 1) + ' of ' + totalPages + ') Tj ET');
+
+        pageStreams.push(stream.join('\n'));
+      }
+
+      // Assemble Objects
+      var objTable = {};
+      objTable[catalogId] = '<< /Type /Catalog /Pages ' + pagesRootId + ' 0 R >>';
+      objTable[pagesRootId] = '<< /Type /Pages /Kids [' + pageObjIds.map(function (id) { return id + ' 0 R'; }).join(' ') + '] /Count ' + totalPages + ' >>';
+      objTable[fontNormId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
+      objTable[fontBoldId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
+
+      for (var j = 0; j < totalPages; j++) {
+        var pId = pageObjIds[j];
+        var cId = contentObjIds[j];
+        var strm = pageStreams[j];
+        objTable[pId] = '<< /Type /Page /Parent ' + pagesRootId + ' 0 R /MediaBox [0 0 ' + pageWidth.toFixed(2) + ' ' + pageHeight.toFixed(2) + '] /Contents ' + cId + ' 0 R /Resources << /Font << /F1 ' + fontNormId + ' 0 R /F2 ' + fontBoldId + ' 0 R >> >> >>';
+        objTable[cId] = '<< /Length ' + strm.length + ' >>\nstream\n' + strm + '\nendstream';
+      }
+
+      var pdf = '%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
+      var offsets = [];
+      var maxObj = 4 + totalPages * 2;
+
+      for (var k = 1; k <= maxObj; k++) {
+        offsets[k] = pdf.length;
+        pdf += k + ' 0 obj\n' + objTable[k] + '\nendobj\n';
+      }
+
+      var xrefOffset = pdf.length;
+      pdf += 'xref\r\n0 ' + (maxObj + 1) + '\r\n';
+      pdf += '0000000000 65535 f \r\n';
+      for (var m = 1; m <= maxObj; m++) {
+        pdf += String(offsets[m]).padStart(10, '0') + ' 00000 n \r\n';
+      }
+
+      pdf += 'trailer\r\n<< /Size ' + (maxObj + 1) + ' /Root ' + catalogId + ' 0 R >>\r\nstartxref\r\n' + xrefOffset + '\r\n%%EOF\r\n';
+
+      var bytes = new Uint8Array(pdf.length);
+      for (var n = 0; n < pdf.length; n++) {
+        bytes[n] = pdf.charCodeAt(n) & 0xff;
+      }
+      return new Blob([bytes], { type: 'application/pdf' });
+    }
+
+    function generateReportCsvBlob(cols, rows) {
+      var escCsv = function (v) {
+        v = String(v == null ? '' : v);
+        return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+      };
+      var csvLines = [cols.map(escCsv).join(',')];
+      for (var i = 0; i < rows.length; i++) {
+        csvLines.push(rows[i].map(escCsv).join(','));
+      }
+      return new Blob(['\uFEFF' + csvLines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    }
+
+    function generateReportXlsBlob(title, cols, rows) {
+      var escXml = function (s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c];
+        });
+      };
+      var html = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">' +
+        '<head><meta charset="utf-8"><!--[if gte mso 9]><xml><x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet>' +
+        '<x:Name>' + escXml(title.slice(0, 31)) + '</x:Name>' +
+        '<x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions></x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml><![endif]-->' +
+        '<style>' +
+        'th { background-color: #1d3557; color: #ffffff; font-weight: bold; border: 1px solid #cccccc; padding: 6px 10px; font-family: Arial, sans-serif; }' +
+        'td { border: 1px solid #e2e8f0; padding: 5px 8px; font-family: Arial, sans-serif; font-size: 13px; }' +
+        '.even { background-color: #f8fafc; }' +
+        '</style></head><body>' +
+        '<h2>' + escXml(title) + '</h2>' +
+        '<p style="color:#64748b;font-size:12px">Generated: ' + escXml(new Date().toLocaleString('en-GB')) + ' | Lab of Future CRM</p>' +
+        '<table><thead><tr>' + cols.map(function (c) { return '<th>' + escXml(c) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        rows.map(function (r, rIdx) {
+          return '<tr' + (rIdx % 2 === 1 ? ' class="even"' : '') + '>' +
+            r.map(function (c) { return '<td>' + escXml(c) + '</td>'; }).join('') + '</tr>';
+        }).join('') + '</tbody></table></body></html>';
+      return new Blob([html], { type: 'application/vnd.ms-excel;charset=utf-8' });
+    }
+
+    function generateReportJsonBlob(title, cols, rows, filters, note) {
+      var data = {
+        report: title,
+        generated_at: new Date().toISOString(),
+        system: 'Lab of Future CRM',
+        filters: filters || null,
+        note: note || null,
+        total_records: rows.length,
+        columns: cols,
+        records: rows.map(function (r) {
+          var obj = {};
+          cols.forEach(function (c, i) { obj[c] = r[i]; });
+          return obj;
+        }),
+      };
+      return new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+    }
+
+    function openPrintReport(report) {
+      var title = report.title || 'Report';
+      var cols = report.cols || [];
+      var rows = report.rows || [];
+      var filters = report.filters || '';
+      var note = report.note || '';
+      var chart = report.chart || [];
+      var dateStr = report.date || new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+      var escH = function (s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      };
+
+      var chartHtml = '';
+      if (chart && chart.length) {
+        var maxVal = Math.max.apply(null, chart.map(function (x) { return x.v || 0; })) || 1;
+        chartHtml = '<div class="chart-box"><h3>Visual Summary</h3><div class="chart-bars">' +
+          chart.map(function (it) {
+            var pct = Math.max(2, Math.round(((it.v || 0) / maxVal) * 100));
+            return '<div class="c-row"><div class="c-lbl">' + escH(it.l) + '</div>' +
+              '<div class="c-track"><div class="c-fill" style="width:' + pct + '%"></div></div>' +
+              '<div class="c-val">' + escH(it.v) + '</div></div>';
+          }).join('') + '</div></div>';
+      }
+
+      var html = '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+        '<title>' + escH(title) + ' - Lab of Future CRM</title>' +
+        '<style>' +
+        '@page { size: ' + (cols.length > 6 ? 'landscape' : 'portrait') + '; margin: 12mm; }' +
+        'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; color: #1e293b; margin: 0; background: #f8fafc; font-size: 13px; line-height: 1.4; }' +
+        '.wrap { max-width: 1080px; margin: 20px auto; background: #fff; padding: 28px 32px; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }' +
+        '.bar { display: flex; align-items: center; justify-content: space-between; padding-bottom: 16px; margin-bottom: 20px; border-bottom: 2px solid #e2e8f0; }' +
+        '.brand { font-size: 18px; font-weight: 700; color: #1d3557; letter-spacing: -0.3px; }' +
+        '.meta { font-size: 12px; color: #64748b; }' +
+        '.title-section { margin-bottom: 18px; }' +
+        'h1 { font-size: 20px; font-weight: 700; color: #0f172a; margin: 0 0 6px; }' +
+        '.filters-tag { display: inline-block; background: #f1f5f9; color: #334155; font-size: 12px; padding: 4px 10px; border-radius: 4px; margin-top: 4px; }' +
+        '.chart-box { margin: 18px 0; padding: 14px 16px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; }' +
+        '.chart-box h3 { margin: 0 0 10px; font-size: 13px; color: #475569; text-transform: uppercase; letter-spacing: 0.5px; }' +
+        '.c-row { display: flex; align-items: center; margin: 6px 0; font-size: 12px; }' +
+        '.c-lbl { width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }' +
+        '.c-track { flex: 1; height: 14px; background: #e2e8f0; border-radius: 3px; margin: 0 10px; overflow: hidden; }' +
+        '.c-fill { height: 100%; background: #3b82f6; border-radius: 3px; }' +
+        '.c-val { width: 60px; text-align: right; font-weight: 600; color: #1e293b; }' +
+        'table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 12px; }' +
+        'th { background: #1d3557; color: #fff; text-align: left; padding: 8px 10px; font-weight: 600; border: 1px solid #1d3557; }' +
+        'td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; }' +
+        'tr:nth-child(even) td { background: #f8fafc; }' +
+        '.foot { margin-top: 24px; padding-top: 12px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; }' +
+        '.actions { margin-bottom: 16px; display: flex; gap: 8px; }' +
+        '.btn { background: #1d3557; color: #fff; border: 0; padding: 8px 14px; border-radius: 5px; cursor: pointer; font-size: 13px; font-weight: 500; }' +
+        '.btn.ghost { background: #e2e8f0; color: #1e293b; }' +
+        '@media print {' +
+        '  body { background: #fff; }' +
+        '  .wrap { box-shadow: none; padding: 0; margin: 0; max-width: 100%; }' +
+        '  .actions { display: none !important; }' +
+        '  tr { page-break-inside: avoid; }' +
+        '  thead { display: table-header-group; }' +
+        '  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }' +
+        '}' +
+        '</style></head><body><div class="wrap">' +
+        '<div class="actions">' +
+        '<button class="btn" onclick="window.print()">Print / Save as PDF</button>' +
+        '<button class="btn ghost" onclick="window.close()">Close</button>' +
+        '</div>' +
+        '<div class="bar">' +
+        '<div class="brand">Lab of Future CRM</div>' +
+        '<div class="meta">Exported: ' + escH(dateStr) + '</div>' +
+        '</div>' +
+        '<div class="title-section">' +
+        '<h1>' + escH(title) + '</h1>' +
+        (filters ? '<div class="filters-tag">' + escH(filters) + '</div>' : '') +
+        (note ? '<p style="color:#64748b;font-size:12px;margin:6px 0 0">' + escH(note) + '</p>' : '') +
+        '</div>' +
+        chartHtml +
+        '<table><thead><tr>' + cols.map(function (c) { return '<th>' + escH(c) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        rows.map(function (r) {
+          return '<tr>' + r.map(function (c) { return '<td>' + escH(c) + '</td>'; }).join('') + '</tr>';
+        }).join('') +
+        '</tbody></table>' +
+        '<div class="foot">' +
+        '<div>Lab of Future CRM • Confidential Report</div>' +
+        '<div>Total Rows: ' + rows.length + '</div>' +
+        '</div></div></body></html>';
+
+      var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+    }
+
+    // Wrap REP.r1 to strictly enforce branch location for Reception
+    if (typeof REP !== 'undefined' && REP.r1) {
+      var _origRepR1 = REP.r1;
+      REP.r1 = function () {
+        if (isReceptionStaff()) {
+          var b = receptionBranch();
+          var days = {};
+          var pm = (S && S.cfg && S.cfg.pm) || ['Cash', 'Card', 'Bank Transfer', 'Online'];
+          var rangeFilter = (typeof RF === 'function' && RF() ? RF().range : null) || 'all';
+          var ps = (S && S.pay ? S.pay : []).filter(function (p) {
+            return p.branch === b && (typeof inRange === 'function' ? inRange(p.at, rangeFilter) : true);
+          });
+          ps.forEach(function (p) {
+            var k = (typeof dayKey === 'function') ? dayKey(p.at) : String(p.at).slice(0, 10);
+            days[k] = days[k] || { n: 0, t: {} };
+            days[k].n++;
+            days[k].t[p.method] = (days[k].t[p.method] || 0) + (typeof toAED === 'function' ? toAED(p.amt, p.cur) : p.amt);
+          });
+          var ks = Object.keys(days).sort().reverse();
+          var cols = ['Date', 'Receipts'].concat(pm.map(function (m) { return m + ' (AED eq.)'; }), ['Total (AED eq.)']);
+          var rows = ks.map(function (k) {
+            var row = [k, String(days[k].n)];
+            var sum = 0;
+            pm.forEach(function (m) {
+              var val = Math.round(days[k].t[m] || 0);
+              sum += val;
+              row.push(val.toLocaleString('en-US'));
+            });
+            row.push(sum.toLocaleString('en-US'));
+            return row;
+          });
+          var chart = ks.slice(0, 10).reverse().map(function (k) {
+            var sum = Object.values(days[k].t).reduce(function (a, x) { return a + x; }, 0);
+            return { l: k, v: Math.round(sum) };
+          });
+          var bName = typeof branchName === 'function' ? branchName(b) : b;
+          return {
+            cols: cols,
+            rows: rows,
+            chart: chart,
+            note: 'Restricted to ' + bName + ' (Assigned Location). All amounts in AED equivalent.'
+          };
+        }
+        return _origRepR1.apply(this, arguments);
+      };
+    }
+
+    function getActiveReportContext() {
+      var id = S.rep ? S.rep.id : 'r1';
+      if (isReceptionStaff()) {
+        if (id !== 'r1' && id !== 'r22') {
+          id = 'r1';
+          if (S.rep) S.rep.id = 'r1';
+        }
+      }
+
+      var def = (RDEF || []).find(function (r) { return r[0] === id; }) || [id, 'Report'];
+      var reportName = def[1];
+      var f = (typeof RF === 'function' ? RF() : (S.rep && S.rep.f)) || {};
+
+      if (!isBranchPrivileged()) {
+        var userBr = userAssignedBranch();
+        if (f && userBr) f.branch = userBr;
+        if (id === 'r1') {
+          reportName = 'Daily Collection Report – ' + (typeof branchName === 'function' ? branchName(userBr) : userBr);
+        }
+      }
+
+      var res = (REP && REP[id]) ? REP[id]() : { cols: [], rows: [] };
+      var fParts = [];
+      if (f.range) fParts.push('Range: ' + (f.range === '7' ? 'Last 7 days' : f.range === '30' ? 'Last 30 days' : f.range === 'month' ? 'This month' : 'All time'));
+      
+      if (!isBranchPrivileged()) {
+        fParts.push('Location: ' + userAssignedBranchNames() + ' (Assigned Branch)');
+      } else {
+        if (f.branch && typeof branchName === 'function') fParts.push('Branch: ' + branchName(f.branch));
+        if (f.prog && typeof PNAME === 'function') fParts.push('Programme: ' + PNAME(f.prog));
+        if (f.cslr && typeof staffName === 'function') fParts.push('Counsellor: ' + staffName(f.cslr));
+        if (f.src) fParts.push('Source: ' + f.src);
+        if (f.status) fParts.push('Status: ' + f.status);
+      }
+
+      var filterSummary = fParts.join('  •  ') || 'All branches & all time';
+      var dateStr = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+      return {
+        id: id,
+        name: reportName,
+        cols: res.cols || [],
+        rows: res.rows || [],
+        chart: res.chart || [],
+        note: res.note || '',
+        filters: filterSummary,
+        date: dateStr,
+      };
+    }
+
+    // Direct Action Handlers
+    ACT.repPdf = function () {
+      var ctx = getActiveReportContext();
+      var blob = buildPdfBlob({
+        title: ctx.name,
+        cols: ctx.cols,
+        rows: ctx.rows,
+        filters: ctx.filters,
+        note: ctx.note,
+        date: ctx.date,
+      });
+      var filename = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.pdf';
+      downloadBlob(blob, filename);
+      if (typeof addAudit === 'function') addAudit('Report exported (PDF)', ctx.id, ctx.name);
+      if (typeof toast === 'function') toast('PDF report downloaded (' + ctx.rows.length + ' rows)', 'ok');
+    };
+
+    ACT.repCsv = function () {
+      var ctx = getActiveReportContext();
+      var blob = generateReportCsvBlob(ctx.cols, ctx.rows);
+      var filename = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.csv';
+      downloadBlob(blob, filename);
+      if (typeof addAudit === 'function') addAudit('Report exported (CSV)', ctx.id, ctx.name);
+      if (typeof toast === 'function') toast('CSV report downloaded (' + ctx.rows.length + ' rows)', 'ok');
+    };
+
+    ACT.repPrint = function () {
+      var ctx = getActiveReportContext();
+      openPrintReport({
+        title: ctx.name,
+        cols: ctx.cols,
+        rows: ctx.rows,
+        filters: ctx.filters,
+        note: ctx.note,
+        chart: ctx.chart,
+        date: ctx.date,
+      });
+      if (typeof addAudit === 'function') addAudit('Report printed / saved as PDF', ctx.id, ctx.name);
+    };
+
+    ACT.repXls = function () {
+      var ctx = getActiveReportContext();
+      var blob = generateReportXlsBlob(ctx.name, ctx.cols, ctx.rows);
+      var filename = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.xls';
+      downloadBlob(blob, filename);
+      if (typeof addAudit === 'function') addAudit('Report exported (Excel)', ctx.id, ctx.name);
+      if (typeof toast === 'function') toast('Excel report downloaded (' + ctx.rows.length + ' rows)', 'ok');
+    };
+
+    ACT.repJson = function () {
+      var ctx = getActiveReportContext();
+      var blob = generateReportJsonBlob(ctx.name, ctx.cols, ctx.rows, ctx.filters, ctx.note);
+      var filename = ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.json';
+      downloadBlob(blob, filename);
+      if (typeof addAudit === 'function') addAudit('Report exported (JSON)', ctx.id, ctx.name);
+      if (typeof toast === 'function') toast('JSON data downloaded', 'ok');
+    };
+
+    ACT.repExportAll = function () {
+      if (!isBranchPrivileged()) {
+        if (typeof toast === 'function') toast('Multi-branch summary export is restricted to System Administrators and Management.', 'warn');
+        return;
+      }
+      var summaryRows = [];
+      (RDEF || []).forEach(function (r, idx) {
+        var rId = r[0];
+        var rName = r[1];
+        var rRes = (REP && REP[rId]) ? REP[rId]() : { cols: [], rows: [] };
+        summaryRows.push([
+          String(idx + 1),
+          rId.toUpperCase(),
+          rName,
+          String(rRes.rows ? rRes.rows.length : 0),
+          (rRes.cols || []).slice(0, 4).join(', ') + ((rRes.cols || []).length > 4 ? '...' : '')
+        ]);
+      });
+      var blob = buildPdfBlob({
+        title: 'Executive Reports Directory & Summary',
+        cols: ['#', 'Report ID', 'Report Title', 'Active Rows', 'Columns Preview'],
+        rows: summaryRows,
+        filters: 'Consolidated Directory of all 22 CRM Reports',
+        note: 'Complete summary of all operational and management reports',
+        date: new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      });
+      downloadBlob(blob, 'lof-crm-all-22-reports-summary.pdf');
+      if (typeof addAudit === 'function') addAudit('All reports exported (PDF summary)', 'all', '22 Reports Directory');
+      if (typeof toast === 'function') toast('Executive Summary PDF downloaded', 'ok');
+    };
+
+    ACT.repExportModal = function () {
+      if (typeof openModal === 'function') openModal('reportExport');
+    };
+
+    ACT.doRepPdf = function () { if (typeof closeModal === 'function') closeModal(); ACT.repPdf(); };
+    ACT.doRepPrint = function () { if (typeof closeModal === 'function') closeModal(); ACT.repPrint(); };
+    ACT.doRepCsv = function () { if (typeof closeModal === 'function') closeModal(); ACT.repCsv(); };
+    ACT.doRepXls = function () { if (typeof closeModal === 'function') closeModal(); ACT.repXls(); };
+    ACT.doRepJson = function () { if (typeof closeModal === 'function') closeModal(); ACT.repJson(); };
+    ACT.doRepAllPdf = function () { if (typeof closeModal === 'function') closeModal(); ACT.repExportAll(); };
+    ACT.repCopyClipboard = function () {
+      var ctx = getActiveReportContext();
+      var escCsv = function (v) { v = String(v == null ? '' : v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+      var text = [ctx.cols.map(escCsv).join(',')].concat(ctx.rows.map(function (r) { return r.map(escCsv).join(','); })).join('\n');
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(function () {
+          if (typeof toast === 'function') toast('CSV copied to clipboard', 'ok');
+          if (typeof closeModal === 'function') closeModal();
+        });
+      } else {
+        if (typeof toast === 'function') toast('Clipboard unavailable', 'warn');
+      }
+    };
+
+    MODALS.reportExport = function () {
+      var ctx = getActiveReportContext();
+      var rowCount = ctx.rows.length;
+      var colCount = ctx.cols.length;
+      var isPriv = isBranchPrivileged();
+
+      var allPdfCard = !isPriv ? '' :
+        '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepAllPdf">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">📚</span><b>All 22 Reports Summary</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Consolidated multi-report executive directory PDF covering all 22 CRM reports.</p>' +
+          '<button class="btn sm ghost" type="button" data-act="doRepAllPdf">' + ic('file') + ' Export All PDF</button>' +
+        '</div>';
+
+      var body = '<div class="banner">' + ic('file') + '<span>Exporting <b>' + esc(ctx.name) + '</b> (' + rowCount + ' row' + (rowCount === 1 ? '' : 's') + ', ' + colCount + ' columns). Select your preferred format:</span></div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:16px 0">' +
+        '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepPdf">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">📄</span><b>PDF Document (.pdf)</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Formatted official document with Lab of Future branding, tables, auto-pagination.</p>' +
+          '<button class="btn sm primary" type="button" data-act="doRepPdf">' + ic('download') + ' Download PDF</button>' +
+        '</div>' +
+        '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepPrint">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">🖨️</span><b>Print / Save as PDF</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Interactive print-ready preview with SVG charts, browser native vector PDF save.</p>' +
+          '<button class="btn sm" type="button" data-act="doRepPrint">Open Print View</button>' +
+        '</div>' +
+        '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepCsv">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">📊</span><b>CSV Spreadsheet (.csv)</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Raw tabular data with UTF-8 BOM, ideal for Microsoft Excel and Google Sheets.</p>' +
+          '<button class="btn sm" type="button" data-act="doRepCsv">' + ic('download') + ' Download CSV</button>' +
+        '</div>' +
+        '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepXls">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">📑</span><b>Excel Workbook (.xls)</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Structured Excel XML spreadsheet with styled headers and column widths.</p>' +
+          '<button class="btn sm" type="button" data-act="doRepXls">' + ic('download') + ' Download Excel</button>' +
+        '</div>' +
+        '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepJson">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">📦</span><b>JSON Dataset (.json)</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Structured API format containing metadata, column specs, and rows.</p>' +
+          '<button class="btn sm ghost" type="button" data-act="doRepJson">' + ic('download') + ' Download JSON</button>' +
+        '</div>' +
+        allPdfCard +
+        '</div>';
+
+      return {
+        title: 'Export Report – ' + esc(ctx.name),
+        size: 'lg',
+        foot: '<button class="btn" data-act="closeModal">Close</button><button class="btn" data-act="repCopyClipboard">Copy CSV to Clipboard</button>',
+        body: body,
+      };
+    };
+
+    // Enhance PAGES.reports with Branch Access Control
+    if (typeof PAGES !== 'undefined' && PAGES.reports) {
+      var _origReportsPage = PAGES.reports;
+      PAGES.reports = function (rt) {
+        var isPriv = isBranchPrivileged();
+        var isRec = isReceptionStaff();
+        var userBr = userAssignedBranch();
+
+        if (!isPriv) {
+          if (isRec) {
+            if (!S.rep.id || (S.rep.id !== 'r1' && S.rep.id !== 'r22')) {
+              S.rep.id = 'r1';
+            }
+            if (rt && rt.rep && rt.rep !== 'r1' && rt.rep !== 'r22') {
+              rt.rep = 'r1';
+            }
+          }
+          S.rep.f = S.rep.f || {};
+          if (userBr) S.rep.f.branch = userBr;
+        }
+
+        var html = _origReportsPage.apply(this, arguments);
+
+        if (!isPriv) {
+          var bName = userAssignedBranchNames();
+
+          if (isRec) {
+            // Restrict left report list to collection and instalment reports
+            html = html.replace(/<div class="list" style="padding:6px">[\s\S]*?<\/div><\/div>/, function () {
+              var items = [
+                ['r1', 'Daily Collection Report (' + bName + ')'],
+                ['r22', 'Instalment Status Report (' + bName + ')']
+              ];
+              return '<div class="list" style="padding:6px">' +
+                '<div style="padding:4px 8px;font-size:11px;font-weight:700;color:var(--muted,#64748b);text-transform:uppercase;letter-spacing:0.5px">Branch Reports</div>' +
+                items.map(function (it, idx) {
+                  var on = S.rep.id === it[0];
+                  return '<div class="cl" tabindex="0" data-act="go" data-page="reports" data-rep="' + it[0] + '" style="border:0;border-radius:6px;cursor:pointer;padding:8px 10px;display:block;margin-bottom:4px;' + (on ? 'background:var(--accent-soft);color:var(--accent);font-weight:600' : '') + '">' + (idx + 1) + '. ' + esc(it[1]) + '</div>';
+                }).join('') +
+                '</div></div>';
+            });
+
+            // Add Receptionist restriction banner
+            var bannerHtml = '<div class="banner" style="margin-bottom:12px">' + ic('shield') + '<span><b>Branch Restricted:</b> As Reception, your collection reports and exports are restricted strictly to your assigned location (<b>' + esc(bName) + '</b>).</span></div>';
+            html = html.replace(/<div><div class="card">/, '<div>' + bannerHtml + '<div class="card">');
+          }
+
+          // Replace branch select with locked branch badge
+          html = html.replace(/<select name="branch"[\s\S]*?<\/select>/, branchLockedBadge());
+
+          // Update header title if on r1
+          if (S.rep.id === 'r1') {
+            html = html.replace(/Daily Collection Report/, 'Daily Collection Report – ' + esc(bName));
+          }
+        }
+
+        return html.replace(
+          /<button class="btn" data-act="repCsv">[\s\S]*?Export CSV<\/button>/,
+          '<div class="row" style="gap:6px;display:inline-flex">' +
+            '<button class="btn primary" data-act="repPdf" title="Download report as formatted PDF">' + ic('file') + ' Export PDF</button>' +
+            '<button class="btn" data-act="repCsv" title="Download report as CSV spreadsheet">' + ic('download') + ' Export CSV</button>' +
+            '<button class="btn ghost" data-act="repExportModal" title="More download formats (Excel, JSON, Print)">' + ic('list') + ' More Formats ▾</button>' +
+          '</div>'
+        );
+      };
+    }
+
+    // Enhance PAGES.payRecords with direct Daily Collection shortcut
+    if (typeof PAGES !== 'undefined' && PAGES.payRecords) {
+      var _origPayRecords = PAGES.payRecords;
+      PAGES.payRecords = function () {
+        var html = _origPayRecords.apply(this, arguments);
+        var isRec = isReceptionStaff();
+        var extraBtn = isRec ? ('<button class="btn ghost" data-act="goDailyCol" title="Open Daily Collection Report for assigned branch">' + ic('chart') + ' Daily Collection Report</button>') : '';
+        return html.replace(
+          '<button class="btn" data-act="payCsv">Export CSV</button>',
+          '<div class="row" style="gap:6px;display:inline-flex">' +
+            '<button class="btn primary" data-act="payPdf" title="Download payments as PDF">' + ic('file') + ' Export PDF</button>' +
+            '<button class="btn" data-act="payCsv" title="Download payments as CSV">' + ic('download') + ' Export CSV</button>' +
+            extraBtn +
+          '</div>'
+        );
+      };
+
+      ACT.goDailyCol = function () {
+        if (typeof go === 'function') go('reports', { rep: 'r1' });
+      };
+
+      ACT.payPdf = function () {
+        var ps = (S.pay || []).filter(function (p) { return typeof inScope === 'function' ? inScope(p.branch) : true; });
+        var rows = ps.map(function (p) {
+          var s = typeof stuById === 'function' ? stuById(p.stu) : null;
+          var sName = s ? (s.first + ' ' + s.last) : p.stu;
+          var bName = typeof branchName === 'function' ? branchName(p.branch) : p.branch;
+          var amtStr = typeof money === 'function' ? money(p.amt, p.cur) : (p.cur + ' ' + p.amt);
+          var dateStr = typeof fDT === 'function' ? fDT(p.at) : p.at;
+          return [p.id, dateStr, sName, bName, p.enr, amtStr, p.method, p.ref || '—', p.rc];
+        });
+        var isRec = isReceptionStaff();
+        var title = isRec ? ('Payment Records – ' + branchName(receptionBranch())) : 'Payment Records';
+        var blob = buildPdfBlob({
+          title: title,
+          cols: ['Payment ID', 'Date', 'Student', 'Branch', 'Enrolment', 'Amount', 'Method', 'Reference', 'Receipt'],
+          rows: rows,
+          filters: isRec ? ('Location: ' + branchName(receptionBranch()) + ' (Assigned Branch)') : ('Active Branch Scope (' + rows.length + ' records)'),
+          date: new Date().toLocaleString('en-GB'),
+        });
+        downloadBlob(blob, isRec ? ('payment-records-' + receptionBranch().toLowerCase() + '.pdf') : 'payment-records.pdf');
+        if (typeof addAudit === 'function') addAudit('Payment records exported (PDF)', 'payments', rows.length + ' records');
+        if (typeof toast === 'function') toast('Payment records PDF downloaded (' + rows.length + ' rows)', 'ok');
+      };
+    }
+
+    // Enhance generic MODALS.csv
+    if (typeof MODALS !== 'undefined' && MODALS.csv) {
+      var _origModalCsv = MODALS.csv;
+      MODALS.csv = function (m) {
+        var x = _origModalCsv(m);
+        MODALS._lastExportData = m;
+        x.foot = '<button class="btn" data-act="closeModal">Close</button>' +
+          '<button class="btn" data-act="modalDownloadPdf">' + ic('file') + ' Download PDF</button>' +
+          '<button class="btn" data-act="modalDownloadCsv">' + ic('download') + ' Download CSV</button>' +
+          '<button class="btn primary" data-act="copyCsv">Copy CSV</button>';
+        return x;
+      };
+      ACT.modalDownloadPdf = function () {
+        var m = MODALS._lastExportData;
+        if (!m) return;
+        var blob = buildPdfBlob({
+          title: (m.name || 'Export').replace(/-/g, ' ').toUpperCase(),
+          cols: m.head || [],
+          rows: m.rows || [],
+        });
+        downloadBlob(blob, (m.name || 'export') + '.pdf');
+        if (typeof toast === 'function') toast('PDF downloaded', 'ok');
+      };
+      ACT.modalDownloadCsv = function () {
+        var m = MODALS._lastExportData;
+        if (!m) return;
+        var blob = generateReportCsvBlob(m.head || [], m.rows || []);
+        downloadBlob(blob, (m.name || 'export') + '.csv');
+        if (typeof toast === 'function') toast('CSV downloaded', 'ok');
+      };
+    }
+  }
+
+  setupReportExports();
+
+  // ==================================================================
+  // BRANCH ACCESS CONTROL MODULE
+  // Restricts branch selection in dropdowns/filters exclusively to
+  // System Admins and Management. Standard users can only view data
+  // for their assigned branches.
+  // ==================================================================
+  function setupBranchAccessControl() {
+    // 1. Scoping functions override
+    if (typeof inScope === 'function') {
+      var _origInScope = inScope;
+      inScope = function (b) {
+        if (isBranchPrivileged()) return _origInScope(b);
+        return userAssignedBranches().includes(b);
+      };
+    }
+
+    if (typeof leadScope === 'function') {
+      var _origLeadScope = leadScope;
+      leadScope = function () {
+        if (isBranchPrivileged()) return _origLeadScope();
+        var allowed = userAssignedBranches();
+        return (S.leads || []).filter(function (l) {
+          return allowed.includes(l.branch);
+        });
+      };
+    }
+
+    if (typeof optBranches === 'function') {
+      var _origOptBranches = optBranches;
+      optBranches = function () {
+        if (isBranchPrivileged()) return _origOptBranches();
+        var allowed = userAssignedBranches();
+        return (S.branches || []).filter(function (b) {
+          return allowed.includes(b.id);
+        }).map(function (b) {
+          return [b.id, b.name];
+        });
+      };
+    }
+
+    // 2. Wrap PAGES.dashboard
+    if (typeof PAGES !== 'undefined' && PAGES.dashboard) {
+      var _origDashboard = PAGES.dashboard;
+      PAGES.dashboard = function () {
+        if (!isBranchPrivileged()) {
+          var u = typeof me === 'function' ? me() : null;
+          if (u) {
+            S.dashF = S.dashF || {};
+            var assigned = userAssignedBranches();
+            if (assigned.length === 1) {
+              S.dashF.branch = assigned[0];
+            } else if (S.dashF.branch && !assigned.includes(S.dashF.branch)) {
+              S.dashF.branch = assigned[0] || '';
+            }
+          }
+        }
+        var html = _origDashboard.apply(this, arguments);
+        if (!isBranchPrivileged()) {
+          html = html.replace(/<select name="branch" data-change="dash"[\s\S]*?<\/select>/, branchLockedBadge());
+          html = html.replace(/all permitted branches/, typeof esc === 'function' ? esc(userAssignedBranchNames()) : userAssignedBranchNames());
+        }
+        return html;
+      };
+    }
+
+    // 3. Wrap PAGES.leads
+    if (typeof PAGES !== 'undefined' && PAGES.leads) {
+      var _origLeads = PAGES.leads;
+      PAGES.leads = function (rt) {
+        if (!isBranchPrivileged()) {
+          var u = typeof me === 'function' ? me() : null;
+          if (u) {
+            S.lf = S.lf || {};
+            var assigned = userAssignedBranches();
+            if (assigned.length === 1) {
+              S.lf.branch = assigned[0];
+            } else if (S.lf.branch && !assigned.includes(S.lf.branch)) {
+              S.lf.branch = assigned[0] || '';
+            }
+          }
+        }
+        var html = _origLeads.apply(this, arguments);
+        if (!isBranchPrivileged()) {
+          html = html.replace(/<select name="branch" data-change="lf"[\s\S]*?<\/select>/, branchLockedBadge());
+        }
+        return html;
+      };
+    }
+
+    // 4. Wrap PAGES.approvals
+    if (typeof PAGES !== 'undefined' && PAGES.approvals) {
+      var _origApprovals = PAGES.approvals;
+      PAGES.approvals = function () {
+        if (!isBranchPrivileged()) {
+          var u = typeof me === 'function' ? me() : null;
+          if (u) {
+            S.apF = S.apF || {};
+            var assigned = userAssignedBranches();
+            if (assigned.length === 1) {
+              S.apF.branch = assigned[0];
+            } else if (S.apF.branch && !assigned.includes(S.apF.branch)) {
+              S.apF.branch = assigned[0] || '';
+            }
+          }
+        }
+        var html = _origApprovals.apply(this, arguments);
+        if (!isBranchPrivileged()) {
+          html = html.replace(/<select name="branch" data-change="apF"[\s\S]*?<\/select>/, branchLockedBadge());
+        }
+        return html;
+      };
+    }
+
+    // 5. Wrap MODALS.leadForm & SUB.leadForm
+    if (typeof MODALS !== 'undefined' && MODALS.leadForm) {
+      var _origLeadForm = MODALS.leadForm;
+      MODALS.leadForm = function (m) {
+        var res = _origLeadForm.apply(this, arguments);
+        if (!isBranchPrivileged()) {
+          var assigned = userAssignedBranches();
+          var primaryBr = assigned[0] || userAssignedBranch();
+          var bName = typeof branchName === 'function' ? branchName(primaryBr) : primaryBr;
+
+          if (assigned.length === 1) {
+            res.body = res.body.replace(
+              /<select name="branch"[\s\S]*?<\/select>/,
+              '<select name="branch" disabled style="background:var(--bg,#f8fafc);cursor:not-allowed"><option value="' + esc(primaryBr) + '" selected>' + esc(bName) + ' (Assigned)</option></select>' +
+              '<input type="hidden" name="branch" value="' + esc(primaryBr) + '">'
+            );
+          } else {
+            var allowedOpts = assigned.map(function (bid) {
+              var n = typeof branchName === 'function' ? branchName(bid) : bid;
+              return '<option value="' + esc(bid) + '">' + esc(n) + '</option>';
+            }).join('');
+            res.body = res.body.replace(
+              /<select name="branch"[\s\S]*?<\/select>/,
+              '<select name="branch" data-change="leadBranch" required>' + allowedOpts + '</select>'
+            );
+          }
+        }
+        return res;
+      };
+
+      if (typeof SUB !== 'undefined' && SUB.leadForm) {
+        var _origSubLeadForm = SUB.leadForm;
+        SUB.leadForm = function (d, form) {
+          if (!isBranchPrivileged()) {
+            var assigned = userAssignedBranches();
+            if (assigned.length === 1) {
+              d.branch = assigned[0];
+            } else if (!assigned.includes(d.branch)) {
+              d.branch = assigned[0];
+            }
+          }
+          return _origSubLeadForm.apply(this, arguments);
+        };
+      }
+    }
+
+    // 6. Wrap PAGES.wizard
+    if (typeof PAGES !== 'undefined' && PAGES.wizard) {
+      var _origWizard = PAGES.wizard;
+      PAGES.wizard = function (rt) {
+        if (!isBranchPrivileged() && S.wiz && S.wiz.d) {
+          var assigned = userAssignedBranches();
+          if (assigned.length === 1) {
+            S.wiz.d.branch = assigned[0];
+          } else if (S.wiz.d.branch && !assigned.includes(S.wiz.d.branch)) {
+            S.wiz.d.branch = assigned[0];
+          }
+        }
+        var html = _origWizard.apply(this, arguments);
+        if (!isBranchPrivileged()) {
+          var assigned = userAssignedBranches();
+          var primaryBr = assigned[0] || userAssignedBranch();
+          var bName = typeof branchName === 'function' ? branchName(primaryBr) : primaryBr;
+
+          if (assigned.length === 1) {
+            html = html.replace(
+              /<select name="branch" data-change="wizFee"[\s\S]*?<\/select>/,
+              '<select name="branch" disabled style="background:var(--bg,#f8fafc);cursor:not-allowed"><option value="' + esc(primaryBr) + '" selected>' + esc(bName) + ' (Assigned)</option></select>' +
+              '<input type="hidden" name="branch" value="' + esc(primaryBr) + '">'
+            );
+          }
+        }
+        return html;
+      };
+    }
+
+    // 7. Intercept change handlers
+    if (typeof CHG !== 'undefined') {
+      if (CHG.dash) {
+        var _origChgDash = CHG.dash;
+        CHG.dash = function (el) {
+          if (el.name === 'branch' && !isBranchPrivileged()) {
+            var assigned = userAssignedBranches();
+            S.dashF.branch = assigned.length === 1 ? assigned[0] : (assigned.includes(el.value) ? el.value : (assigned[0] || ''));
+            if (typeof render === 'function') render();
+            return;
+          }
+          return _origChgDash.apply(this, arguments);
+        };
+      }
+
+      if (CHG.lf) {
+        var _origChgLf = CHG.lf;
+        CHG.lf = function (el) {
+          if (el.name === 'branch' && !isBranchPrivileged()) {
+            var assigned = userAssignedBranches();
+            S.lf.branch = assigned.length === 1 ? assigned[0] : (assigned.includes(el.value) ? el.value : (assigned[0] || ''));
+            if (typeof render === 'function') render();
+            return;
+          }
+          return _origChgLf.apply(this, arguments);
+        };
+      }
+
+      if (CHG.apF) {
+        var _origChgApF = CHG.apF;
+        CHG.apF = function (el) {
+          if (el.name === 'branch' && !isBranchPrivileged()) {
+            var assigned = userAssignedBranches();
+            S.apF.branch = assigned.length === 1 ? assigned[0] : (assigned.includes(el.value) ? el.value : (assigned[0] || ''));
+            if (typeof render === 'function') render();
+            return;
+          }
+          return _origChgApF.apply(this, arguments);
+        };
+      }
+
+      if (CHG.repF) {
+        var _origChgRepF = CHG.repF;
+        CHG.repF = function (el) {
+          if (el.name === 'branch' && !isBranchPrivileged()) {
+            var assigned = userAssignedBranches();
+            S.rep.f.branch = assigned.length === 1 ? assigned[0] : (assigned.includes(el.value) ? el.value : (assigned[0] || ''));
+            if (typeof render === 'function') render();
+            return;
+          }
+          return _origChgRepF.apply(this, arguments);
+        };
+      }
+    }
+
+    // 8. Intercept ACT.repClear
+    if (typeof ACT !== 'undefined' && ACT.repClear) {
+      var _origRepClear = ACT.repClear;
+      ACT.repClear = function () {
+        if (!isBranchPrivileged()) {
+          var assigned = userAssignedBranches();
+          S.rep.f = { branch: assigned[0] || '' };
+          if (typeof render === 'function') render();
+          return;
+        }
+        return _origRepClear.apply(this, arguments);
+      };
+    }
+  }
+
+  setupBranchAccessControl();
   if (!window.LOF_API) return;
   var API = window.LOF_API.base;
   var LS = {
     get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
-    set: function (k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} },
+    set: function (k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) { } },
   };
   // Sessions live in an HttpOnly cookie the page cannot read; remove tokens left by older versions
   LS.set('lof_token', null);
@@ -42,7 +1168,7 @@
     }).then(function (r) {
       return r.text().then(function (t) {
         var j = null;
-        try { j = t ? JSON.parse(t) : null; } catch (e) {}
+        try { j = t ? JSON.parse(t) : null; } catch (e) { }
         if (r.status === 401 && path.indexOf('/auth/') < 0) { signOut('Your session has ended – please sign in again.'); throw new Error('Signed out'); }
         if (r.status === 403 && j && j.details && (j.details.code === 'password_change' || j.details.code === 'mfa_setup')) { stageScreen(j.details.code); throw new Error('Signed out'); }
         if (!r.ok) { var err = new Error((j && j.error) || ('HTTP ' + r.status)); err.status = r.status; err.body = j; throw err; }
@@ -218,6 +1344,23 @@
     Object.keys(COLL).forEach(function (c) { S[c] = b.data[c] || []; });
     SETTINGS.forEach(function (k) { S[k] = b.data[k] || {}; });
     S.user = b.me.id;
+    if (b.me && b.me.role === 'Reception' && S.perms && S.perms.reports) {
+      S.perms.reports.Reception = 'V';
+    }
+    if (b.me && !['Management', 'System Administrator'].includes(b.me.role)) {
+      var assigned = b.me.branch;
+      if (assigned) {
+        S.dashF = S.dashF || {};
+        S.dashF.branch = assigned;
+        S.lf = S.lf || {};
+        S.lf.branch = assigned;
+        S.rep = S.rep || { id: 'r1', f: {} };
+        S.rep.f = S.rep.f || {};
+        S.rep.f.branch = assigned;
+        S.apF = S.apF || {};
+        S.apF.branch = assigned;
+      }
+    }
     S.lmsServerReady = !!b.server.lmsSecrets;
     S.seq = makeSeq(b.seq);
     if (!keepUi) { S.calSel = TODAY; S.calMonth = TODAY.slice(0, 7); }
@@ -256,7 +1399,7 @@
       callSince = r.now;
       var ev = (r.events || []).find(function (e) { return e.lead_id && leadById(e.lead_id); });
       if (ev) { S.callPop = ev.lead_id; S.callPopReal = true; render(); }
-    }).catch(function () {});
+    }).catch(function () { });
   }
 
   // ------------------------------------------------------------------ sign-in
@@ -267,12 +1410,23 @@
     loginScreen(msg);
   }
   var pendingPw = null; // kept in memory only between "sign in" and the forced password change
-  function authCard(sub, msg, inner, btn) {
+  function authCard(sub, msg, inner, btn, foot) {
     document.getElementById('app').innerHTML =
-      '<div style="min-height:100%;display:grid;place-items:center;padding:16px;background:var(--bg)"><form id="lofAuth" class="card" style="width:min(100%,400px)" novalidate>' +
-      '<div class="hd" style="gap:10px;justify-content:flex-start"><div style="width:30px;height:30px;border-radius:6px;background:#2d5b9a;color:#fff;display:grid;place-items:center;font-weight:600;font-size:12px">LOF</div><div><h3>Lab of Future CRM</h3><div class="muted xs">' + esc(sub) + '</div></div></div>' +
-      '<div class="bd" style="display:flex;flex-direction:column;gap:12px">' + (msg ? '<div class="banner" style="margin:0">' + esc(msg) + '</div>' : '') + inner +
-      '<div class="fe" id="lofErr" role="alert"></div><button class="btn primary" type="submit" style="justify-content:center">' + esc(btn) + '</button></div></form></div>';
+      '<div style="min-height:100%;display:grid;place-items:center;padding:16px;background:var(--bg)">' +
+      '<form id="lofAuth" class="card" style="width:min(100%,410px);box-shadow:0 10px 25px -5px rgba(0,0,0,0.1),0 8px 10px -6px rgba(0,0,0,0.06);border-radius:12px;overflow:hidden" novalidate>' +
+      '<div style="padding:22px 24px 16px;text-align:center;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border-bottom:1px solid var(--line,#e2e8f0)">' +
+      '<div style="display:flex;justify-content:center;align-items:center;margin-bottom:8px">' +
+      '<img src="/lof-logo.png" alt="Lab of Future - Be Curious" style="max-height:56px;max-width:240px;object-fit:contain" onerror="this.onerror=null;this.src=\'/lof-mark.png\';this.style.maxHeight=\'48px\'">' +
+      '</div>' +
+      '<div style="font-size:11px;font-weight:700;color:var(--accent,#1d4ed8);letter-spacing:1px;text-transform:uppercase">CRM Portal</div>' +
+      '<div class="muted xs" style="margin-top:4px">' + esc(sub) + '</div>' +
+      '</div>' +
+      '<div class="bd" style="padding:20px 24px 24px;display:flex;flex-direction:column;gap:14px">' +
+      (msg ? '<div class="banner" style="margin:0">' + esc(msg) + '</div>' : '') + inner +
+      '<div class="fe" id="lofErr" role="alert"></div>' +
+      '<button class="btn primary" type="submit" style="justify-content:center;padding:10px 16px;font-weight:600">' + esc(btn) + '</button>' +
+      (foot ? '<div style="margin-top:4px;text-align:center">' + foot + '</div>' : '') +
+      '</div></form></div>';
     var f = document.getElementById('lofAuth');
     var first = f.querySelector('input:not([type=hidden])');
     if (first) first.focus();
@@ -292,16 +1446,125 @@
     if (stage === 'password_change' || stage === 'mfa_setup') stageScreen(stage); else start();
   }
   function loginScreen(msg, needCode, remembered) {
-    var f = authCard(needCode ? 'Enter the 6-digit code from your authenticator app' : 'Sign in with your work e-mail', msg,
+    var foot = needCode ? '' :
+      '<a href="javascript:void(0)" id="linkForgotPw" style="font-size:12.5px;color:var(--accent,#2563eb);text-decoration:none;font-weight:500;cursor:pointer">Forgot your password?</a>';
+
+    var f = authCard(
+      needCode ? 'Enter the 6-digit code from your authenticator app' : 'Sign in with your work credentials',
+      msg,
       needCode
         ? '<input type="hidden" name="email" value="' + esc(remembered.email) + '"><input type="hidden" name="password" value="' + esc(remembered.password) + '"><div class="f"><label for="lc">Verification code</label><input id="lc" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></div>'
-        : '<div class="f"><label for="le">E-mail</label><input id="le" name="email" type="email" autocomplete="username" required></div><div class="f"><label for="lp">Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required></div>',
-      needCode ? 'Verify' : 'Sign in');
+        : '<div class="f"><label for="le">Work E-mail</label><input id="le" name="email" type="email" autocomplete="username" placeholder="name@example.com" required></div>' +
+          '<div class="f"><div style="display:flex;justify-content:space-between;align-items:center"><label for="lp" style="margin:0">Password</label></div><input id="lp" name="password" type="password" autocomplete="current-password" required></div>',
+      needCode ? 'Verify and Sign In' : 'Sign In',
+      foot
+    );
+
+    var forgotLink = document.getElementById('linkForgotPw');
+    if (forgotLink) {
+      forgotLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        forgotPasswordScreen();
+      });
+    }
+
     onSubmit(f, function (d) {
       return req('POST', '/auth/login', { email: d.email, password: d.password, code: d.code }).then(function (r) {
         if (r.mfaRequired) return loginScreen('', true, { email: d.email, password: d.password });
         pendingPw = r.stage === 'password_change' ? d.password : null;
         afterAuth(r.stage);
+      });
+    });
+  }
+
+  function forgotPasswordScreen(msg, emailPrefill) {
+    var foot = '<a href="javascript:void(0)" id="linkBackToLogin" style="font-size:12.5px;color:var(--muted,#64748b);text-decoration:none;cursor:pointer">← Back to Sign In</a>';
+
+    var f = authCard(
+      'Self-Service Password Reset',
+      msg || 'Enter your registered work e-mail address. We will verify your account and provide a 6-digit reset code.',
+      '<div class="f"><label for="fpe">Work E-mail</label><input id="fpe" name="email" type="email" autocomplete="email" placeholder="name@example.com" value="' + esc(emailPrefill || '') + '" required autofocus></div>',
+      'Send Verification Code',
+      foot
+    );
+
+    var backLink = document.getElementById('linkBackToLogin');
+    if (backLink) {
+      backLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        loginScreen();
+      });
+    }
+
+    onSubmit(f, function (d, err) {
+      var email = (d.email || '').trim().toLowerCase();
+      if (!email || email.indexOf('@') < 0) {
+        err.textContent = 'Please enter a valid work e-mail address.';
+        return;
+      }
+      return req('POST', '/auth/forgot-password/request', { email: email }).then(function (res) {
+        confirmResetPasswordScreen(email, res.message, res.devCode);
+      });
+    });
+  }
+
+  function confirmResetPasswordScreen(email, msg, devCode) {
+    var foot = '<div style="display:flex;justify-content:space-between;font-size:12px">' +
+      '<a href="javascript:void(0)" id="linkResend" style="color:var(--accent,#2563eb);text-decoration:none;cursor:pointer">Resend code</a>' +
+      '<a href="javascript:void(0)" id="linkBackToLogin2" style="color:var(--muted,#64748b);text-decoration:none;cursor:pointer">Back to Sign In</a>' +
+    '</div>';
+
+    var devBanner = devCode ?
+      '<div class="banner" style="margin:0;background:var(--ok-bg,#ecfdf5);color:var(--ok,#059669);border:1px solid var(--ok);font-size:12px">' +
+      '<b>Verification Code:</b> <span class="mono" style="font-weight:700;font-size:14px;letter-spacing:1px">' + esc(devCode) + '</span><br>' +
+      '<span class="xs" style="opacity:0.9">In development / testing mode, the code is provided directly here.</span></div>' : '';
+
+    var f = authCard(
+      'Set New Password',
+      msg || ('A verification code has been sent for ' + esc(email) + '.'),
+      devBanner +
+      '<input type="hidden" name="email" value="' + esc(email) + '">' +
+      '<div class="f"><label for="rpc">6-Digit Verification Code</label><input id="rpc" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="e.g. 123456" pattern="[0-9]{6}" required value="' + esc(devCode || '') + '"></div>' +
+      '<div class="f"><label for="rpn">New Password</label><input id="rpn" name="next" type="password" autocomplete="new-password" placeholder="At least 10 characters" required></div>' +
+      '<div class="f"><label for="rpn2">Confirm New Password</label><input id="rpn2" name="next2" type="password" autocomplete="new-password" placeholder="Re-enter new password" required>' +
+      '<div class="help" style="margin-top:4px">At least 10 characters using three of: lower-case, upper-case, digits, symbols.</div></div>',
+      'Reset Password',
+      foot
+    );
+
+    var resendLink = document.getElementById('linkResend');
+    if (resendLink) {
+      resendLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        req('POST', '/auth/forgot-password/request', { email: email }).then(function (res) {
+          confirmResetPasswordScreen(email, 'New verification code sent.', res.devCode);
+          if (typeof toast === 'function') toast('New verification code sent', 'ok');
+        }).catch(function (err) {
+          document.getElementById('lofErr').textContent = err.message;
+        });
+      });
+    }
+
+    var backLink = document.getElementById('linkBackToLogin2');
+    if (backLink) {
+      backLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        loginScreen();
+      });
+    }
+
+    onSubmit(f, function (d, err) {
+      if (d.next !== d.next2) {
+        err.textContent = 'The passwords do not match';
+        return;
+      }
+      return req('POST', '/auth/forgot-password/confirm', {
+        email: d.email,
+        code: (d.code || '').trim(),
+        next: d.next
+      }).then(function (res) {
+        loginScreen(res.message || 'Password successfully reset! Please sign in with your new password.');
+        if (typeof toast === 'function') toast('Password reset successfully', 'ok');
       });
     });
   }
@@ -322,7 +1585,7 @@
     authCard('Set up two-step verification', 'Loading…', '', 'Turn on');
     req('POST', '/auth/mfa/setup').then(function (r) {
       var qrImg = '';
-      try { if (window.qrcode) { var q = window.qrcode(0, 'M'); q.addData(r.otpauth); q.make(); qrImg = '<img alt="QR code for your authenticator app" src="' + q.createDataURL(5, 8) + '" style="width:200px;height:200px;align-self:center;image-rendering:pixelated;background:#fff;border-radius:6px">'; } } catch (e) {}
+      try { if (window.qrcode) { var q = window.qrcode(0, 'M'); q.addData(r.otpauth); q.make(); qrImg = '<img alt="QR code for your authenticator app" src="' + q.createDataURL(5, 8) + '" style="width:200px;height:200px;align-self:center;image-rendering:pixelated;background:#fff;border-radius:6px">'; } } catch (e) { }
       var f = authCard('Set up two-step verification', msg || 'Your role requires a verification code at sign-in. Scan the QR code with Google Authenticator, Microsoft Authenticator or a similar app, then enter the 6-digit code.',
         qrImg + '<div class="f"><label for="ms">Or enter this setup key</label><input id="ms" readonly value="' + esc(r.secret.replace(/(.{4})/g, '$1 ').trim()) + '" class="mono"></div><div class="f"><label for="mc">6-digit code</label><input id="mc" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>',
         'Turn on and continue');
@@ -381,11 +1644,13 @@
       start().then(function () { toast('Viewing as ' + r.user.name + ' · ' + r.user.role); });
     }).catch(function (e) { toast(e.message, 'err'); });
   };
-  ACT.logout = function () { flush().then(function () { return req('POST', '/auth/logout').catch(function () {}); }).then(function () { signOut('You have signed out.'); }); };
+  ACT.logout = function () { flush().then(function () { return req('POST', '/auth/logout').catch(function () { }); }).then(function () { signOut('You have signed out.'); }); };
   ACT.mfa = function () { S.menu = null; req('GET', '/auth/me').then(function (r) { openModal('mfa', { on: r.mfaEnabled, required: r.mfaRequired }); }); };
   MODALS.mfa = function (m) {
-    if (m.on) return { title: 'Two-step verification', size: 'sm2', form: m.required ? null : 'mfaOff', ok: 'Turn off', danger: 1,
-      body: '<p class="sm">Two-step verification is <b>on</b>. You enter a code from your authenticator app each time you sign in.</p>' + (m.required ? '<p class="muted sm">It is required for your role and cannot be turned off.</p>' : '<div class="fgrid">' + F('Password', 'password', { t: 'password', req: 1, full: 1 }) + F('Current 6-digit code', 'code', { req: 1, full: 1 }) + '</div>') };
+    if (m.on) return {
+      title: 'Two-step verification', size: 'sm2', form: m.required ? null : 'mfaOff', ok: 'Turn off', danger: 1,
+      body: '<p class="sm">Two-step verification is <b>on</b>. You enter a code from your authenticator app each time you sign in.</p>' + (m.required ? '<p class="muted sm">It is required for your role and cannot be turned off.</p>' : '<div class="fgrid">' + F('Password', 'password', { t: 'password', req: 1, full: 1 }) + F('Current 6-digit code', 'code', { req: 1, full: 1 }) + '</div>')
+    };
     return { title: 'Two-step verification', size: 'sm2', foot: '<button class="btn" data-act="closeModal">Not now</button><button class="btn primary" data-act="mfaStart">Set up</button>', body: '<p class="sm">Protect your account with a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password …) in addition to your password.</p>' };
   };
   ACT.mfaStart = function () { closeModal(); flush().then(function () { stageScreen('mfa_setup', 'Scan the QR code with your authenticator app, then enter the 6-digit code.'); }); };
@@ -514,7 +1779,7 @@
     web[2].push(['origins', 'Allowed website origins (comma separated)']);
     var meta = INTEG.find(function (g) { return g[0] === 'meta'; });
     meta[2].push(['defaultBranch', 'Default branch for Meta leads (e.g. KRM)'], ['defaultProg', 'Default programme (e.g. COD)']);
-  } catch (e) {}
+  } catch (e) { }
   var _cfgInteg = CFG.integrations;
   CFG.integrations = function () {
     return _cfgInteg().replace(/<div class="banner">[\s\S]*?<\/div>/, '<div class="banner">' + ic('shield') + '<span>Credentials (tokens, keys, secrets) are stored as server secrets and never shown here. An integration runs <b>live</b> when it is enabled below and its secrets are set; otherwise it runs in mock mode. Check readiness in Settings → Testing console.</span></div>');
@@ -667,9 +1932,11 @@
     var l = m.l;
     var pretty = function (s) { try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s || ''; } };
     var pre = function (s) { return '<pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:10px;font-family:var(--f-mono);font-size:11.5px;max-height:260px;overflow:auto">' + esc(pretty(s)) + '</pre>'; };
-    return { title: (INTEG_LABEL[l.integration] || l.integration) + ' · ' + l.operation, size: 'lg', foot: '<button class="btn" data-act="closeModal">Close</button>',
+    return {
+      title: (INTEG_LABEL[l.integration] || l.integration) + ' · ' + l.operation, size: 'lg', foot: '<button class="btn" data-act="closeModal">Close</button>',
       body: dl([['Time', fDT(l.at)], ['Direction', l.direction === 'in' ? 'Inbound webhook' : 'Outbound API call'], ['Mode', l.mode], ['Request', esc((l.method || '') + ' ' + (l.url || ''))], ['Result', (l.ok ? 'OK' : 'Failed') + (l.status ? ' · HTTP ' + l.status : '') + (l.duration_ms != null ? ' · ' + l.duration_ms + ' ms' : '')], ['Error', esc(l.error || '')], ['Reference', esc(l.ref || '')]]) +
-        '<div class="sec">Request</div>' + pre(l.request) + '<div class="sec">Response</div>' + pre(l.response) };
+        '<div class="sec">Request</div>' + pre(l.request) + '<div class="sec">Response</div>' + pre(l.response)
+    };
   };
 
   // ------------------------------------------------------------------ fixes found in QA
@@ -784,9 +2051,11 @@
   ACT.dbBackup = function () { dbDownload('/admin/db/backup', 'lof-crm-backup.json').then(function () { toast('Backup downloaded – keep it somewhere safe', 'ok'); }).catch(function (e) { toast(e.message, 'err'); }); };
   ACT.dbRec = function (d) { if (!DBV.page || DBV.page.name !== DBV.name) return; req('GET', '/admin/db/record?name=' + encodeURIComponent(DBV.name) + '&id=' + encodeURIComponent(d.id)).then(function (r) { openModal('dbRec', { id: d.id, r: r }); }).catch(function (e) { toast(e.message, 'err'); }); };
   MODALS.dbRec = function (m) {
-    return { title: (((DBV.tables || []).find(function (x) { return x.name === DBV.name; }) || {}).label || 'Record') + ' – ' + m.id, size: 'lg', foot: '<button class="btn" data-act="closeModal">Close</button>',
+    return {
+      title: (((DBV.tables || []).find(function (x) { return x.name === DBV.name; }) || {}).label || 'Record') + ' – ' + m.id, size: 'lg', foot: '<button class="btn" data-act="closeModal">Close</button>',
       body: (m.r.meta ? '<p class="muted xs">Updated ' + esc(m.r.meta.updated_at || '') + (m.r.meta.updated_by ? ' by ' + esc(m.r.meta.updated_by) : '') + ' · version ' + esc(m.r.meta.version || 1) + (m.r.meta.is_test ? ' · test record' : '') + '</p>' : '') +
-        '<pre class="mono sm" style="white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto;background:var(--bg2,#f6f7f9);padding:12px;border-radius:6px">' + esc(JSON.stringify(m.r.record, null, 2)) + '</pre>' };
+        '<pre class="mono sm" style="white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto;background:var(--bg2,#f6f7f9);padding:12px;border-radius:6px">' + esc(JSON.stringify(m.r.record, null, 2)) + '</pre>'
+    };
   };
 
   // ------------------------------------------------------------------ Configuration → Email Templates (after Communication)
@@ -810,10 +2079,12 @@
       { h: 'Subject', f: function (t) { return '<span class="sm">' + esc(t.subject) + '</span>'; } },
       { h: 'Branch', f: function (t) { return esc(etBranch(t.branch)); }, s: function (t) { return etBranch(t.branch); } },
       { h: 'Status', f: function (t) { return bdg(t.active ? 'Active' : 'Inactive', t.active ? 'ok' : ''); } },
-      { h: '', f: function (t) {
-        return '<span class="row" style="justify-content:flex-end;flex-wrap:nowrap"><button class="btn sm" data-act="etPreview" data-id="' + t.id + '">Preview</button>' +
-          (edit ? '<button class="btn sm" data-act="etEdit" data-id="' + t.id + '">Edit</button><button class="btn sm ghost" data-act="etCopy" data-id="' + t.id + '">Duplicate</button>' : '') + '</span>';
-      } },
+      {
+        h: '', f: function (t) {
+          return '<span class="row" style="justify-content:flex-end;flex-wrap:nowrap"><button class="btn sm" data-act="etPreview" data-id="' + t.id + '">Preview</button>' +
+            (edit ? '<button class="btn sm" data-act="etEdit" data-id="' + t.id + '">Edit</button><button class="btn sm ghost" data-act="etCopy" data-id="' + t.id + '">Duplicate</button>' : '') + '</span>';
+        }
+      },
     ], rows, { all: 1 }) : emptyBox('No templates', ET.q || ET.cat ? 'Clear the search or pick another category.' : 'Add the first template.');
     return card('Email Templates<div class="muted xs" style="font-weight:400">E-mails to parents and clients – fee receipts, reminders, competitions, progress updates and notices.</div>',
       cats + search + list, { act: edit ? '<button class="btn sm primary" data-act="etAdd">' + ic('plus') + ' Add template</button>' : '' }) +
@@ -844,7 +2115,8 @@
     var t = src ? Object.assign({}, src) : { cat: ET.cat || meta.categories[0], n: '', subject: '', body: '', branch: 'All', active: true };
     if (m.copy) t.n = t.n + ' (copy)';
     var chips = Object.keys(meta.placeholders).map(function (k) { return '<a class="chip" data-act="etIns" data-k="' + k + '" tabindex="0" title="' + esc(meta.placeholders[k].label) + '">{' + k + '}</a>'; }).join('');
-    return { title: m.id ? 'Edit e-mail template' : 'Add e-mail template', size: 'lg', form: 'etTpl',
+    return {
+      title: m.id ? 'Edit e-mail template' : 'Add e-mail template', size: 'lg', form: 'etTpl',
       foot: '<button class="btn" type="button" data-act="closeModal">Cancel</button>' + (m.id ? '<button class="btn danger" type="button" data-act="etDelete" data-id="' + esc(m.id) + '">Delete</button>' : '') + '<button class="btn primary" type="submit" form="mform">Save template</button>',
       body: '<input type="hidden" name="oid" value="' + esc(m.id || '') + '"><div class="fgrid">' +
         F('Category', 'cat', { v: t.cat, opts: meta.categories, req: 1 }) + F('Template name', 'n', { v: t.n, req: 1, ph: 'e.g. Fee receipt' }) +
@@ -852,7 +2124,8 @@
         CK('Active – available for sending', 'active', t.active) +
         F('Subject', 'subject', { v: t.subject, req: 1, full: 1 }) +
         F('Message', 'body', { t: 'textarea', rows: 12, v: t.body, req: 1, full: 1, help: 'Plain text. Blank lines start a new paragraph.' }) +
-        '<div class="f full"><label>Placeholders – click to insert at the cursor</label><div class="chips">' + chips + '</div></div></div>' };
+        '<div class="f full"><label>Placeholders – click to insert at the cursor</label><div class="chips">' + chips + '</div></div></div>'
+    };
   };
   SUB.etTpl = function (d, f) {
     if (!need(f, d, ['n', 'subject', 'body'])) return;
@@ -873,12 +2146,14 @@
   };
   MODALS.etPreview = function (m) {
     var t = etById(m.id) || {}, p = etMeta().placeholders;
-    return { title: 'Preview – ' + (t.n || ''), size: 'lg',
+    return {
+      title: 'Preview – ' + (t.n || ''), size: 'lg',
       foot: '<button class="btn" data-act="closeModal">Close</button>' + (can('configuration', 'E') ? '<button class="btn primary" data-act="etEdit" data-id="' + esc(t.id) + '">Edit</button>' : ''),
       body: '<p class="muted xs" style="margin-top:0">Shown with sample values. Real e-mails use the student’s and parent’s details.</p>' +
         '<div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden"><div style="padding:10px 14px;border-bottom:1px solid var(--bd)">' +
         '<div class="muted xs">To: ' + esc(p.parent_name ? p.parent_name.sample : '') + '</div><b>' + esc(etSample(t.subject || '')) + '</b></div>' +
-        '<div class="sm" style="padding:14px;white-space:pre-wrap;line-height:1.55">' + esc(etSample(t.body || '')) + '</div></div>' };
+        '<div class="sm" style="padding:14px;white-space:pre-wrap;line-height:1.55">' + esc(etSample(t.body || '')) + '</div></div>'
+    };
   };
 
   // ------------------------------------------------------------------ Configuration → Email Outgoing / Email Incoming
@@ -1045,7 +2320,7 @@
     }
     confirmBox('Delete branch', 'Delete <b>' + esc(b.name) + '</b> (' + esc(b.id) + ')? This cannot be undone.', 'delBranch', b.id, 'Delete branch', true);
   };
-  var afterBranchChange = function () { flush().then(function () { return reload(false); }).catch(function () {}); };
+  var afterBranchChange = function () { flush().then(function () { return reload(false); }).catch(function () { }); };
   CONFIRM.archiveBranch = function (id) {
     var b = S.branches.find(function (x) { return x.id === id; }); if (!b) return;
     b.archived = true; b.status = 'Closed';
