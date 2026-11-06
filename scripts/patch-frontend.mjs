@@ -4,7 +4,9 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const root = new URL('..', import.meta.url);
-let html = readFileSync(new URL('prototype/LOF_CRM_Prototype.html', root), 'utf8');
+// LF only: browsers hash inline scripts with CRLF normalised to LF, so a Windows checkout (CRLF) would
+// otherwise produce CSP hashes that block the screens
+let html = readFileSync(new URL('prototype/LOF_CRM_Prototype.html', root), 'utf8').replace(/\r\n/g, '\n');
 
 const patches = [
   // live clock instead of the prototype's frozen "now"
@@ -23,6 +25,10 @@ const patches = [
   [/document\.addEventListener\('click',\s*e\s*=>\s*\{\s*if\s*\(S\.menu/, "document.addEventListener('click',e=>{if(!S)return;if(S.menu"],
   [/if\s*\(e\.key\s*===\s*'Escape'\s*&&\s*S\.modal\s*&&/, "if(e.key==='Escape'&&S&&S.modal&&"],
   [/if\s*\(a\)\s*\{\s*setTimeout\(\(\)\s*=>\s*\{\s*S\.modal\s*=\s*null;\s*render\(\)\s*\}\s*,\s*0\)\s*\}/, "if(a){setTimeout(()=>{if(S){S.modal=null;render()}},0)}"],
+  // api-client.js (branch access control) replaces these scope helpers; a const cannot be reassigned
+  // ("Assignment to constant variable" stops api-client.js and leaves the page blank)
+  ['const inScope = b =>', 'let inScope = b =>'],
+  ['const optBranches = () =>', 'let optBranches = () =>'],
   // prototype wording that no longer applies
   ['Email and WhatsApp delivery are simulated. Escalation', 'Email and WhatsApp are delivered when those integrations are live (Settings → Testing console). Escalation'],
   [

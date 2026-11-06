@@ -1964,7 +1964,7 @@
     const me = () => S.staff.find(s => s.id === S.user);
     const roleScope = u => u.role === 'Management' || u.role === 'System Administrator' ? S.branches.map(b => b.id) : (S.scope[u.id] || [u.branch]);
     const myScope = () => roleScope(me());
-    const inScope = b => myScope().includes(b);
+    let inScope = b => myScope().includes(b);
     const can = (res, cap) => ((S.perms[res] || {})[me().role] || '').includes(cap);
     function feeFor(st, prog, branch, pkg) { return st.fees.find(f => f.active && f.prog === prog && f.branch === branch && (!pkg || f.pkg === pkg) && f.from <= TODAY && (!f.to || f.to >= TODAY)) }
     function calcFee(fee, disc, isNew) { const base = fee.amt, extra = isNew ? fee.extra.amt : 0; let d = 0; if (disc) { d = disc.type === '%' ? r2(base * disc.value / 100) : Math.min(Number(disc.value), base) } const net = base - d + extra, tax = r2(net * fee.tax / 100); return { base, extra, disc: d, net, tax, total: r2(net + tax) } }
@@ -2239,7 +2239,7 @@
     const PAGES = {};
     /* ====== helpers for views ====== */
     const inRange = (iso, r) => r === 'all' || (r === 'month' ? dayKey(iso).startsWith('2026-10') : (NOW - new Date(iso)) <= (+r) * 864e5);
-    const optBranches = () => S.branches.filter(b => inScope(b.id)).map(b => [b.id, b.name]);
+    let optBranches = () => S.branches.filter(b => inScope(b.id)).map(b => [b.id, b.name]);
     const optProgs = () => S.programs.filter(p => p.active).map(p => [p.id, p.name]);
     const optCslr = (b) => S.staff.filter(s => s.role === 'Counsellor' && (!b || s.branch === b) && inScope(s.branch)).map(s => [s.id, s.name + ' · ' + s.branch]);
     const kgo = (page, lf, o) => `data-act="kgo" data-page="${page}" data-lf='${esc(JSON.stringify(lf || {}))}'${o && o.preset ? ` data-preset="${o.preset}"` : ''}`;
