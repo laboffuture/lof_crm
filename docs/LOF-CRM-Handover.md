@@ -449,17 +449,15 @@ Sessions are stored server-side (only a SHA-256 hash of the token), end after **
 - *LMS calls* (`coll: 'ms'`): one `op: 'enrol'` record with a new enrolment; `op: 'cancel'` with a withdrawal (created by the server if the client does not send it). Track and Credit codes always come from Settings → LMS Integration.
 - *Settings (`cfg`)*: payment terms (split adds up to 100, first instalment ≥ minimum, active default), refund rules, counsellor targets and LMS codes are validated; LMS credentials are never stored in settings.
 
-### LMS call bodies (sent to `LMS_URL`, `Authorization: Bearer <LMS_TOKEN>`)
+### LMS calls under the November 2026 guide
 
-```json
-{ "call": "enrol", "reference": "EN-26-0123", "student_id": "LOF-26-000041", "student_first_name": "Aarav", "student_last_name": "Sharma",
-  "student_email": "aarav.sharma@example.com", "student_phone": "+91 98765 43210", "student_dob": "2014-07-15",
-  "parent_id": "FAM-26-0019", "parent_name": "Rohit Sharma", "parent_email": "rohit.sharma@example.com", "parent_phone": "+91 98765 11111",
-  "branch": "BLR01", "valid_until": "2027-09-18",
-  "products": [ { "product_name": "Robotics – Term (24 sessions)", "track": "ROB-TRK-10021", "credits": ["ROB-TRK-10021-C3", "ROB-TRK-10021-C4", "ROB-TRK-10021-C5"] } ] }
-{ "call": "cancel", "reference": "EN-26-0123" }
-```
-The number of credits is the number of Credit codes. No amount, price, invoice, payment method or refund value is ever sent. The connection test sends `{ "call": "ping" }`.
+All requests to `LMS_URL` use POST with `application/x-www-form-urlencoded` and server-only `wstoken`, `wsfunction`, `moodlewsrestformat=json`. The connection test uses `local_lofplatform_erp_catalogue`; student lookup uses `local_lofplatform_erp_student_lookup` with `student_id`.
+
+Purchase uses `local_lofplatform_erp_purchase`. Student/order/parent fields are flat; Track lines use `items[0][track]` and `items[0][credits][0]`; Skills Labs use `skillslabs[0][program]`, `skillslabs[0][sessions]` and optional per-line `valid_until`. No financial fields are sent. Cancellation uses `local_lofplatform_erp_cancel` with the original `reference` and optional reason.
+
+HTTP 200 is not proof of acceptance. `errorcode`/`exception` are failures. Accepted warnings are retained for staff review and cannot be resent from either retry route. `duplicate:true` is acknowledged without applying another purchase. `purchaseknown:false` requires reference review. Success means received, not that access has already been processed.
+
+New enrolments get a server-owned call record waiting for full payment; no purchase is sent for an unpaid or partly paid order. Both counter and gateway payments activate it after full settlement. Existing enrolments are never backfilled automatically. See [LMS implementation and verification](LMS-Integration.md).
 
 ### Testing console (`/testing`, System Administrator only)
 

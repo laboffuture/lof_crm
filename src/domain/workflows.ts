@@ -12,68 +12,97 @@ import { gatewayFor, telrCreate, razorpayCreate, type LinkInput } from '../integ
 import { addAudit, addEv, fmtDT, money, notify, recordPayment, r2, templateParams } from './core';
 import { ID_FORMAT } from '../lib/indexing';
 
+import { activatePaidLms } from './lms-orders';
+
 const testFlags = (repo: Repo) => repo.setting<any>('test_flags');
 
 // ---------------- LMS (enrol / cancel calls) ----------------
 export async function processSync(env: Env, repo: Repo, syncId: string) {
   const m = await repo.get<any>('moodle_sync', syncId);
-  if (!m) return null;
+  if (!m || ['Success', 'Closed', 'Warnings'].includes(m.status)) return m;
+  // Queue jobs get a fresh System repository. Keep notifications/audit for test calls
+  // in the test namespace as well, without changing the caller's repository scope.
+  if (m.test && !repo.isTest) repo = new Repo(repo.db, repo.actor, true);
   const cfg = await repo.setting<any>('cfg');
-  const flags = await testFlags(repo);
   const isTest = repo.isTest || !!m.test;
-  const lc: lms.LmsCtx = { env, mode: modeFor(env, cfg, 'lms', isTest), isTest, flags };
+  const lc: lms.LmsCtx = { env, mode: modeFor(env, cfg, 'lms', isTest), isTest, flags: await testFlags(repo) };
   const s = await repo.get<any>('student', m.stu);
   const e = await repo.get<any>('enrollment', m.enr);
   const op = m.op === 'cancel' ? 'cancel' : 'enrol';
   const tag = lc.mode === 'mock' ? ' (mock)' : '';
-  m.status = 'Processing';
+  m.hist ||= [];
+  const hold = async (status: string, message: string) => {
+    const at = nowIso();
+    await env.DB.prepare("UPDATE docs SET status=?, data=json_insert(json_set(data,'$.status',?,'$.err',?,'$.last',?),'$.hist[#]',json(?)) WHERE type='moodle_sync' AND id=? AND status=? AND status NOT IN ('Processing','Success','Closed','Warnings')")
+      .bind(status, status, message, at, JSON.stringify({ at, s: status, msg: message }), m.id, m.status).run();
+    return repo.get<any>('moodle_sync', m.id);
+  };
+  if (!s || !e) return hold('Retry Required', 'Student or enrolment record missing');
+  if (op === 'enrol' && e.status === 'Withdrawn') return hold('Closed', 'Not sent – the enrolment was withdrawn');
+  if (op === 'enrol' && e.payStatus !== 'Paid') return hold('Awaiting Payment', 'Not sent – waiting for full payment (guide section 7)');
+  if (env.APP_ENV === 'production' && !isTest && lc.mode !== 'live') return hold('Awaiting Setup', 'Not sent – enable LMS and configure LMS_URL / LMS_TOKEN; production orders cannot be simulated');
+  if (lc.mode === 'live' && op === 'enrol' && !m.payload && (!cfg.lms?.confirmed || !cfg.lms?.packages?.[e.prog]?.[e.pkg])) return hold('Awaiting Setup', 'Not sent – confirm the exact LMS package mapping and branch codes with LOF');
+  // Claim atomically. Queue redelivery and simultaneous retries must not issue overlapping calls.
+  const claim = await env.DB.prepare("UPDATE docs SET status='Processing', data=json_set(data,'$.status','Processing','$.processingAt',?) WHERE type='moodle_sync' AND id=? AND status NOT IN ('Processing','Success','Closed','Warnings')")
+    .bind(nowIso(), m.id).run();
+  if (!claim.meta.changes) return repo.get<any>('moodle_sync', m.id);
+  m.status = 'Processing'; m.processingAt = nowIso();
   m.attempts = (m.attempts || 0) + 1;
-  m.hist = m.hist || [];
-  m.hist.push({ at: nowIso(), s: 'Processing', msg: `${op === 'cancel' ? 'Cancel' : 'Enrol'} call, attempt ${m.attempts}${tag}` });
+  m.hist.push({ at: m.processingAt, s: 'Processing', msg: `${op} call, attempt ${m.attempts}${tag}` });
   await repo.put('moodle_sync', m);
-  let missing = false;
   try {
-    if (!s || !e) throw new Error('Student or enrolment record missing');
-    let msg: string;
-    if (op === 'enrol' && e.status === 'Withdrawn') {
-      // Never re-open LMS access after a withdrawal (e.g. a late retry of a failed enrol call)
-      m.status = 'Closed'; m.err = ''; m.last = nowIso();
-      m.hist.push({ at: m.last, s: 'Closed', msg: 'Not sent – the enrolment was withdrawn' });
-      await repo.put('moodle_sync', m);
-      return m;
-    }
+    let result: lms.Receipt;
     if (op === 'cancel') {
-      await lms.cancel(lc, e.id, m.id);
-      msg = `LMS withdrew unused credits for reference ${e.id}${tag}`;
+      const purchases = await repo.many<any>('moodle_sync', 'ref1=?', [e.id]);
+      if (purchases.some((x) => x.op !== 'cancel' && x.status === 'Processing')) throw new lms.LmsError('Purchase is still processing; cancellation will retry', true);
+      result = await lms.cancel(lc, e.id, m.id, m.reason);
     } else {
       const program = await repo.get<any>('program', e.prog);
-      const payload = lmsEnrolPayload(e, s, program, cfg.lms || {});
-      const miss = lmsMissing(payload);
-      if (miss.length) { missing = true; throw new Error('Not sent – missing ' + miss.join(', ') + ' (Settings → LMS Integration)'); }
-      await lms.enrol(lc, payload, m.id);
-      m.cid = payload.products[0].track;
-      m.credits = payload.products[0].credits;
-      msg = `LMS accepted reference ${e.id}: Track ${m.cid} with ${m.credits.length} credit(s), valid until ${payload.valid_until}${tag}`;
+      const payload: lms.Purchase = m.payload || lmsEnrolPayload(e, s, program, cfg.lms || {});
+      const problems = lmsMissing(payload);
+      if (problems.length) throw new lms.LmsError('Not sent – missing or invalid ' + problems.join(', '), false, 'localvalidation');
+      // Freeze before the first network attempt. A timeout may mean LMS already received it.
+      m.payload = payload;
+      m.cid = payload.items[0]?.track || payload.skillslabs[0]?.program || '';
+      m.credits = payload.items.flatMap((x) => x.credits);
+      await repo.put('moodle_sync', m);
+      result = await lms.enrol(lc, payload, m.id);
     }
-    m.status = 'Success';
-    m.err = '';
+    m.response = result; m.deliveryMode = lc.mode;
+    m.warnings = result.warnings || [];
+    if (op === 'cancel' && result.purchaseknown === false) m.warnings.push({ item: 'reference', message: 'LMS has not received this purchase reference. Check it with LOF.' });
+    m.status = m.warnings.length ? 'Warnings' : 'Success';
+    m.err = m.warnings.map((w: any) => `${w.item ? w.item + ': ' : ''}${w.message}`).join('; ');
     m.last = nowIso();
-    m.hist.push({ at: m.last, s: 'Success', msg });
+    const msg = m.warnings.length ? `Received with warnings: ${m.err}` : `${result.duplicate ? 'Duplicate reference acknowledged' : 'LMS received ' + op + ' reference ' + e.id}; LMS staff processing/access verification is separate${tag}`;
+    m.hist.push({ at: m.last, s: m.status, msg });
     await repo.put('moodle_sync', m);
-    await notify(repo, { type: 'moodle', sev: 'ok', text: `LMS ${op} call succeeded for ${s.first} ${s.last} (${m.enr})`, route: { page: 'integration' }, roles: ['Admissions Head', 'System Administrator', 'Centre Administrator'], branch: e.branch });
-    await addAudit(repo, `LMS ${op} call`, m.id, `Success${tag}`, 'System');
+    await notify(repo, { type: 'moodle', sev: m.warnings.length ? 'warn' : 'ok', text: `LMS ${op} ${m.warnings.length ? 'needs review' : 'received'} for ${s.first} ${s.last} (${m.enr})${tag}${m.err ? ': ' + m.err : ''}`, route: { page: 'integration' }, roles: ['Admissions Head', 'System Administrator', 'Centre Administrator'], branch: e.branch });
+    await addAudit(repo, `LMS ${op} call`, m.id, `${m.status}${tag}`, 'System');
   } catch (err: any) {
+    // Moodle explicitly says invalidparameter was not received: corrected data may be rebuilt.
+    // For uncertain delivery (timeout/5xx/malformed response), the original snapshot stays frozen.
+    if (err instanceof lms.LmsError && err.code === 'invalidparameter') delete m.payload;
     const max = cfg.integ?.lms?.retryMax ?? 3;
-    // Missing set-up data cannot be fixed by retrying: it waits for a person (Retry after fixing the codes)
-    m.status = missing || m.attempts >= max ? 'Retry Required' : 'Failed';
+    m.status = err instanceof lms.LmsError && err.retryable && m.attempts < max ? 'Failed' : 'Retry Required';
     m.err = String(err?.message || err);
     m.last = nowIso();
     m.hist.push({ at: m.last, s: m.status, msg: m.err });
     await repo.put('moodle_sync', m);
-    await notify(repo, { type: 'moodle', sev: 'crit', text: `LMS ${op} call failed for ${s ? s.first + ' ' + s.last : m.stu} (${m.enr}): ${m.err}`, route: { page: 'integration' }, roles: ['Admissions Head', 'System Administrator', 'Centre Administrator'], branch: e?.branch });
+    await notify(repo, { type: 'moodle', sev: 'crit', text: `LMS ${op} call failed for ${s.first} ${s.last} (${m.enr}): ${m.err}`, route: { page: 'integration' }, roles: ['Admissions Head', 'System Administrator', 'Centre Administrator'], branch: e.branch });
     await addAudit(repo, 'Integration error', m.id, `LMS ${op} call ${m.status}: ${m.err}`, 'System');
   }
   return m;
+}
+
+/** Called by gateway settlement after payment is durably recorded. Cron also recovers queued orders. */
+export async function sendPaidLms(env: Env, repo: Repo, enrollmentId: string) {
+  const e = await repo.get<any>('enrollment', enrollmentId);
+  if (!e) return;
+  for (const id of await activatePaidLms(repo, e)) {
+    if (env.JOBS) await env.JOBS.send({ kind: 'moodle_sync', id });
+    else await processSync(env, repo, id);
+  }
 }
 
 // ---------------- WhatsApp / e-mail ----------------
@@ -259,6 +288,7 @@ export async function settleLink(env: Env, repo: Repo, linkId: string, info: { a
   // The payment exists from here on: the link stays paid whatever happens next
   await env.DB.prepare('UPDATE payment_links SET payment_id=? WHERE id=?').bind(p.id, linkId).run();
   try {
+    await sendPaidLms(env, repo, p.enr);
     const s = await repo.get<any>('student', p.stu);
     await notify(repo, { type: 'pay', sev: 'ok', text: `Payment received online: ${money(p.amt, p.cur)} – ${s?.first} ${s?.last} (${p.rc})`, route: { page: 'payRecords' }, roles: ['Reception', 'Centre Administrator', 'Management'], branch: p.branch });
     await addAudit(repo, 'Payment recorded (gateway)', p.id, `${money(p.amt, p.cur)} · ${link.provider} ${info.txnRef} · ${p.rc}`, 'Payment gateway');

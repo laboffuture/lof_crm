@@ -106,9 +106,10 @@ describe('LMS calls', () => {
   });
   it('previews the enrol call for an enrolment', async () => {
     const r = await t.call('GET', '/api/v1/lms/preview/EN-26-0001', { token: await t.login(USERS.hassan) });
-    expect(r.body.enrol).toMatchObject({ call: 'enrol', reference: 'EN-26-0001', branch: 'KRM01' });
-    expect(r.body.cancel).toEqual({ call: 'cancel', reference: 'EN-26-0001' });
-    expect(r.body.missing).toEqual([]);
+    expect(r.body.enrol).toMatchObject({ wsfunction: 'local_lofplatform_erp_purchase', reference: 'EN-26-0001', branch: 'KRM01' });
+    expect(r.body.cancel).toEqual({ wsfunction: 'local_lofplatform_erp_cancel', reference: 'EN-26-0001' });
+    expect(r.body.enrol.items).toHaveLength(1);
+    expect(r.body.missing).not.toContain('branch');
     expect((await t.call('GET', '/api/v1/lms/preview/EN-26-0003', { token: await t.login(USERS.priya) })).status).toBe(403);
   });
 });

@@ -1,11 +1,12 @@
 import { Repo, nowIso } from './lib/db';
 import type { Env, Job } from './types';
 import { processSync, sendComm, sendStudentMail, pushPaymentToErp, calendarForTask, settleLink } from './domain/workflows';
-import { addAudit, addEv, notify, money } from './domain/core';
+import { addAudit, addEv, notify, money, recalcEnrollment } from './domain/core';
 import { instStatus } from './domain/terms';
 import { modeFor } from './integrations/base';
 import { telrCheck } from './integrations/payments';
 import { runMailAutomations } from './domain/mail-send';
+import { LMS_CONTRACT, activatePaidLms } from './domain/lms-orders';
 
 export async function runJob(env: Env, job: Job) {
   const repo = new Repo(env.DB, 'System');
@@ -99,14 +100,31 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
 
   // LMS call auto-retry
   const retryMin = cfg.integ?.lms?.retryMin ?? 15, retryMax = cfg.integ?.lms?.retryMax ?? 3;
-  const failed = await repo.many<any>('moodle_sync', "status='Failed'");
+  const waiting = await repo.many<any>('moodle_sync', "status='Awaiting Payment' AND json_extract(data,'$.contract')=?", [LMS_CONTRACT]);
+  for (const id of new Set<string>(waiting.map((m) => m.enr))) {
+    const order = await repo.get<any>('enrollment', id);
+    if (order?.lmsContract !== LMS_CONTRACT) continue;
+    const e = await recalcEnrollment(repo, id);
+    for (const syncId of await activatePaidLms(repo, e)) jobs.push({ kind: 'moodle_sync', id: syncId });
+  }
+  // Recover new-contract outbox records only; do not backfill/re-send historical orders.
+  const recovery = await repo.many<any>('moodle_sync', "json_extract(data,'$.contract')=? AND status IN ('Pending','Processing')", [LMS_CONTRACT]);
+  for (const m of recovery) {
+    const last = Date.parse(m.status === 'Processing' ? m.processingAt || m.last : m.last);
+    if (now - last < 2 * 6e4) continue;
+    const status = (m.attempts || 0) >= retryMax ? 'Retry Required' : 'Failed', at = nowIso();
+    const err = 'Delivery was interrupted; retry the original reference and payload';
+    await env.DB.prepare("UPDATE docs SET status=?, data=json_insert(json_set(data,'$.status',?,'$.last',?,'$.err',?),'$.hist[#]',json(?)) WHERE type='moodle_sync' AND id=? AND status=? AND COALESCE(json_extract(data,?),json_extract(data,'$.last'))=?")
+      .bind(status, status, at, err, JSON.stringify({ at, s: status, msg: err }), m.id, m.status, m.status === 'Processing' ? '$.processingAt' : '$.last', m.status === 'Processing' ? m.processingAt || m.last : m.last).run();
+  }
+  const failed = await repo.many<any>('moodle_sync', "status='Failed' AND json_extract(data,'$.contract')=?", [LMS_CONTRACT]);
   for (const m of failed) {
     if ((m.attempts || 0) >= retryMax) continue;
     if (now - new Date(m.last).getTime() < retryMin * 6e4) continue;
-    m.status = 'Pending';
-    m.hist.push({ at: nowIso(), s: 'Pending', msg: `Automatic retry ${m.attempts} of ${retryMax}` });
-    await repo.put('moodle_sync', m);
-    jobs.push({ kind: 'moodle_sync', id: m.id });
+    const at = nowIso();
+    const claimed = await env.DB.prepare("UPDATE docs SET status='Pending', data=json_insert(json_set(data,'$.status','Pending','$.last',?),'$.hist[#]',json(?)) WHERE type='moodle_sync' AND id=? AND status='Failed' AND json_extract(data,'$.last')=?")
+      .bind(at, JSON.stringify({ at, s: 'Pending', msg: `Automatic retry ${m.attempts} of ${retryMax}` }), m.id, m.last).run();
+    if (claimed.meta.changes) jobs.push({ kind: 'moodle_sync', id: m.id });
   }
 
   // Unsent payments → ERPNext retry (up to 5 attempts)

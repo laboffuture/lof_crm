@@ -1,0 +1,49 @@
+/* Element defaults and text utilities. */
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--f-body);
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow: hidden;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.mono {
+  font-family: var(--f-mono);
+  font-size: 12px;
+}
+.muted {
+  color: var(--muted);
+}
+.faint {
+  color: var(--faint);
+}
+.sm {
+  font-size: 12px;
+}
+.xs {
+  font-size: 11px;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+#app {
+  height: 100%;
+}

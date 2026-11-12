@@ -6,30 +6,35 @@ import { setup, SECRETS, USERS, doc, stubFetch, type TestCtx } from '../helpers/
 let t: TestCtx;
 beforeEach(async () => {
   t = await setup({ INTEGRATION_MODE: 'auto' });
-  await t.setCfg((c) => { c.integ.lms.on = true; c.integ.wa.on = true; c.integ.tel.on = true; c.integ.erp.on = true; c.integ.pay.on = true; });
+  await t.setCfg((c) => { c.lms.confirmed = true; c.lms.packages = { AI: { 'Term (24 sessions)': c.lms.programmes.AI } }; c.integ.lms.on = true; c.integ.wa.on = true; c.integ.tel.on = true; c.integ.erp.on = true; c.integ.pay.on = true; });
+  await t.sql("UPDATE docs SET data=json_set(data,'$.email','sara.student@example.com') WHERE type='student' AND id='LOF-26-000003'");
 });
 afterEach(() => vi.unstubAllGlobals());
 
 const form = (body: string) => Object.fromEntries(new URLSearchParams(body));
 
 describe('LMS (LOF booking platform)', () => {
-  it('sends the enrol call with the exact fields from the sheet, the bearer token and no payment data', async () => {
-    const { calls } = stubFetch([[/lms\.test\/api\/booking/, () => ({ json: { ok: true, applied: true } })]]);
+  it('sends the form-encoded Moodle purchase with exact Credit codes and no payment data', async () => {
+    const { calls } = stubFetch([[/lms\.test\/api\/booking/, () => ({ json: { accepted: true, duplicate: false, inboxid: 15, warnings: [] } })]]);
     const r = await t.call('POST', '/api/v1/lms/calls/MS-003/retry', { token: await t.login(USERS.admin) }); // Sara Al Hashimi – failed seed call
     expect(r.body.status).toBe('Success');
     expect(calls).toHaveLength(1);
-    expect(calls[0].headers.authorization).toBe('Bearer ' + SECRETS.LMS_TOKEN);
-    const body = JSON.parse(calls[0].body);
-    expect(Object.keys(body).sort()).toEqual(['branch', 'call', 'parent_email', 'parent_id', 'parent_name', 'parent_phone', 'products', 'reference', 'student_dob', 'student_email', 'student_first_name', 'student_id', 'student_last_name', 'student_phone', 'valid_until'].sort());
-    expect(body).toMatchObject({ call: 'enrol', reference: 'EN-26-0003', student_id: 'LOF-26-000003', student_first_name: 'Sara', branch: 'SPC01', valid_until: '2027-10-05' });
-    expect(body.products).toEqual([{ product_name: 'Artificial Intelligence – Term (24 sessions)', track: 'AI-TRK-11021', credits: ['AI-TRK-11021-C1', 'AI-TRK-11021-C2', 'AI-TRK-11021-C3', 'AI-TRK-11021-C4'] }]);
+    expect(calls[0].headers.authorization).toBeUndefined();
+    expect(calls[0].headers['content-type']).toBe('application/x-www-form-urlencoded');
+    const body = form(calls[0].body);
+    expect(body).toMatchObject({ wsfunction: 'local_lofplatform_erp_purchase', wstoken: SECRETS.LMS_TOKEN, moodlewsrestformat: 'json', reference: 'EN-26-0003', student_id: 'LOF-26-000003', student_first_name: 'Sara', branch: 'SPC01', valid_until: '2027-10-05' });
+    expect(body['items[0][track]']).toBe('AI-TRK-11021');
+    expect(body['items[0][credits][0]']).toBe('AI-TRK-11021-C1');
+    expect(body['items[0][credits][3]']).toBe('AI-TRK-11021-C4');
+    expect(body.student_email).not.toBe(body.parent_email);
     expect(calls[0].body).not.toMatch(/amount|price|total|paid|invoice|refund/i);
     const logs = await t.sql<any>("SELECT request FROM integration_logs WHERE integration='lms'");
     expect(logs.every((l) => !String(l.request).includes(SECRETS.LMS_TOKEN))).toBe(true);
   });
   it('treats an LMS refusal as a failure and escalates after the retry limit', async () => {
     stubFetch([[/lms\.test/, () => ({ json: { ok: false, error: 'Unknown Track code' } })]]);
-    const r1 = await t.call('POST', '/api/v1/lms/calls/MS-004/retry', { token: await t.login(USERS.admin) }); // already 2 attempts
+    await t.sql("UPDATE docs SET data=json_set(data,'$.attempts',2) WHERE type='moodle_sync' AND id='MS-003'");
+    const r1 = await t.call('POST', '/api/v1/lms/calls/MS-003/retry', { token: await t.login(USERS.admin) }); // already 2 attempts
     expect(r1.body.status).toBe('Retry Required');
     expect(r1.body.err).toContain('Unknown Track code');
     const n = await t.sql("SELECT id FROM docs WHERE type='notification' AND json_extract(data,'$.type')='moodle' AND json_extract(data,'$.sev')='crit'");
@@ -37,19 +42,19 @@ describe('LMS (LOF booking platform)', () => {
   });
   it('does not send an incomplete call: missing codes wait for a person', async () => {
     const { calls } = stubFetch([[/lms\.test/, () => ({ json: { ok: true } })]]);
-    await t.setCfg((c) => { c.lms.programmes.AI = { track: '', credits: [] }; });
+    await t.setCfg((c) => { c.lms.packages.AI['Term (24 sessions)'] = { track: '', credits: [] }; });
     const r = await t.call('POST', '/api/v1/lms/calls/MS-003/retry', { token: await t.login(USERS.admin) });
     expect(r.body.status).toBe('Retry Required');
-    expect(r.body.err).toMatch(/missing products\[0\]\.track, products\[0\]\.credits/);
+    expect(r.body.err).toMatch(/at least one Track or Skills Lab line/);
     expect(calls).toHaveLength(0);
   });
   it('sends the cancel call with the reference only when an enrolment is withdrawn', async () => {
-    const { calls } = stubFetch([[/lms\.test/, () => ({ json: { ok: true, withdrawn: true } })]]);
+    const { calls } = stubFetch([[/lms\.test/, () => ({ json: { accepted: true, duplicate: false, inboxid: 16, purchaseknown: true } })]]);
     const e = await doc(t, 'enrollment', 'EN-26-0002');
     const r = await t.call('PUT', '/api/v1/sync', { token: await t.login(USERS.hassan), body: { changes: [{ coll: 'enr', id: e.id, op: 'upsert', doc: { ...e, status: 'Withdrawn' }, base: e }] } });
     expect(r.status).toBe(200);
     expect(calls).toHaveLength(1);
-    expect(JSON.parse(calls[0].body)).toEqual({ call: 'cancel', reference: 'EN-26-0002' });
+    expect(form(calls[0].body)).toEqual({ wsfunction: 'local_lofplatform_erp_cancel', reference: 'EN-26-0002', wstoken: SECRETS.LMS_TOKEN, moodlewsrestformat: 'json' });
     const ms = await t.sql<any>("SELECT data FROM docs WHERE type='moodle_sync' AND json_extract(data,'$.op')='cancel'");
     expect(JSON.parse(ms[0].data)).toMatchObject({ enr: 'EN-26-0002', status: 'Success' });
   });

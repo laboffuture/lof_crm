@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setup, USERS, type TestCtx } from '../helpers/app';
 
 let t: TestCtx;
@@ -29,10 +29,32 @@ describe('Testing console API', () => {
       expect(r.body.steps.every((s: any) => s.ok)).toBe(true);
     });
   }
+  for (const name of ['uae-lead-to-enrolment', 'india-lead-to-enrolment']) {
+    it(`waits for mock background work in ${name} when a real queue binding is present`, async () => {
+      // A queue acknowledges enqueueing before its consumer runs. The console must not
+      // report Pending as a failure or publish scenario work to the real queue.
+      const queue = { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) };
+      t = await setup({ JOBS: queue as unknown as Queue });
+      tok = await t.login(USERS.admin);
+      const businessBefore = await t.sql("SELECT id,data FROM docs WHERE is_test=0 ORDER BY type,id");
+      const result = await t.call('POST', `/api/v1/testing/scenarios/${name}/run`, { token: tok });
+      expect(result.body.ok, JSON.stringify(result.body.steps)).toBe(true);
+      const lms = result.body.steps.find((s: any) => s.step.startsWith('LMS purchase received'));
+      expect(lms?.ok).toBe(true);
+      expect(result.body.steps.find((s: any) => s.step.startsWith('Withdrawal:'))?.ok).toBe(true);
+      const outbound = await t.sql<any>("SELECT status FROM docs WHERE type='comm' AND is_test=1");
+      expect(outbound.length).toBeGreaterThan(0);
+      expect(outbound.every(x => x.status === 'Sent (mock)')).toBe(true);
+      expect(queue.send).not.toHaveBeenCalled();
+      expect(queue.sendBatch).not.toHaveBeenCalled();
+      expect(t.env.JOBS).toBe(queue);
+      expect(await t.sql("SELECT id,data FROM docs WHERE is_test=0 ORDER BY type,id")).toEqual(businessBefore);
+    });
+  }
   it('simulates each webhook through the real handler and only touches test data', async () => {
     const before = await t.sql("SELECT id FROM docs WHERE type IN ('lead','payment') AND is_test=0");
     const site = await t.call('POST', '/api/v1/testing/webhooks/website/simulate', { token: tok, body: {} });
-    expect(site.body.status).toBe(200);
+    expect(site.body.status, JSON.stringify(site.body)).toBe(200);
     for (const k of ['whatsapp-status', 'whatsapp-inbound', 'exotel-incoming', 'exotel-status', 'meta', 'meta-verify', 'whatsapp-verify', 'bad-signature', 'telr-paid', 'razorpay-paid']) {
       const r = await t.call('POST', `/api/v1/testing/webhooks/${k}/simulate`, { token: tok, body: {} });
       expect(r.body.ok, k + ' ' + JSON.stringify(r.body)).toBe(true);
@@ -41,6 +63,14 @@ describe('Testing console API', () => {
     expect(after.length).toBe(before.length);
     const testLeads = await t.sql<any>("SELECT id FROM docs WHERE type='lead' AND is_test=1");
     expect(testLeads.every((l) => l.id.startsWith('TST-'))).toBe(true);
+  });
+  it('preserves queue dispatch outside the self-contained scenario runner', async () => {
+    const queue = { send: vi.fn(async () => {}), sendBatch: vi.fn(async () => {}) };
+    t = await setup({ JOBS: queue as unknown as Queue });
+    const response = await t.call('POST', '/api/v1/testing/webhooks/website/simulate', { token: await t.login(USERS.admin), body: {} });
+    expect(response.body.status).toBe(200);
+    expect(queue.sendBatch).toHaveBeenCalled();
+    expect(t.env.JOBS).toBe(queue);
   });
   it('keeps business sequences gapless and cleans up', async () => {
     const [seqBefore] = await t.sql<any>("SELECT value FROM sequences WHERE name='lead'");

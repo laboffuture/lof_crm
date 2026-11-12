@@ -9,6 +9,7 @@ import { applySync } from '../sync/sync';
 import { createLead, findDup, addAudit, addEv, money, r2, dayKey } from '../domain/core';
 import { instStatus, refundCalc, daysBetween, lmsEnrolPayload, lmsMissing } from '../domain/terms';
 import { createPaymentLink, processSync } from '../domain/workflows';
+import { catalogue, studentLookup } from '../integrations/lms';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
 import { clickToCall } from '../integrations/exotel';
@@ -311,11 +312,10 @@ const syncRetry = async (c: any) => {
   const m = await repo.get('moodle_sync', c.req.param('id'));
   if (!m) throw new HttpError(404, 'LMS call not found');
   needScope(c, (await repo.getRow('moodle_sync', m.id))?.branch);
-  if (m.status === 'Processing') throw new HttpError(409, 'The call is already running');
-  if (m.status === 'Success') throw new HttpError(409, 'The call already succeeded');
-  m.status = 'Pending';
-  m.hist.push({ at: nowIso(), s: 'Pending', msg: `Manual retry by ${u.name}` });
-  await repo.put('moodle_sync', m);
+  if (!['Failed', 'Retry Required', 'Awaiting Setup'].includes(m.status)) throw new HttpError(409, m.status === 'Warnings' ? 'LMS received this order with warnings. Resolve it with LOF; do not re-send or edit the accepted order.' : 'Only failed calls or calls awaiting setup can be retried');
+  const claim = await c.env.DB.prepare("UPDATE docs SET status='Pending', data=json_insert(json_set(data,'$.status','Pending'),'$.hist[#]',json(?)) WHERE type='moodle_sync' AND id=? AND status IN ('Failed','Retry Required','Awaiting Setup')")
+    .bind(JSON.stringify({ at: nowIso(), s: 'Pending', msg: `Manual retry by ${u.name}` }), m.id).run();
+  if (!claim.meta.changes) throw new HttpError(409, 'The call changed or another retry is already running');
   return c.json(await processSync(c.env, repo, m.id));
 };
 for (const base of ['/lms/calls', '/moodle/syncs']) {
@@ -332,8 +332,30 @@ api.get('/lms/preview/:enrollmentId', async (c) => {
   if (!e) throw new HttpError(404, 'Enrolment not found');
   needScope(c, e.branch);
   const [s, program, cfg] = await Promise.all([repo.get<any>('student', e.stu), repo.get<any>('program', e.prog), repo.setting<any>('cfg')]);
-  const payload = lmsEnrolPayload(e, s, program, cfg.lms || {});
-  return c.json({ enrol: { call: 'enrol', ...payload }, cancel: { call: 'cancel', reference: e.id }, missing: lmsMissing(payload), mode: modeFor(c.env, cfg, 'lms') });
+  const calls = await repo.many<any>('moodle_sync', 'ref1=?', [e.id]);
+  const frozen = calls.find((m) => m.op !== 'cancel' && m.payload)?.payload;
+  const payload = frozen || lmsEnrolPayload(e, s, program, cfg.lms || {});
+  return c.json({ enrol: { wsfunction: 'local_lofplatform_erp_purchase', ...payload }, cancel: { wsfunction: 'local_lofplatform_erp_cancel', reference: e.id }, missing: lmsMissing(payload), mode: modeFor(c.env, cfg, 'lms') });
+});
+
+// Read-only Moodle operations. Tokens stay on the server; student lookups require branch access.
+api.post('/lms/catalogue', async (c) => {
+  need(c, 'configuration', 'V');
+  const cfg = await c.get('repo').setting<any>('cfg');
+  const body = await c.req.json<any>();
+  if (body.track !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(body.track)) throw new HttpError(400, 'Invalid Track code');
+  const mode = modeFor(c.env, cfg, 'lms');
+  return c.json({ mode, data: await catalogue({ env: c.env, mode }, body.track) });
+});
+api.post('/lms/students/:id/lookup', async (c) => {
+  need(c, 'students', 'V');
+  const repo = c.get('repo');
+  const s = await repo.get<any>('student', c.req.param('id'));
+  if (!s) throw new HttpError(404, 'Student not found');
+  needScope(c, s.branch);
+  const cfg = await repo.setting<any>('cfg');
+  const mode = modeFor(c.env, cfg, 'lms', !!s.test);
+  return c.json({ mode, data: await studentLookup({ env: c.env, mode, isTest: !!s.test }, s.id) });
 });
 
 // ------------------------------------------------------------------ instalments, refunds, targets

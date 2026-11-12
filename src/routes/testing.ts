@@ -209,30 +209,34 @@ export function testingRoutes(app: FetchApp) {
   t.post('/scenarios/:name/run', async (c) => {
     const name = c.req.param('name');
     const user = c.get('user');
+    // A scenario reports completed steps, not just queue acceptance. Use request-local
+    // in-process jobs so nested webhook work can be awaited by the scenario runner.
+    // The real environment/queue binding is unchanged for normal CRM requests.
+    const env: Env = { ...c.env, JOBS: undefined };
     const steps: { step: string; ok: boolean; detail?: unknown; ms: number }[] = [];
     const run = async (step: string, fn: () => Promise<unknown>) => {
       const t0 = Date.now();
       try { const detail = await fn(); steps.push({ step, ok: true, detail, ms: Date.now() - t0 }); return detail as any; }
       catch (e: any) { steps.push({ step, ok: false, detail: e.message, ms: Date.now() - t0 }); throw e; }
     };
-    const repo = new Repo(c.env.DB, user.name + ' (testing)', true);
+    const repo = new Repo(env.DB, user.name + ' (testing)', true);
     try {
       if (name === 'uae-lead-to-enrolment' || name === 'india-lead-to-enrolment') {
         const india = name.startsWith('india');
-        await e2e(c.env, repo, user, c.get('perms'), india ? { branch: 'BLR', prog: 'ROB', provider: 'razorpay' } : { branch: 'KRM', prog: 'SPA', provider: 'telr' }, run);
+        await e2e(env, repo, user, c.get('perms'), india ? { branch: 'BLR', prog: 'ROB', provider: 'razorpay' } : { branch: 'KRM', prog: 'SPA', provider: 'telr' }, run);
       } else if (name === 'meta-lead') {
         await run('Meta leadgen webhook (signed) → lead imported', async () => {
-          const r = await simulate(c.env, repo, 'meta');
+          const r = await simulate(env, repo, 'meta');
           if (!r.ok || !r.body?.leads?.length) throw new Error(`Webhook returned ${r.status}: ${JSON.stringify(r.body)}`);
           return r.body;
         });
         await run('Bad signature is rejected', async () => {
-          const r = await simulate(c.env, repo, 'bad-signature');
+          const r = await simulate(env, repo, 'bad-signature');
           if (r.status !== 401) throw new Error(`Expected 401, got ${r.status}`);
           return 'HTTP 401';
         });
       } else if (name === 'lms-failure-retry' || name === 'moodle-failure-retry') {
-        await moodleRetry(c.env, repo, user, c.get('perms'), run);
+        await moodleRetry(env, repo, user, c.get('perms'), run);
       } else throw new HttpError(404, 'Unknown scenario');
       return c.json({ ok: true, scenario: name, steps });
     } catch (e: any) {
@@ -364,7 +368,7 @@ async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: st
     const l = await repo.get<any>('lead', leadId);
     const opp = await repo.get<any>('opp', ids.opp);
     const today = nowIso().slice(0, 10);
-    const s = { id: ids.stu, first: 'TEST', last: `Student ${tag}`, dob: '2015-05-05', gender: 'Female', nat: '—', school: '—', grade: '—', curr: '—', address: '—', fam: 'FAM-TEST', branch: o.branch, reg: today, parents: [{ name: l.parent, rel: 'Mother', email: l.email, mobile: l.phone, job: '—' }], moodle: null, interests: [program.name], status: 'Active', uni: '', degree: '', linkedin: '', portfolio: '', photoConsent: 'Not provided', consentDate: '', consentDoc: '', testimonials: [], docs: [], comm: [{ at: nowIso(), ch: 'Email', tpl: 'Enrolment welcome', text: `Welcome to Lab of Future! ${ids.stu}`, status: 'Sent (simulated)' }], test: true };
+    const s = { id: ids.stu, email: `student.${tag}@example.com`, first: 'TEST', last: `Student ${tag}`, dob: '2015-05-05', gender: 'Female', nat: '—', school: '—', grade: '—', curr: '—', address: '—', fam: 'FAM-TEST', branch: o.branch, reg: today, parents: [{ name: l.parent, rel: 'Mother', email: l.email, mobile: l.phone, job: '—' }], moodle: null, interests: [program.name], status: 'Active', uni: '', degree: '', linkedin: '', portfolio: '', photoConsent: 'Not provided', consentDate: '', consentDoc: '', testimonials: [], docs: [], comm: [{ at: nowIso(), ch: 'Email', tpl: 'Enrolment welcome', text: `Welcome to Lab of Future! ${ids.stu}`, status: 'Sent (simulated)' }], test: true };
     const e = { id: ids.enr, stu: s.id, prog: o.prog, branch: o.branch, pkg: fee.pkg, date: today, status: 'Active', cur: fee.cur, fee: c.base, reg: c.extra, disc: c.disc, discInfo: null, tax: c.tax, total: c.total, taxPct: fee.tax, paid: 0, payStatus: 'Unpaid', opp: ids.opp, course: program.courses[0], sessions: fee.sessions, credits: program.credits, newStu: true, ms: ids.ms, test: true };
     const m = { id: ids.ms, enr: e.id, stu: s.id, status: 'Pending', mid: null, cid: e.course.moodleId, course: e.course.name, mode: 'new', last: nowIso(), err: '', attempts: 0, hist: [{ at: nowIso(), s: 'Pending', msg: 'Sync queued after enrolment' }], test: true };
     opp.stage = 'Enrolled'; opp.stu = s.id;
@@ -374,11 +378,6 @@ async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: st
     if (!r.ok) throw new Error(r.rejected.map((x) => x.reason).join('; '));
     for (const j of r.jobs) await runJob(env, j);
     return { student: s.id, enrolment: e.id, total: `${fee.cur} ${c.total}` };
-  });
-  await run('LMS enrol call accepted (Track + Credit codes, no payment data)', async () => {
-    const m = await repo.get<any>('moodle_sync', ids.ms);
-    if (m.status !== 'Success') throw new Error(`LMS call ${m.status}: ${m.err}`);
-    return { track: m.cid, credits: m.credits?.length };
   });
   const link = await run(`Payment link created (${o.provider === 'telr' ? 'Telr, AED' : 'Razorpay, INR'})`, async () => {
     const r = await createPaymentLink(env, repo, ids.enr, undefined, user.name);
@@ -398,6 +397,11 @@ async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: st
     if (e.payStatus !== 'Paid') throw new Error(`Enrolment is ${e.payStatus}`);
     const pays = await repo.many<any>('payment', 'ref1=?', [ids.enr]);
     return { receipt: pays[0]?.rc, payment: pays[0]?.id, payStatus: e.payStatus };
+  });
+  await run('LMS purchase received after full payment (Track + Credit codes, no payment data)', async () => {
+    const m = await repo.get<any>('moodle_sync', ids.ms);
+    if (m.status !== 'Success') throw new Error(`LMS call ${m.status}: ${m.err}`);
+    return { track: m.cid, credits: m.credits?.length };
   });
   await run('Payment pushed to ERPNext as a Payment Entry', async () => {
     const pays = await repo.many<any>('payment', 'ref1=?', [ids.enr]);
@@ -440,10 +444,11 @@ async function moodleRetry(env: Env, repo: Repo, user: User, perms: any, run: (s
   const today = nowIso().slice(0, 10);
   await run('Simulate LMS outage (failure injection)', async () => { await repo.putSetting('test_flags', { ...(await repo.setting('test_flags')), moodleFail: true }); return 'moodleFail = true'; });
   await run('Enrol a test student – the LMS enrol call fails and is recorded', async () => {
-    const s = { id: ids.stu, first: 'TEST', last: 'LMS Retry', dob: '2014-01-01', gender: 'Male', branch: 'KRM', reg: today, parents: [{ name: 'TEST Parent', rel: 'Father', email: `lms.test.${Date.now()}@example.com`, mobile: '+971500000009' }], moodle: null, interests: [], status: 'Active', comm: [], docs: [], testimonials: [], test: true };
+    const s = { id: ids.stu, email: `student.retry.${Date.now()}@example.com`, first: 'TEST', last: 'LMS Retry', dob: '2014-01-01', gender: 'Male', branch: 'KRM', reg: today, parents: [{ name: 'TEST Parent', rel: 'Father', email: `lms.test.${Date.now()}@example.com`, mobile: '+971500000009' }], moodle: null, interests: [], status: 'Active', comm: [], docs: [], testimonials: [], test: true };
     const e = { id: ids.enr, stu: s.id, prog: 'COD', branch: 'KRM', pkg: fee.pkg, date: today, status: 'Active', cur: fee.cur, fee: c.base, reg: c.extra, disc: 0, discInfo: null, tax: c.tax, total: c.total, taxPct: fee.tax, paid: 0, payStatus: 'Unpaid', opp: null, course: program.courses[0], sessions: fee.sessions, credits: program.credits, newStu: true, ms: ids.ms, test: true };
     const m = { id: ids.ms, enr: e.id, stu: s.id, status: 'Pending', mid: null, cid: e.course.moodleId, course: e.course.name, mode: 'new', last: nowIso(), err: '', attempts: 0, hist: [], test: true };
-    const r = await applySync(env, repo, user, perms, [{ coll: 'students', id: s.id, op: 'upsert', doc: s }, { coll: 'enr', id: e.id, op: 'upsert', doc: e }, { coll: 'ms', id: m.id, op: 'upsert', doc: m }]);
+    const pay = { id: repo.testId('pay'), enr: e.id, amt: c.total, method: 'Cash' };
+    const r = await applySync(env, repo, user, perms, [{ coll: 'students', id: s.id, op: 'upsert', doc: s }, { coll: 'enr', id: e.id, op: 'upsert', doc: e }, { coll: 'ms', id: m.id, op: 'upsert', doc: m }, { coll: 'pay', id: pay.id, op: 'upsert', doc: pay }]);
     if (!r.ok) throw new Error(r.rejected.map((x) => x.reason).join('; '));
     for (const j of r.jobs) if (j.kind === 'moodle_sync') await runJob(env, j);
     const after = await repo.get<any>('moodle_sync', ids.ms);
@@ -452,12 +457,7 @@ async function moodleRetry(env: Env, repo: Repo, user: User, perms: any, run: (s
   });
   await run('Outage cleared, retry succeeds (the LMS applies each reference once)', async () => {
     await repo.putSetting('test_flags', { ...(await repo.setting('test_flags')), moodleFail: false });
-    const m = await repo.get<any>('moodle_sync', ids.ms);
-    m.status = 'Pending';
-    m.hist.push({ at: nowIso(), s: 'Pending', msg: 'Retry requested from testing console' });
-    const r = await applySync(env, repo, user, perms, [{ coll: 'ms', id: m.id, op: 'upsert', doc: m }]);
-    if (!r.ok) throw new Error(r.rejected.map((x) => x.reason).join('; '));
-    for (const j of r.jobs) await runJob(env, j);
+    await runJob(env, { kind: 'moodle_sync', id: ids.ms });
     const after = await repo.get<any>('moodle_sync', ids.ms);
     if (after.status !== 'Success') throw new Error(`Expected Success, got ${after.status}: ${after.err}`);
     return { status: after.status, attempts: after.attempts, track: after.cid };

@@ -180,3 +180,9 @@ These were open in the prototype; the system implements a sensible default that 
 
 - Long forms in pop-ups (e.g. *New lead*) grew taller than the window and pushed the Save button off-screen; pop-ups now scroll internally.
 - Prototype-only simulators (fake web capture, fake parent replies, fake incoming calls in production) are hidden on real data; the Testing console replaces them.
+
+## Modular frontend and LMS update
+
+The editable screens are in `frontend/`; see `frontend/README.md`. `npm run build:frontend` generates the served files. The existing VPS `scripts/patch-frontend.mjs` command remains supported and runs the same build.
+
+See `docs/LMS-Integration.md` for the November 2026 LMS contract, package mapping, UAT setup and manual verification. Existing SMTP, password reset, report exports and staff/branch access controls are retained.

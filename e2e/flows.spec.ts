@@ -33,7 +33,7 @@ test('Reception records a counter payment and gets a server receipt number', asy
   await expect(page.locator('table.tbl')).toContainText(/RC-[A-Z]{3}-26-\d{4}/);
 });
 
-test('Centre Administrator registers a new student on a 40/30/30 plan; the LMS enrol call completes', async ({ page, request }) => {
+test('Centre Administrator registers a new student on a 40/30/30 plan; LMS waits for full payment', async ({ page, request }) => {
   await as(page, 'hassan.ali@example.com');
   await go(page, 'wizard', { mode: 'new' });
   const stamp = Date.now().toString().slice(-6);
@@ -41,6 +41,7 @@ test('Centre Administrator registers a new student on a 40/30/30 plan; the LMS e
   await f.locator('[name=first]').fill('E2E');
   await f.locator('[name=last]').fill('Learner ' + stamp);
   await f.locator('[name=dob]').fill('2015-03-03');
+  await f.locator('[name=semail]').fill(`student.${stamp}@example.com`);
   await f.locator('[name=pname]').fill('E2E Guardian ' + stamp);
   await f.locator('[name=pmob]').fill('+971 50 6' + stamp);
   await f.locator('[name=pemail]').fill(`guardian.${stamp}@example.com`);
@@ -52,13 +53,18 @@ test('Centre Administrator registers a new student on a 40/30/30 plan; the LMS e
   await page.locator('#wf3 [name=method]').selectOption('Cash');
   await page.getByRole('button', { name: 'Complete enrolment' }).click();
   await expect(page.locator('.sum')).toContainText('Learner ' + stamp);
-  await expect(page.locator('#toasts')).toContainText('LMS enrol call succeeded', { timeout: 20_000 });
+  await page.getByRole('tab', { name: 'LMS', exact: true }).click();
+  await expect(page.locator('#main')).toContainText('Awaiting Payment');
   await noSaveErrors(page);
   // the server built the schedule, and the first instalment was collected at enrolment
   const enrId = await page.evaluate(() => (0, eval)('S.enr[S.enr.length-1].id'));
   const inst = await (await page.request.get(`/api/v1/enrollments/${enrId}/instalments`)).json();
   expect(inst.term.name).toBe('40 / 30 / 30');
   expect(inst.instalments.map((i: any) => i.st)).toEqual(['Paid', 'Upcoming', 'Upcoming']);
+  const callId = await page.evaluate(() => (0, eval)('S.ms.find(m => m.enr === S.enr[S.enr.length-1].id).id'));
+  const sync = await (await page.request.get(`/api/v1/lms/calls/${callId}`)).json();
+  expect(sync.status).toBe('Awaiting Payment');
+  expect(sync.attempts).toBe(0);
 });
 
 test('Management approves a pending exceptional discount', async ({ page }) => {
@@ -107,7 +113,7 @@ test('Centre Administrator withdraws a student: refund suggested from the rules,
   await page.locator('.modal [name=amt]').fill('10');
   await expect(page.locator('#wdSug')).toContainText('exception');
   await page.locator('.modal button[type=submit]').click();
-  await expect(page.locator('#toasts')).toContainText('LMS cancel call succeeded', { timeout: 20_000 });
+  await expect(page.locator('#toasts')).toContainText('LMS cancel received', { timeout: 20_000 });
   await noSaveErrors(page);
   await go(page, 'refunds');
   await expect(page.locator('#main')).toContainText('Exception');
@@ -116,12 +122,12 @@ test('Centre Administrator withdraws a student: refund suggested from the rules,
 
 test('System Administrator opens the new settings; counsellor sees the monthly target tile and report', async ({ page }) => {
   await as(page, 'vikram.sethi@example.com');
-  for (const [tab, text] of [['targets', 'Counsellor targets'], ['payTerms', 'Payment terms'], ['refund', 'Refund calculator'], ['lms', 'Enrol call – sent once per enrolment']]) {
+  for (const [tab, text] of [['targets', 'Counsellor targets'], ['payTerms', 'Payment terms'], ['refund', 'Refund calculator'], ['lms', 'Purchase call – sent once per paid order']]) {
     await go(page, 'config', { tab });
     await expect(page.locator('#main')).toContainText(text);
   }
   await page.getByText('Sample data', { exact: true }).click();
-  await expect(page.locator('#main pre').first()).toContainText('"call": "enrol"');
+  await expect(page.locator('#main pre').first()).toContainText('"wsfunction": "local_lofplatform_erp_purchase"');
   await as(page, 'priya.nair@example.com');
   await expect(page.locator('.kpi', { hasText: 'My monthly target' })).toBeVisible();
   await go(page, 'reports', { rep: 'r21' });

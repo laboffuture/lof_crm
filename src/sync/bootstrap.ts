@@ -59,6 +59,7 @@ export async function bootstrap(env: Env, repo: Repo, user: User, perms: any) {
   cfgOut.mailOut.smtp = can(perms, user, 'configuration', 'V') ? { ...SMTP_DEFAULTS, ...(cfgOut.mailOut.smtp || {}) } : undefined; // never the password
   cfgOut.mailIn = { ...structuredClone(MAIL_IN_DEFAULTS), ...(cfgOut.mailIn || {}) };
   cfgOut.mailAuto = mailAutoSettings(cfgOut);
+  cfgOut.lms.packages ||= {};
   cfgOut.integ = cfgOut.integ || {};
   if (!cfgOut.integ.lms) cfgOut.integ.lms = def.lmsInteg;
   for (const p of programs) if (!cfgOut.lms.programmes[p.id]) cfgOut.lms.programmes[p.id] = { track: '', credits: [] };

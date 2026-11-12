@@ -26,6 +26,7 @@ import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, target
 import { checkEmailTemplates } from '../domain/email-templates';
 import { checkMailSettings } from '../domain/mail';
 import { checkMailAuto } from '../domain/mail-send';
+import { activatePaidLms, LMS_CONTRACT } from '../domain/lms-orders';
 
 export interface Change { coll: string; id: string; op: 'upsert' | 'delete'; doc?: any; base?: any }
 export interface SettingChange { key: string; doc: any }
@@ -175,8 +176,9 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   const lmsCallDoc = (id: string, op: 'enrol' | 'cancel', e: any) => {
     const code = cfg.lms?.programmes?.[e.prog] || {};
     const prog = programs.find((p) => p.id === e.prog);
-    return { id, enr: e.id, stu: e.stu, op, status: 'Pending', mid: null, cid: code.track || '—', credits: op === 'enrol' ? (code.credits || []).slice() : [], course: `${prog?.name || e.prog} · ${e.pkg}`, mode: op, last: now, err: '', attempts: 0,
-      hist: [{ at: now, s: 'Pending', msg: op === 'cancel' ? 'Cancel call queued after withdrawal' : 'Enrol call queued after enrolment' }], ...(e.test ? { test: true } : {}) };
+    const status = op === 'cancel' ? 'Pending' : 'Awaiting Payment';
+    return { id, enr: e.id, stu: e.stu, op, status, contract: LMS_CONTRACT, mid: null, cid: code.track || '—', credits: op === 'enrol' ? (code.credits || []).slice() : [], course: `${prog?.name || e.prog} · ${e.pkg}`, mode: op, last: now, err: '', attempts: 0,
+      hist: [{ at: now, s: status, msg: op === 'cancel' ? 'Cancel call queued after withdrawal' : 'Purchase waits until the order is fully paid' }], ...(e.test ? { test: true } : {}) };
   };
   const isCounsellor = (id: unknown) => staffList.some((s) => s.id === id && s.role === 'Counsellor' && s.status === 'Active');
 
@@ -530,12 +532,12 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           if (d.term && !term) { reject(c, 'Payment term is not active'); break; }
           const linkedOpp = d.opp ? await getDoc('opps', 'opp', d.opp) : null;
           Object.assign(d, { cur: fee.cur, fee: calc.base, reg: calc.extra, disc: calc.disc, discInfo: disc, tax: calc.tax, total: calc.total, taxPct: fee.tax, paid: 0, payStatus: 'Unpaid', feeId: fee.id, pkg: fee.pkg, sessions: fee.sessions, credits: program.credits, course, newStu, status: 'Active',
-            term: term?.id || null, sched: buildSched(term, calc.total, d.date), cslr: linkedOpp?.cslr || null });
+            term: term?.id || null, sched: buildSched(term, calc.total, d.date), cslr: linkedOpp?.cslr || null, lmsContract: LMS_CONTRACT });
           writes.push({ type, doc: d, coll: c.coll });
           break;
         }
         if (!inScope(o.branch)) { reject(c, 'Enrolment is outside your branch access'); break; }
-        const frozen = ['id', 'stu', 'prog', 'branch', 'pkg', 'date', 'cur', 'fee', 'reg', 'disc', 'tax', 'total', 'taxPct', 'discInfo', 'newStu', 'feeId', 'course', 'sessions', 'credits', 'opp', 'ms', 'term', 'sched', 'cslr'];
+        const frozen = ['id', 'stu', 'prog', 'branch', 'pkg', 'date', 'cur', 'fee', 'reg', 'disc', 'tax', 'total', 'taxPct', 'discInfo', 'newStu', 'feeId', 'course', 'sessions', 'credits', 'opp', 'ms', 'term', 'sched', 'cslr', 'lmsContract'];
         if (keys.some((k) => frozen.includes(k))) { reject(c, 'Fee and programme details of an enrolment cannot be edited'); break; }
         d.paid = o.paid; d.payStatus = o.payStatus; // owned by payments
         const userKeys = keys.filter((k) => !['paid', 'payStatus'].includes(k));
@@ -619,15 +621,16 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             cancelsFor.add(d.enr);
           }
           writes.push({ type, doc: lmsCallDoc(d.id, op, e), coll: c.coll });
-          jobs.push({ kind: 'moodle_sync', id: d.id });
+          if (op === 'cancel') jobs.push({ kind: 'moodle_sync', id: d.id });
           break;
         }
         const e = await repo.get<any>('enrollment', o.enr);
         if (!e || !inScope(e.branch)) { reject(c, 'Enrolment outside your branch access'); break; }
-        if (d.status !== 'Pending' || ['Processing', 'Pending', 'Success', 'Closed'].includes(o.status)) { reject(c, 'LMS call status is managed by the server – only a failed call can be retried'); break; }
+        if (d.status !== 'Pending' || !['Failed', 'Retry Required', 'Awaiting Setup'].includes(o.status)) { reject(c, 'Only a failed call or one awaiting setup can be retried; received orders with warnings need LOF review'); break; }
         if (!(P('configuration', 'V') || ['Admissions Head', 'Centre Administrator', 'Management'].includes(user.role))) { reject(c, `${user.role} cannot retry syncs`); break; }
-        jobs.push({ kind: 'moodle_sync', id: d.id });
-        writes.push({ type, doc: { ...o, status: 'Pending', hist: [...(o.hist || []), { at: now, s: 'Pending', msg: `Retry requested by ${user.name}` }] }, coll: c.coll });
+        // Retry ownership is centralized in the atomic endpoint; a stale document upsert
+        // must never overwrite a worker's Processing state and issue a second call.
+        reject(c, 'Retry this call using POST /lms/calls/:id/retry');
         break;
       }
 
@@ -654,6 +657,12 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
 
   // Every withdrawal tells the LMS to withdraw unused credits, even when the client did not send the cancel call
   if (!rejected.length) {
+    // The server creates purchase records even when an API client omits the browser's ms document.
+    for (const w of writes.filter((w) => w.type === 'enrollment' && isNew('enr', w.doc.id))) {
+      if (enrolsFor.has(w.doc.id)) continue;
+      const id = await repo.newId('ms');
+      writes.push({ type: 'moodle_sync', doc: lmsCallDoc(id, 'enrol', w.doc), coll: 'ms' });
+    }
     for (const w of withdrawals) {
       if (cancelsFor.has(w.enr)) continue;
       const e = batchItems('enr').find((x) => x.d.id === w.enr)!.d;
@@ -771,7 +780,13 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   const extra: { coll: string; doc: any }[] = extraDocs;
   for (const enrId of postPaymentsFor) {
     const e = await recalcEnrollment(repo, enrId);
-    if (e) extra.push({ coll: 'enr', doc: e });
+    if (e) {
+      extra.push({ coll: 'enr', doc: e });
+      for (const id of await activatePaidLms(repo, e)) {
+        jobs.push({ kind: 'moodle_sync', id });
+        extra.push({ coll: 'ms', doc: await repo.get('moodle_sync', id) });
+      }
+    }
   }
 
   const docs = [...puts.map((w) => ({ coll: w.coll, doc: w.doc })), ...extra];

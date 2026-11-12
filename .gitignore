@@ -7,3 +7,6 @@ playwright-report
 
 # local database backups
 backups/
+
+# Generated frontend demo
+dist/

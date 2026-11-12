@@ -73,3 +73,16 @@ test('signing out clears the data from the page and the screen keeps working', a
   await page.evaluate(() => (window as any).go('refunds'));
   await expect(page.locator('#app')).not.toContainText('simulated');
 });
+
+test('offline demo runs: ?demo=1 on the server and the standalone demo page', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/?demo=1');
+  await expect(page.getByRole('heading', { name: 'CRM Dashboard' })).toBeVisible();
+  // dist/lof-crm-demo.html is written by the same build as public/ (npm run build:frontend)
+  await page.goto('file://' + process.cwd() + '/dist/lof-crm-demo.html');
+  await expect(page.getByRole('heading', { name: 'CRM Dashboard' })).toBeVisible();
+  await page.evaluate(() => (window as any).go('leads'));
+  await expect(page.locator('#main table.tbl')).toBeVisible();
+  expect(errors).toEqual([]);
+});

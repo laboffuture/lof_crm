@@ -105,20 +105,20 @@ describe('refund rules', () => {
 describe('LMS enrol call payload', () => {
   const L = { validMonths: 12, programmes: { ROB: { track: 'ROB-TRK-10021', credits: ['ROB-TRK-10021-C3', 'ROB-TRK-10021-C4'] } }, branchMap: { BLR: 'BLR01' } };
   const e = { id: 'EN-26-0123', prog: 'ROB', pkg: 'Term (24 sessions)', branch: 'BLR', date: '2026-09-19', total: 9999, paid: 9999 };
-  const s = { id: 'LOF-26-000041', first: 'Aarav', last: 'Sharma', dob: '2014-07-15', fam: 'FAM-26-0019', parents: [{ name: 'Rohit Sharma', email: 'rohit@example.com', mobile: '+91 98765 11111' }] };
-  it('matches the LOF booking platform sheet (v3) and carries no payment data', () => {
+  const s = { id: 'LOF-26-000041', first: 'Aarav', last: 'Sharma', dob: '2014-07-15', email: 'aarav@example.com', fam: 'FAM-26-0019', parents: [{ name: 'Rohit Sharma', email: 'rohit@example.com', mobile: '+91 98765 11111' }] };
+  it('matches the LOF CRM to LMS guide v1.1 and carries no payment data', () => {
     const p = lmsEnrolPayload(e, s, { name: 'Robotics' }, L);
     expect(p).toEqual({
-      reference: 'EN-26-0123', student_id: 'LOF-26-000041', student_first_name: 'Aarav', student_last_name: 'Sharma', student_email: 'rohit@example.com', student_phone: '+91 98765 11111', student_dob: '2014-07-15',
+      reference: 'EN-26-0123', student_id: 'LOF-26-000041', student_first_name: 'Aarav', student_last_name: 'Sharma', student_email: 'aarav@example.com', student_phone: '+91 98765 11111', student_dob: '2014-07-15',
       parent_id: 'FAM-26-0019', parent_name: 'Rohit Sharma', parent_email: 'rohit@example.com', parent_phone: '+91 98765 11111', branch: 'BLR01', valid_until: '2027-09-18',
-      products: [{ product_name: 'Robotics – Term (24 sessions)', track: 'ROB-TRK-10021', credits: ['ROB-TRK-10021-C3', 'ROB-TRK-10021-C4'] }],
+      skillslabs: [], items: [{ product_name: 'Robotics – Term (24 sessions)', track: 'ROB-TRK-10021', credits: ['ROB-TRK-10021-C3', 'ROB-TRK-10021-C4'] }],
     });
     expect(JSON.stringify(p)).not.toMatch(/9999|amount|price|paid|invoice/i);
     expect(lmsMissing(p)).toEqual([]);
   });
   it('lists missing required fields instead of sending an incomplete call', () => {
     const p = lmsEnrolPayload({ ...e, branch: 'HYD', prog: 'AI' }, { ...s, dob: '' }, { name: 'AI' }, L);
-    expect(lmsMissing(p)).toEqual(['student_dob', 'branch', 'products[0].track', 'products[0].credits']);
+    expect(lmsMissing(p)).toEqual(['student_dob', 'branch', 'at least one Track or Skills Lab line']);
   });
 });
 
