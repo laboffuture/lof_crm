@@ -17,10 +17,21 @@ const patches = [
   [/const\s+TODAY\s*=\s*dayKey\(NOW\.toISOString\(\)\);/, 'let TODAY=dayKey(NOW.toISOString());'],
   [/const\s+nowIso\s*=\s*\(\)\s*=>\s*NOW\.toISOString\(\);/, 'const nowIso=()=>(window.LOF_API?new Date():NOW).toISOString();'],
   [/\n\s*boot\(\);\s*\n\s*<\/script>/, '\nif(!window.LOF_API)boot();\n</script>\n<script src="/vendor/qrcode-generator-1.4.4.js"></script>\n<script src="/api-client.js"></script>'],
-  ['<title>LOF CRM Prototype</title>', '<title>Lab of Future CRM</title>'],
+  ['<title>LOF CRM Prototype</title>', '<title>Lab of Future CRM</title>\n  <link rel="icon" type="image/png" href="/logo.png">'],
   ['<small>CRM & Sales · Prototype</small>', '<small>CRM & Sales</small>'],
   // long modal forms: let the body scroll so the footer buttons stay on screen
   [/\.hide\s*\{\s*display:\s*none\s*!important\s*\}/, '.hide{display:none!important}\n.modal{max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px)}.modal>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}.modal .mb{min-height:0;flex:1 1 auto}'],
+  // KPI cards stretch across the full width instead of leaving empty slots at the end of the row
+  // (all 7 fit on one row on a laptop), and in a two-column chart grid an odd last card spans the full width
+  ['grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));','grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));'],
+  [/\.g3\s*\{/, '@media (max-width:1579px){.g2>:last-child:nth-child(odd){grid-column:1/-1}}\n' +
+    // tighter spacing, and charts fill their cards (cards in a row share the tallest one's height)
+    '    .content{padding:14px 16px 24px}.ph,.banner{margin-bottom:10px}.grid{gap:10px}.kpis{gap:10px;margin-bottom:10px}\n' +
+    '    .grid>.card{display:flex;flex-direction:column}.grid>.card>.bd{flex:1 1 auto}\n' +
+    '    .funnel,.bars{height:100%;justify-content:space-around}\n' +
+    '    .donutw{height:100%;justify-content:center;gap:32px}.donutw>svg{width:min(180px,45%);height:auto}.donutw .legend{font-size:13px;gap:9px!important}\n' +
+    '    .g3 {'],
+  ['const filters = `<div class="card" style="margin-bottom:14px">', 'const filters = `<div class="card" style="margin-bottom:10px">'],
   // after sign-out the app state is cleared (S=null); global handlers must not touch it
   [/document\.addEventListener\('click',\s*e\s*=>\s*\{\s*if\s*\(S\.menu/, "document.addEventListener('click',e=>{if(!S)return;if(S.menu"],
   [/if\s*\(e\.key\s*===\s*'Escape'\s*&&\s*S\.modal\s*&&/, "if(e.key==='Escape'&&S&&S.modal&&"],
@@ -29,6 +40,9 @@ const patches = [
   // ("Assignment to constant variable" stops api-client.js and leaves the page blank)
   ['const inScope = b =>', 'let inScope = b =>'],
   ['const optBranches = () =>', 'let optBranches = () =>'],
+  // demo staff IDs that may not exist in a real database (they crashed the top bar)
+  [".map(i => S.staff.find(s => s.id === i));", ".map(i => S.staff.find(s => s.id === i)).filter(Boolean);"],
+  ['S.staff.find(s => s.id === a.by).role', '(S.staff.find(s => s.id === a.by) || {}).role'],
   // prototype wording that no longer applies
   ['Email and WhatsApp delivery are simulated. Escalation', 'Email and WhatsApp are delivered when those integrations are live (Settings → Testing console). Escalation'],
   [

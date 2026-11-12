@@ -25,12 +25,12 @@ describe('email templates (server)', () => {
   it('saves an edited and a new template, keeping only known fields', async () => {
     const r = await save((c) => {
       c.emailTpls.find((x: any) => x.n === 'Fee receipt').subject = 'Receipt {receipt_no} for {student_name}';
-      c.emailTpls.push({ id: 'ET10', cat: 'Events & competitions', n: 'Science fair', subject: '{event_name}', body: 'Dear {parent_name}, see you on {event_date}.', branch: 'KRM', active: true, html: '<script>' });
+      c.emailTpls.push({ id: 'ET30', cat: 'Events & competitions', n: 'Science fair', subject: '{event_name}', body: 'Dear {parent_name}, see you on {event_date}.', branch: 'KRM', active: true, html: '<script>' });
     });
     expect(r.status).toBe(200);
     const saved = (await cfgDoc()).emailTpls;
     expect(saved.find((x: any) => x.n === 'Fee receipt').subject).toBe('Receipt {receipt_no} for {student_name}');
-    expect(saved.find((x: any) => x.id === 'ET10')).toEqual({ id: 'ET10', cat: 'Events & competitions', n: 'Science fair', subject: '{event_name}', body: 'Dear {parent_name}, see you on {event_date}.', branch: 'KRM', active: true });
+    expect(saved.find((x: any) => x.id === 'ET30')).toEqual({ id: 'ET30', cat: 'Events & competitions', n: 'Science fair', subject: '{event_name}', body: 'Dear {parent_name}, see you on {event_date}.', branch: 'KRM', active: true });
   });
   it('rejects unknown placeholders, categories, branches and duplicate ids', async () => {
     expect((await save((c) => { c.emailTpls[0].body += ' {password}'; })).body.error).toMatch(/unknown placeholder \{password\}/);

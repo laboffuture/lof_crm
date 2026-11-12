@@ -25,6 +25,7 @@ import { hashPassword } from '../lib/crypto';
 import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, lmsProblem } from '../domain/terms';
 import { checkEmailTemplates } from '../domain/email-templates';
 import { checkMailSettings } from '../domain/mail';
+import { checkMailAuto } from '../domain/mail-send';
 
 export interface Change { coll: string; id: string; op: 'upsert' | 'delete'; doc?: any; base?: any }
 export interface SettingChange { key: string; doc: any }
@@ -699,6 +700,13 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
       const mail = checkMailSettings(doc.mailOut, doc.mailIn, branches);
       if ('problem' in mail) { rejected.push({ coll: 'settings', id: 'cfg', reason: mail.problem }); continue; }
       Object.assign(doc, mail);
+      // The SMTP server is changed only through PUT /api/v1/mail/smtp (it keeps the password server-side)
+      const smtpNow = (cur as any)?.mailOut?.smtp;
+      if (doc.mailOut && typeof doc.mailOut === 'object') { if (smtpNow) doc.mailOut.smtp = smtpNow; else delete doc.mailOut.smtp; }
+      else if (smtpNow) doc.mailOut = { ...(cur as any).mailOut };
+      const auto = checkMailAuto(doc.mailAuto, (cur as any)?.mailAuto);
+      if ('problem' in auto) { rejected.push({ coll: 'settings', id: 'cfg', reason: auto.problem }); continue; }
+      if (auto.mailAuto) doc.mailAuto = auto.mailAuto;
     }
     settingWrites.push({ key: s.key, doc });
   }

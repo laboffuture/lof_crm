@@ -3,7 +3,7 @@
 The approved LOF CRM prototype, turned into a working system on **Cloudflare Workers + D1**:
 
 - **API** (Hono) with sign-in, branch-scoped data, role permissions and an audit trail
-- **Integrations**: Website form, Meta Lead Ads, WhatsApp Cloud API, Exotel, LMS (LOF booking platform), Telr (AED), Razorpay (INR), ERPNext Accounts, Google Calendar, e-mail (Resend) – each with a **mock mode** so everything can be tested before credentials exist
+- **Integrations**: Website form, Meta Lead Ads, WhatsApp Cloud API, Exotel, LMS (LOF booking platform), Telr (AED), Razorpay (INR), ERPNext Accounts, Google Calendar, e-mail (SMTP) – each with a **mock mode** so everything can be tested before credentials exist
 - **Testing module**: an in-app **Testing console** (Settings → Testing console) plus an automated test suite (Vitest + Playwright)
 - **Frontend**: the prototype screens, unchanged in look and workflow, wired to the API by `public/api-client.js`
 
@@ -140,7 +140,7 @@ Set the secrets (`wrangler secret put …`), set the variables in `wrangler.toml
 | **Razorpay** (INR) | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Webhook `/webhooks/razorpay`, events `payment_link.paid`, `payment_link.cancelled`, `payment_link.expired` |
 | **ERPNext** | `ERPNEXT_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_PAID_TO_AED`, `ERPNEXT_PAID_TO_INR` | API user with Accounts User role. Payment Entries are created as **drafts** (set `cfg.integ.erp.submit = true` to post); mode-of-payment names in `cfg.integ.erp.modes`; failed pushes retry from the scheduler |
 | **Google Calendar** | `GCAL_SERVICE_ACCOUNT_JSON`, `GCAL_CALENDAR_ID` | Share the calendar with the service account (make changes to events) |
-| **E-mail** | `RESEND_API_KEY`, `EMAIL_FROM` | Verify the sending domain in Resend |
+| **E-mail** | none – set in Configuration → Email Outgoing → SMTP server | Google Workspace: smtp.gmail.com, port 465 (SSL), the mailbox address and an app password |
 
 ## Security model (summary)
 

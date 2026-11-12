@@ -38,6 +38,7 @@
   <!doctype html>
   <meta charset="utf-8">
   <title>Lab of Future CRM</title>
+  <link rel="icon" type="image/png" href="/logo.png">
   <link rel="stylesheet"
     href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
   <style>
@@ -598,6 +599,11 @@
       grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr))
     }
 
+    @media (max-width:1579px){.g2>:last-child:nth-child(odd){grid-column:1/-1}}
+    .content{padding:14px 16px 24px}.ph,.banner{margin-bottom:10px}.grid{gap:10px}.kpis{gap:10px;margin-bottom:10px}
+    .grid>.card{display:flex;flex-direction:column}.grid>.card>.bd{flex:1 1 auto}
+    .funnel,.bars{height:100%;justify-content:space-around}
+    .donutw{height:100%;justify-content:center;gap:32px}.donutw>svg{width:min(180px,45%);height:auto}.donutw .legend{font-size:13px;gap:9px!important}
     .g3 {
       grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr))
     }
@@ -609,7 +615,7 @@
     .kpis {
       display: grid;
       gap: 10px;
-      grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
       margin-bottom: 14px
     }
 
@@ -2129,7 +2135,7 @@
       const u = me(), at = nowIso(); a.status = ok ? 'Approved' : 'Rejected'; a.decision = { by: u.id, at, remarks }; a.hist.push({ at, by: u.id, action: a.status, remarks });
       if (a.type === 'Exceptional Discount') {
         const o = oppById(a.payload.opp); if (o) { o.discReq = null; if (ok) { o.discount = { kind: 'exceptional', ref: a.id, name: 'Exceptional discount', type: a.payload.type, value: a.payload.value }; o.next = 'Discount approved – proceed to enrolment' } else o.next = 'Discount rejected – inform parent'; o.hist.push({ at, by: u.name, text: 'Exceptional discount ' + a.id + ' ' + a.status.toLowerCase() + (remarks ? ' – ' + remarks : '') }) }
-        notify('disc', ok ? 'ok' : 'warn', 'Discount ' + a.status.toLowerCase() + ': ' + a.summary, { page: 'approvalHistory' }, ['Counsellor', 'Centre Administrator'], a.branch, a.by.startsWith('S') && S.staff.find(s => s.id === a.by).role === 'Counsellor' ? a.by : null)
+        notify('disc', ok ? 'ok' : 'warn', 'Discount ' + a.status.toLowerCase() + ': ' + a.summary, { page: 'approvalHistory' }, ['Counsellor', 'Centre Administrator'], a.branch, a.by.startsWith('S') && (S.staff.find(s => s.id === a.by) || {}).role === 'Counsellor' ? a.by : null)
       }
       else if (a.type === 'Branch Transfer') {
         const l = leadById(a.payload.lead); if (l) { if (ok) { const from = l.branch; l.branch = a.payload.to; addEv(l, 'sys', 'Branch transfer approved: ' + branchName(from) + ' → ' + branchName(l.branch) + ' (by ' + u.name + ')'); const r = routeLead(l.branch, l.prog, l.cat); reassign(l, r.pick ? r.pick.id : null, r.pick ? 'Re-routed after branch transfer' : 'No eligible counsellor in new branch', 'Auto (after transfer)'); if (!r.pick) notify('none', 'crit', 'No counsellor available in ' + branchName(l.branch) + ' for transferred lead ' + l.student, { page: 'leads', preset: 'unassigned' }, ['Admissions Head', 'Centre Administrator'], l.branch); S.opps.forEach(o => { if (o.lead === l.id) o.branch = l.branch }) } else addEv(l, 'warn', 'Branch transfer rejected by ' + u.name + (remarks ? ' – ' + remarks : '')) }
@@ -2183,7 +2189,7 @@
         if (can('students', 'V')) S.students.forEach(s => { if (!inScope(s.branch)) return; if ([s.id, s.first + ' ' + s.last, ...s.parents.map(p => p.name), ...s.parents.map(p => p.mobile), ...s.parents.map(p => p.email)].some(x => String(x).toLowerCase().includes(q))) hits.push(['Student', s.first + ' ' + s.last + ' · ' + s.id, sgo(s.id)]) });
         sr = `<div class="sr">${hits.slice(0, 8).map(h => `<div ${h[2]}>${bdg(h[0], h[0] === 'Lead' ? 'info' : 'ok')}<span>${esc(h[1])}</span></div>`).join('') || '<div class="muted">No matches in your branch scope</div>'}</div>`
       }
-      const users = ['S01', 'S03', 'S07', 'S09', 'S14', 'S10', 'S11', 'S12'].map(i => S.staff.find(s => s.id === i));
+      const users = ['S01', 'S03', 'S07', 'S09', 'S14', 'S10', 'S11', 'S12'].map(i => S.staff.find(s => s.id === i)).filter(Boolean);
       return `<header class="top"><button class="iconbtn mobtn" data-act="mobSide" aria-label="Open menu">${ic('menu')}</button><button class="iconbtn" data-act="toggleSide" aria-label="Collapse sidebar" style="${innerWidth <= 900 ? 'display:none' : ''}">${ic('menu')}</button>
   <div class="search">${ic('search')}<input id="gs" data-input="gsearch" autocomplete="off" placeholder="Search leads, students, phone, e-mail…" value="${esc(S.search)}">${sr}</div><div class="sp"></div>
   <button class="btn sm" data-act="simCall" title="Prototype: simulate an incoming call">${ic('phone')} Simulate incoming call</button>
@@ -2278,7 +2284,7 @@
       };
       const SETS = { Counsellor: ['myTarget', 'myOpen', 'hotAction', 'slaRisk', 'fuToday', 'fuOverdue', 'oppsProg', 'admissions'], 'Centre Administrator': ['newToday', 'unassigned', 'slaRisk', 'fuToday', 'fuOverdue', 'oppsProg', 'admissions', 'revenue', 'moodleFail'], 'Admissions Head': ['newToday', 'unassigned', 'hotAction', 'slaRisk', 'fuOverdue', 'oppsProg', 'admissions', 'discPending', 'moodleFail'], Reception: ['revenue', 'outstanding', 'overdueInst', 'awaiting', 'admissions', 'moodleFail'], Management: ['newToday', 'unassigned', 'slaRisk', 'fuOverdue', 'oppsProg', 'admissions', 'revenue', 'discPending', 'moodleFail'], 'System Administrator': ['newToday', 'unassigned', 'slaRisk', 'moodleFail', 'discPending', 'revenue', 'admissions'] };
       const sb = optBranches();
-      const filters = `<div class="card" style="margin-bottom:14px"><div class="tb">${sb.length > 1 ? `<select name="branch" data-change="dash" aria-label="Branch"><option value="">All branches</option>${sb.map(b => `<option value="${b[0]}"${F.branch === b[0] ? ' selected' : ''}>${b[1]}</option>`).join('')}</select>` : `<span class="badge info">${esc(branchName(sb[0][0]))}</span>`}
+      const filters = `<div class="card" style="margin-bottom:10px"><div class="tb">${sb.length > 1 ? `<select name="branch" data-change="dash" aria-label="Branch"><option value="">All branches</option>${sb.map(b => `<option value="${b[0]}"${F.branch === b[0] ? ' selected' : ''}>${b[1]}</option>`).join('')}</select>` : `<span class="badge info">${esc(branchName(sb[0][0]))}</span>`}
    <select name="range" data-change="dash" aria-label="Date range">${[['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['month', 'This month'], ['all', 'All time']].map(x => `<option value="${x[0]}"${F.range === x[0] ? ' selected' : ''}>${x[1]}</option>`).join('')}</select>
    <select name="program" data-change="dash" aria-label="Programme"><option value="">All programmes</option>${optProgs().map(p => `<option value="${p[0]}"${F.program === p[0] ? ' selected' : ''}>${p[1]}</option>`).join('')}</select>
    <select name="source" data-change="dash" aria-label="Source"><option value="">All sources</option>${SRC_LIST.map(s => `<option${F.source === s ? ' selected' : ''}>${s}</option>`).join('')}</select>

@@ -341,7 +341,7 @@ An integration stays in **mock** mode until it is enabled and all its secrets ar
 | Razorpay (INR) | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Webhook → `/webhooks/razorpay` (`payment_link.paid`, `.cancelled`, `.expired`) |
 | ERPNext | `ERPNEXT_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_PAID_TO_AED`, `ERPNEXT_PAID_TO_INR` | API user with Accounts User role; entries are created as drafts unless `submit` is on |
 | Google Calendar | `GCAL_SERVICE_ACCOUNT_JSON`, `GCAL_CALENDAR_ID` | Share the calendar with the service account |
-| E-mail (Resend) | `RESEND_API_KEY`, `EMAIL_FROM` | Verify the sending domain |
+| E-mail (SMTP) | none – Configuration → Email Outgoing → SMTP server | smtp.gmail.com:465 (SSL) with an app password |
 
 ---
 

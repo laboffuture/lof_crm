@@ -129,7 +129,7 @@ export async function sendStudentMail(env: Env, repo: Repo, studentId: string, i
   const to = entry.to || (s.parents || [])[0]?.email;
   try {
     if (!to) throw new Error('No parent e-mail');
-    const r = await deliverEmail(env, cfg, { mode, isTest: repo.isTest || !!s.test }, { to, subject: `Welcome to Lab of Future – ${s.first} ${s.last} (${s.id})`, text: entry.text, ref: s.id });
+    const r = await deliverEmail(env, cfg, { mode, isTest: repo.isTest || !!s.test }, { to, subject: entry.subject || `Welcome to Lab of Future – ${s.first} ${s.last} (${s.id})`, text: entry.text, ref: s.id });
     entry.mailId = r.id;
     entry.status = mode === 'live' ? 'Sent' : 'Sent (mock)';
   } catch (err: any) {

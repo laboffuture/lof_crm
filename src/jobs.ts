@@ -5,6 +5,7 @@ import { addAudit, addEv, notify, money } from './domain/core';
 import { instStatus } from './domain/terms';
 import { modeFor } from './integrations/base';
 import { telrCheck } from './integrations/payments';
+import { runMailAutomations } from './domain/mail-send';
 
 export async function runJob(env: Env, job: Job) {
   const repo = new Repo(env.DB, 'System');
@@ -132,6 +133,9 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
     env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(Math.floor(now / 1000) - 86400),
     env.DB.prepare('DELETE FROM call_events WHERE at < ?').bind(d(2)),
   ]);
+
+  // Configuration → Email Automation (payment reminders, birthdays, welcome, quotations, receipts)
+  try { jobs.push(...(await runMailAutomations(env, now)).jobs); } catch (e) { console.error('mail automation failed', e); }
 
   await dispatch(env, waitUntil, jobs);
   return { leadsChecked: open.length, overdue: tasks.length, overdueInstalments: overdueInst, lmsRetries: jobs.filter((j) => j.kind === 'moodle_sync').length };

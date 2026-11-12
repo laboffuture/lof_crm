@@ -59,8 +59,6 @@ export interface Env {
   GCAL_CALENDAR_ID?: string;
   GCAL_SERVICE_ACCOUNT_JSON?: string;
 
-  RESEND_API_KEY?: string;
-  EMAIL_FROM?: string;
 }
 
 export type Role =

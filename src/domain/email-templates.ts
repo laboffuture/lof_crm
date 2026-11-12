@@ -20,6 +20,8 @@ export const EMAIL_PLACEHOLDERS: Record<string, { label: string; sample: string 
   balance_due: { label: 'Balance due', sample: '3,000.00' },
   due_date: { label: 'Due date', sample: '15 Nov 2026' },
   payment_link: { label: 'Payment link', sample: 'https://pay.labofuture.example/abc123' },
+  package: { label: 'Package', sample: 'Term (24 sessions)' },
+  valid_until: { label: 'Quotation valid until', sample: '12 Nov 2026' },
   event_name: { label: 'Event / competition name', sample: 'LOF Robotics Challenge 2026' },
   event_date: { label: 'Event date', sample: '22 Nov 2026' },
   event_venue: { label: 'Event venue', sample: 'Karama lab' },
@@ -34,7 +36,7 @@ export const DEFAULT_EMAIL_TEMPLATES: EmailTemplate[] = [
   { id: 'ET1', cat: 'Admissions', n: 'Document request', branch: 'All', active: true, subject: 'Documents needed for {student_name}',
     body: 'Dear {parent_name},\n\nTo complete the admission of {student_name} to {programme} at Lab of Future {branch}, please send us the remaining documents.\n\nIf you have any questions, {counsellor} will be happy to help.\n\nKind regards,\nLab of Future {branch}' },
   { id: 'ET2', cat: 'Fees & payments', n: 'Fee receipt', branch: 'All', active: true, subject: 'Payment received – {student_name} ({receipt_no})',
-    body: 'Dear {parent_name},\n\nThank you. We have received {currency} {amount} for {student_name} ({student_id}) on {payment_date} by {payment_method}.\n\nReceipt number: {receipt_no}\nBalance due: {currency} {balance_due}\n\nKind regards,\nLab of Future {branch}' },
+    body: 'Dear {parent_name},\n\nThank you. We have received {currency} {amount} for {student_name} ({student_id}) on {payment_date} by {payment_method}.\n\nReceipt number: {receipt_no}\nBalance due: {currency} {balance_due}\n\nYour tax invoice will be sent separately by our accounts team.\n\nKind regards,\nLab of Future {branch}' },
   { id: 'ET3', cat: 'Fees & payments', n: 'Fee reminder', branch: 'All', active: true, subject: 'Fee reminder – {student_name}, due {due_date}',
     body: 'Dear {parent_name},\n\nThis is a friendly reminder that {currency} {balance_due} for {student_name} ({programme}) is due on {due_date}.\n\nYou can pay online here: {payment_link}\n\nKind regards,\nLab of Future {branch}' },
   { id: 'ET4', cat: 'Fees & payments', n: 'Payment overdue', branch: 'All', active: true, subject: 'Overdue payment – {student_name}',
@@ -49,6 +51,12 @@ export const DEFAULT_EMAIL_TEMPLATES: EmailTemplate[] = [
     body: 'Dear {parent_name},\n\nCongratulations! {student_name} achieved {result} at {event_name} on {event_date}.\n\nWe are very proud of this achievement.\n\nKind regards,\nLab of Future {branch}' },
   { id: 'ET9', cat: 'General', n: 'Centre closure notice', branch: 'All', active: true, subject: 'Lab of Future {branch} – closed on {event_date}',
     body: 'Dear {parent_name},\n\nPlease note that Lab of Future {branch} will be closed on {event_date}. Classes for {student_name} will resume as normal afterwards.\n\nKind regards,\nLab of Future {branch}' },
+  { id: 'ET10', cat: 'Admissions', n: 'Enrolment welcome', branch: 'All', active: true, subject: 'Welcome to Lab of Future, {student_name}!',
+    body: 'Dear {parent_name},\n\nWelcome to Lab of Future {branch}! {student_name} is now enrolled in {programme}.\n\nStudent ID: {student_id}\nYour counsellor: {counsellor}\n\nWe look forward to seeing {student_name} in class.\n\nKind regards,\nLab of Future {branch}' },
+  { id: 'ET11', cat: 'Admissions', n: 'Quotation', branch: 'All', active: true, subject: 'Your quotation for {student_name} – {programme}',
+    body: 'Dear {parent_name},\n\nThank you for choosing Lab of Future {branch}. Here is the fee for {student_name}:\n\nProgramme: {programme}\nPackage: {package}\nTotal: {currency} {amount}\n\nThis quotation is valid until {valid_until}. {counsellor} will help you complete the enrolment.\n\nKind regards,\nLab of Future {branch}' },
+  { id: 'ET12', cat: 'General', n: 'Birthday wishes', branch: 'All', active: true, subject: 'Happy birthday, {student_name}!',
+    body: 'Dear {parent_name},\n\nEveryone at Lab of Future {branch} wishes {student_name} a very happy birthday! Have a wonderful day.\n\nKind regards,\nLab of Future {branch}' },
 ];
 
 const MAX_TEMPLATES = 100;
@@ -87,6 +95,8 @@ export function renderEmailTemplate(t: Pick<EmailTemplate, 'subject' | 'body'>, 
 
 /** Picks the active template for a branch: a branch-specific one wins over 'All'. */
 export function findEmailTemplate(list: EmailTemplate[] | undefined, name: string, branch: string) {
-  const ok = (list ?? DEFAULT_EMAIL_TEMPLATES).filter((t) => t.active && t.n === name);
+  // a template missing from the saved list falls back to its default version (automations never fail silently)
+  const saved = (list ?? DEFAULT_EMAIL_TEMPLATES).filter((t) => t.n === name);
+  const ok = (saved.length ? saved : DEFAULT_EMAIL_TEMPLATES.filter((t) => t.n === name)).filter((t) => t.active);
   return ok.find((t) => t.branch === branch) ?? ok.find((t) => t.branch === 'All') ?? null;
 }
