@@ -80,6 +80,21 @@ else
   echo "  created"
 fi
 
+# One-time administrator password reset: deploy/vps/uat-admin-reset.sql (made with scripts/create-admin.mjs
+# --must-change, so it holds only a password hash) is applied once per file content, then never again.
+RESET="$APP_DIR/deploy/vps/uat-admin-reset.sql"
+if [ -f "$RESET" ]; then
+  mark="$DATA_DIR/admin-reset-$(sha256sum "$RESET" | cut -c1-16)"
+  if [ ! -f "$mark" ]; then
+    step "UAT: one-time administrator password reset"
+    pm2 stop "$NAME" >/dev/null
+    db --file "$RESET" >/dev/null
+    pm2 start "$NAME" >/dev/null
+    touch "$mark"
+    echo "  applied – a new password must be chosen at the next sign-in"
+  fi
+fi
+
 step "UAT: background jobs (every 5 minutes)"
 CRON_LINE="*/5 * * * * curl -fsS -o /dev/null 'http://127.0.0.1:$PORT/cdn-cgi/handler/scheduled?cron=*/5+*+*+*+*'"
 ( crontab -l 2>/dev/null | grep -vF "127.0.0.1:$PORT/cdn-cgi/handler/scheduled" || true; echo "$CRON_LINE" ) | crontab -
