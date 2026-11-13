@@ -21,6 +21,14 @@ const patches = [
   ['<small>CRM & Sales · Prototype</small>', '<small>CRM & Sales</small>'],
   // long modal forms: let the body scroll so the footer buttons stay on screen
   [/\.hide\s*\{\s*display:\s*none\s*!important\s*\}/, '.hide{display:none!important}\n.modal{max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px)}.modal>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}.modal .mb{min-height:0;flex:1 1 auto}'],
+  // Communication history: e-mail subject above the text, and Reply on received e-mails (api-client.js → mailReplyBtn)
+  ["{ h: 'Message', f: c => esc(c.text) }, { h: 'Delivery', f: c => bdg(c.status, c.status.startsWith('Blocked') ? 'crit' : 'info') }], comms, { all: 1 })",
+    "{ h: 'Message', f: c => ((c.subj || c.subject) ? '<b class=\"sm\">' + esc(c.subj || c.subject) + '</b><div>' + esc(c.text) + '</div>' : esc(c.text)) + (window.mailReplyBtn ? window.mailReplyBtn('lead', l.id, c) : '') }, { h: 'Delivery', f: c => bdg(c.status, c.status.startsWith('Blocked') ? 'crit' : c.inbound ? 'ok' : 'info') }], comms, { all: 1 })"],
+  ["{ h: 'Message', f: c => esc(c.text) }, { h: 'Status', f: c => bdg(c.status, 'info') }], s.comm, { all: 1, et: 'No messages recorded' })",
+    "{ h: 'Message', f: c => (c.subject ? '<b class=\"sm\">' + esc(c.subject) + '</b><div>' + esc(c.text) + '</div>' : esc(c.text)) + (window.mailReplyBtn ? window.mailReplyBtn('student', s.id, c, s.comm.indexOf(c)) : '') }, { h: 'Status', f: c => bdg(c.status, c.inbound ? 'ok' : 'info') }], s.comm, { all: 1, et: 'No messages recorded' })"],
+  // No first-call SLA for Manual leads (created by staff while the family is at the lab): no First call task, no SLA badge/breach
+  ["if (l.cslr) S.tasks.push({ id: 'T-' + (S.seq.task++), lead: id, cslr: l.cslr, due: new Date(NOW.getTime() + R.sla.mins", "if (l.cslr && l.src !== 'Manual') S.tasks.push({ id: 'T-' + (S.seq.task++), lead: id, cslr: l.cslr, due: new Date(NOW.getTime() + R.sla.mins"],
+  [/function sla\(l\) \{/, "function sla(l) {\n      if (l.src === 'Manual') return { s: 'Not required', k: '' };"],
   // KPI cards stretch across the full width instead of leaving empty slots at the end of the row
   // (all 7 fit on one row on a laptop), and in a two-column chart grid an odd last card spans the full width
   ['grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));','grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));'],

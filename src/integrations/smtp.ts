@@ -11,7 +11,13 @@ import { decryptSecret } from '../lib/totp';
 
 export type SmtpSecurity = 'ssl' | 'starttls';
 export interface SmtpServer { host: string; port: number; security: SmtpSecurity; user: string; pass: string }
-export interface SmtpMessage { from: string; fromName?: string; to: string; replyTo?: string; bcc?: string; subject: string; text: string; html?: string }
+export interface SmtpMessage {
+  from: string; fromName?: string; to: string; replyTo?: string; bcc?: string; subject: string; text: string; html?: string;
+  /** Replies: the received e-mail's Message-ID and thread, so mail programs keep the conversation together */
+  inReplyTo?: string; references?: string;
+}
+/** Only well-formed "<id@host>" tokens reach a header (they come from received e-mails). */
+const msgIds = (v?: string) => (String(v || '').match(/<[^<>\s"]{3,250}>/g) || []).slice(-20).join(' ');
 export interface SmtpSocket {
   readable: ReadableStream<Uint8Array>;
   writable: WritableStream<Uint8Array>;
@@ -57,6 +63,8 @@ export function buildMime(m: SmtpMessage, messageId: string, date = new Date()):
     `Subject: ${encodeHeader(m.subject)}`,
     `Date: ${date.toUTCString().replace('GMT', '+0000')}`,
     `Message-ID: <${messageId}>`,
+    ...(msgIds(m.inReplyTo) ? [`In-Reply-To: ${msgIds(m.inReplyTo).split(' ')[0]}`] : []),
+    ...(msgIds(m.references) ? [`References: ${msgIds(m.references)}`] : []),
     'MIME-Version: 1.0',
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
   ];

@@ -68,33 +68,62 @@ export async function resolveTarget(repo: Repo, cfg: any, L: Lookups, t: MailTar
 }
 
 /** Writes the e-mail to the history as Queued and returns the job that sends it. */
-export async function queueMail(repo: Repo, r: Resolved, subject: string, text: string, tpl: string, by: string): Promise<Job> {
+export async function queueMail(repo: Repo, r: Resolved, subject: string, text: string, tpl: string, by: string, thread: Thread = {}): Promise<Job> {
   const at = nowIso();
   if (r.type === 'student') {
     const s = await repo.get<any>('student', r.id);
-    s.comm = [...(s.comm || []), { at, ch: 'Email', tpl, subject, text, to: r.to, status: 'Queued', by }];
+    s.comm = [...(s.comm || []), { at, ch: 'Email', tpl, subject, text, to: r.to, status: 'Queued', by, ...thread }];
     await repo.put('student', s);
     return { kind: 'send_student_mail', studentId: s.id, index: s.comm.length - 1 };
   }
   const id = await repo.newId('cm');
-  await repo.put('comm', { id, lead: r.leadId, ch: 'Email', tpl, subj: subject, text, at, status: 'Queued', by, to: r.to, test: r.test || undefined });
+  await repo.put('comm', { id, lead: r.leadId, ch: 'Email', tpl, subj: subject, text, at, status: 'Queued', by, to: r.to, test: r.test || undefined, ...thread });
   return { kind: 'send_comm', id };
 }
 
+/** A reply's place in the conversation: In-Reply-To and References of the e-mail being answered. */
+interface Thread { inReplyTo?: string; refs?: string }
+/** The received e-mail a user answers: a lead's comm record, or an entry in a student's communication list. */
+export interface MailReply { type: 'lead' | 'student'; id: string; comm?: string; index?: number }
+
+/** Finds the received e-mail being answered; returns where the answer goes, its thread and how to mark it answered. */
+async function replyTo(repo: Repo, rp: MailReply, by: string): Promise<{ from: string; thread: Thread; mark: () => Promise<void> } | { skip: string }> {
+  const threadOf = (e: any): Thread => (e.msgId ? { inReplyTo: e.msgId, refs: [e.refs, e.msgId].filter(Boolean).join(' ').slice(-2000) } : {});
+  if (rp.type === 'lead') {
+    const c = rp.comm ? await repo.get<any>('comm', rp.comm) : null;
+    if (!c || c.lead !== rp.id || !c.inbound || c.ch !== 'Email') return { skip: 'The e-mail being answered was not found' };
+    return { from: c.from, thread: threadOf(c), mark: async () => { await repo.put('comm', { ...c, repliedAt: nowIso(), repliedBy: by }); } };
+  }
+  const s = await repo.get<any>('student', rp.id);
+  const i = Number(rp.index);
+  const e = Number.isInteger(i) ? s?.comm?.[i] : null;
+  if (!e || !e.inbound || e.ch !== 'Email') return { skip: 'The e-mail being answered was not found' };
+  return {
+    from: e.from, thread: threadOf(e),
+    mark: async () => { const cur = await repo.get<any>('student', rp.id); if (cur?.comm?.[i]) { cur.comm[i] = { ...cur.comm[i], repliedAt: nowIso(), repliedBy: by }; await repo.put('student', cur); } },
+  };
+}
+
 /** Individual or bulk e-mail written by a user: one personalised e-mail per recipient. */
-export async function composeMail(env: Env, user: User, targets: MailTarget[], m: { name: string; subject: string; body: string }) {
+export async function composeMail(env: Env, user: User, targets: MailTarget[], m: { name: string; subject: string; body: string; reply?: MailReply }) {
   const repo = new Repo(env.DB, user.name);
   const cfg = await repo.setting<any>('cfg');
   const L = await lookups(repo);
   const jobs: Job[] = [], skipped: { type: string; id: string; reason: string }[] = [], seen = new Set<string>();
+  // a reply answers one received e-mail of exactly this one record
+  const rp = m.reply && targets.length === 1 && targets[0].type === m.reply.type && targets[0].id === m.reply.id ? await replyTo(repo, m.reply, user.name) : null;
+  if (m.reply && (!rp || 'skip' in rp)) return { jobs, queued: 0, skipped: [{ type: m.reply.type, id: m.reply.id, reason: rp && 'skip' in rp ? rp.skip : 'A reply goes to one record' }] };
   for (const t of targets) {
     const key = t.type + ':' + t.id;
     if (seen.has(key)) continue;
     seen.add(key);
     const r = await resolveTarget(repo, cfg, L, t, user.scope);
     if (r.skip) { skipped.push({ type: t.type, id: t.id, reason: r.skip }); continue; }
+    // a student's reply goes back to the parent who wrote (siblings and second parents share records)
+    if (rp && !('skip' in rp) && t.type === 'student' && /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(rp.from || '')) r.to = rp.from;
     const out = renderEmailTemplate({ subject: m.subject, body: m.body }, r.values);
-    jobs.push(await queueMail(repo, r, out.subject, out.body, m.name || 'Composed e-mail', user.name));
+    jobs.push(await queueMail(repo, r, out.subject, out.body, rp ? 'Reply' : m.name || 'Composed e-mail', user.name, rp && !('skip' in rp) ? rp.thread : {}));
+    if (rp && !('skip' in rp)) await rp.mark();
   }
   return { jobs, queued: jobs.length, skipped };
 }

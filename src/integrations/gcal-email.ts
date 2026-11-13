@@ -57,14 +57,14 @@ export async function calendarPing(g: SimpleCtx) {
 // ---------------- E-mail (SMTP – Configuration → Email Outgoing) ----------------
 const esc = (s: string) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-export async function sendEmail(e: SimpleCtx, m: { to: string; subject: string; text: string; ref?: string; fromName?: string; replyTo?: string; bcc?: string }) {
+export async function sendEmail(e: SimpleCtx, m: { to: string; subject: string; text: string; ref?: string; fromName?: string; replyTo?: string; bcc?: string; inReplyTo?: string; references?: string }) {
   const smtp = e.mode === 'live' ? await loadSmtp(e.env) : null;
   const msg = {
     from: smtp?.from || 'not-configured@localhost', fromName: m.fromName, to: m.to, subject: m.subject.replace(/[\r\n]+/g, ' '), text: m.text,
-    replyTo: m.replyTo, bcc: m.bcc,
+    replyTo: m.replyTo, bcc: m.bcc, inReplyTo: m.inReplyTo, references: m.references,
     html: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#1b2633">${esc(m.text).replace(/\n/g, '<br>')}<p style="color:#5d6a7a;font-size:12px;margin-top:24px">Lab of Future</p></div>`,
   };
-  const logged = { from: msg.from, fromName: msg.fromName, to: msg.to, subject: msg.subject, text: msg.text, replyTo: msg.replyTo, bcc: msg.bcc };
+  const logged = { from: msg.from, fromName: msg.fromName, to: msg.to, subject: msg.subject, text: msg.text, replyTo: msg.replyTo, bcc: msg.bcc, inReplyTo: msg.inReplyTo, references: msg.references };
   if (e.mode === 'mock') {
     const id = 'mock-' + crypto.randomUUID();
     await logMock(e.env, 'email', 'emails.send', logged, { id }, m.ref, e.isTest);

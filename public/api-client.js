@@ -2576,21 +2576,29 @@
     var r = S.cfg.mailIn || {}, edit = can('configuration', 'E'), ready = mailReady();
     var brs = (S.branches || []).map(function (b) { return [b.id, b.name]; });
     var progs = (S.programs || []).map(function (p) { return [p.id, p.name]; });
-    var conn = '<div class="banner">' + ic('mail') + '<span>' + (ready && MAIL.status.incoming.connected ? 'Mailbox connected – new e-mails are imported every 5 minutes.' : '<b>Mailbox not connected yet.</b> Automatic import starts when the Gmail connection is set up. You can set the rules now and test them with the simulation below.') + '</span></div>';
+    // Mailbox connection: the mailbox signed in under Email Outgoing (same username and app password), read over IMAP
+    var inc = (ready && MAIL.status.incoming) || {};
+    var incState = !inc.on ? bdg('Off – switch on “Import incoming e-mail” below', 'warn')
+      : inc.mode !== 'live' ? bdg('Mock – the mailbox is not read on this server', 'warn')
+      : inc.lastError ? bdg('Cannot read the mailbox', 'crit')
+      : inc.connected ? bdg('Connected – checked every 5 minutes', 'ok') : bdg('Not checked yet – click Check now', 'info');
+    var connBody = !ready ? emptyBox(MAIL.error ? 'Could not load' : 'Loading…', MAIL.error || '') : mailKV([
+      ['Mailbox', inc.mailbox ? '<span class="mono sm">' + esc(inc.mailbox) + '</span><div class="muted xs">The mailbox signed in under Email Outgoing (same app password)</div>' : '<span class="sm" style="color:var(--crit)">Set up the SMTP server under Email Outgoing first</span>'],
+      ['Server', inc.host ? '<span class="mono sm">' + esc(inc.host) + ':993</span> · IMAP over SSL' : '—'],
+      ['Status', incState],
+      ['Last check', inc.lastCheck ? fDT(inc.lastCheck) : '—'],
+      ['Imported', inc.since ? inc.imported + ' e-mail' + (inc.imported === 1 ? '' : 's') + ' since ' + fDT(inc.since) : '—'],
+    ].concat(inc.lastError ? [['Last error', '<span class="sm" style="color:var(--crit)">' + esc(inc.lastError) + '</span>']] : []));
+    var conn = card('Mailbox connection', connBody, { act: edit && inc.on && inc.mailbox ? '<button class="btn sm" data-act="mailInCheck">' + ic('mail') + ' Check now</button>' : '' }) + '<div style="height:14px"></div>';
     var form = cfgForm('mailIn',
-      swRow('Import incoming e-mail', 'on', !!r.on, 'Read new e-mails from the mailbox and file them in the CRM') +
+      swRow('Import incoming e-mail', 'on', !!r.on, 'Read new e-mails from the mailbox every 5 minutes and file them in the CRM') +
       swRow('Notify staff when an e-mail arrives', 'notify', r.notify !== false, 'The counsellor (leads) or the branch team (students) gets a CRM notification') +
       '<div class="fgrid" style="margin-top:12px">' +
-      F('Mailbox', 'mailbox', { v: r.mailbox, ph: 'ranjith@laboffuture.com' }) +
+      '<input type="hidden" name="mailbox" value="' + esc(inc.mailbox || r.mailbox || '') + '">' +
       F('E-mail from an unknown sender', 'unknown', { v: r.unknown || 'review', opts: [['review', 'Hold for review – notify the Admissions Head'], ['lead', 'Create a new lead'], ['ignore', 'Ignore']] }) +
       F('Branch for new leads', 'branch', { v: r.branch, opts: brs, blank: '— choose —', help: 'Used when unknown senders create a lead' }) +
       F('Programme for new leads', 'prog', { v: r.prog, opts: progs, blank: '— choose —' }) +
       F('Blocked senders', 'block', { t: 'textarea', rows: 4, v: (r.block || []).join('\n'), full: 1, ph: 'spam@example.com\n@marketing-company.com', help: 'One address or domain per line. E-mails from these senders are never filed.' }) + '</div>');
-    var how = '<ol class="sm" style="margin:0;padding-left:18px;line-height:1.7">' +
-      '<li>Sender is a <b>parent on a student record</b> → filed on that student (on each sibling) and the branch team is notified.</li>' +
-      '<li>Sender is a <b>lead’s e-mail</b> → filed on the newest open lead and its counsellor is notified.</li>' +
-      '<li><b>Unknown sender</b> → held for review, a new lead is created, or ignored (rule above).</li>' +
-      '<li>Blocked senders, auto-replies and bounce messages are skipped. The same e-mail is never filed twice.</li></ol>';
     var sim = '<form data-submit="mailSim" novalidate><div class="fgrid">' +
       F('From (e-mail)', 'from', { req: 1, ph: 'parent@example.com', id: 'ms_from' }) + F('Sender name', 'fromName', { ph: 'optional', id: 'ms_name' }) +
       F('Subject', 'subject', { v: 'Question about the next class', full: 1, id: 'ms_subject' }) +
@@ -2610,7 +2618,7 @@
       { h: 'Filed on', f: link },
     ], rows, { ps: 10 }) : emptyBox('No e-mails yet', 'Received e-mails and simulations appear here.');
     return conn + card('Filing rules', edit ? form : mailKV([['Import', r.on ? 'On' : 'Off'], ['Mailbox', esc(r.mailbox || '—')], ['Unknown sender', esc(r.unknown || 'review')]])) +
-      '<div style="height:14px"></div><div class="grid g2" style="align-items:start">' + card('How e-mails are filed', how) + (edit ? card('Simulate an incoming e-mail', sim) : '') + '</div>' +
+      (edit ? '<div style="height:14px"></div>' + card('Simulate an incoming e-mail', sim) : '') +
       '<div style="height:14px"></div>' + card('Recent incoming e-mails', inbox, { np: rows.length ? 1 : 0, act: '<button class="btn sm ghost" data-act="mailRefresh">Refresh</button>' });
   };
   SUB.cfg_mailIn = function (d, f) {
@@ -2634,6 +2642,16 @@
       .then(function (r) {
         toast('Simulation: ' + r.status + (r.ref ? ' – ' + r.ref : ''), /^Matched|^New lead/.test(r.status) ? 'ok' : 'warn');
         MAIL.inbox = null; MAIL.status = null; mailLoad(); return reload(false);
+      })
+      .catch(function (e) { toast(e.message, 'err'); });
+  };
+  ACT.mailInCheck = function () {
+    toast('Checking the mailbox…');
+    req('POST', '/mail/inbound/check', {})
+      .then(function (r) {
+        toast(r.message, r.status === 'error' ? 'err' : (r.status === 'ok' || r.status === 'started') ? 'ok' : 'warn');
+        MAIL.inbox = null; MAIL.status = null; mailLoad();
+        return r.imported ? reload(false) : null;
       })
       .catch(function (e) { toast(e.message, 'err'); });
   };
@@ -2831,6 +2849,28 @@
   ACT.mailOne = function (d) { msOpen({ fixed: [{ type: d.t, id: d.id }] }); };
   ACT.mailBulk = function (d) { msOpen({ src: d.src || 'students' }); };
   ACT.mailSel = function () { msOpen({ fixed: Object.keys(S_sel || {}).map(function (id) { return { type: 'lead', id: id }; }) }); };
+  // Reply to a received e-mail (lead or student communication history): same conversation in the parent's mailbox
+  window.mailReplyBtn = function (type, id, c, i) {
+    if (!c || !c.inbound || c.ch !== 'Email' || !canMail(MAIL_RES[type])) return '';
+    return '<div style="margin-top:6px"><button class="btn sm" type="button" data-act="mailReply" data-t="' + type + '" data-id="' + esc(id) + '"' +
+      (type === 'student' ? ' data-i="' + i + '"' : ' data-c="' + esc(c.id) + '"') + '>' + ic('mail') + ' Reply</button>' +
+      (c.repliedAt ? ' <span class="muted xs">Replied ' + fDT(c.repliedAt) + (c.repliedBy ? ' by ' + esc(c.repliedBy) : '') + '</span>' : '') + '</div>';
+  };
+  ACT.mailReply = function (d) {
+    var c = null;
+    if (d.t === 'student') { var s = (S.students || []).find(function (x) { return x.id === d.id; }); c = s && (s.comm || [])[+d.i]; }
+    else c = (S.comms || []).find(function (x) { return x.id === d.c; });
+    if (!c) { toast('That e-mail was not found – refresh the page', 'err'); return; }
+    // braces would be read as placeholders, so the parent's own text keeps them as ( )
+    var safe = function (x) { return String(x || '').replace(/[{}]/g, function (m) { return m === '{' ? '(' : ')'; }); };
+    var subj = safe(c.subject || c.subj || '');
+    var quoted = safe(c.text).split('\n').map(function (l) { return '> ' + l; }).join('\n');
+    msOpen({
+      fixed: [{ type: d.t, id: d.id }], subject: /^re:/i.test(subj) ? subj : 'Re: ' + subj,
+      body: '\n\n\nOn ' + fDT(c.at) + ', ' + safe(c.from || '') + ' wrote:\n' + quoted,
+      reply: { type: d.t, id: d.id, comm: d.t === 'lead' ? d.c : undefined, index: d.t === 'student' ? +d.i : undefined }, replyTo: c.from || '',
+    });
+  };
   CHG.msAud = function (el) { MS[el.name] = el.value; if (el.name === 'src') { MS.status = MS_SRC[el.value].def; MS.prog = ''; } render(); };
   CHG.msTpl = function (el) {
     var t = (S.cfg.emailTpls || []).find(function (x) { return x.id === el.value; });
@@ -2846,7 +2886,7 @@
     var who;
     if (MS.fixed) {
       who = '<div class="f full"><label>To</label><div class="sm">' + (r.recs.length === 1
-        ? esc(recName(r.recs[0])) + ' <span class="muted">· ' + esc(msAddress(r.recs[0].type, r.recs[0].rec) || 'no e-mail address') + '</span>'
+        ? esc(recName(r.recs[0])) + ' <span class="muted">· ' + esc((MS.reply && MS.replyTo) || msAddress(r.recs[0].type, r.recs[0].rec) || 'no e-mail address') + '</span>'
         : r.recs.length + ' selected ' + (r.recs[0] && r.recs[0].type === 'lead' ? 'leads' : 'records')) + '</div></div>';
     } else {
       var src = MS_SRC[MS.src], all = src.list();
@@ -2859,7 +2899,7 @@
       (r.noMail ? ' · ' + r.noMail + ' without an e-mail address or consent will be skipped' : '') + '. Each person gets their own copy with their details filled in.</span></div>';
     var tpls = (S.cfg.emailTpls || []).filter(function (t) { return t.active; });
     var chips = Object.keys(meta.placeholders || {}).map(function (k) { return '<a class="chip" data-act="etIns" data-k="' + k + '" tabindex="0" title="' + esc(meta.placeholders[k].label) + '">{' + k + '}</a>'; }).join('');
-    return { title: MS.fixed && r.recs.length === 1 ? 'Send e-mail' : 'Bulk e-mail', size: 'lg', form: 'mailSend',
+    return { title: MS.reply ? 'Reply' : MS.fixed && r.recs.length === 1 ? 'Send e-mail' : 'Bulk e-mail', size: 'lg', form: 'mailSend',
       foot: '<button class="btn" type="button" data-act="closeModal">Cancel</button><button class="btn primary" type="submit" form="mform"' + (r.targets.length ? '' : ' disabled') + '>' + ic('mail') + ' Send to ' + r.targets.length + '</button>',
       body: '<div class="fgrid">' + who + '<div class="f full">' + count + '</div>' +
         sel('tpl', 'Template', MS.tpl, [['', 'No template – write your own']].concat(tpls.map(function (t) { return [t.id, t.cat + ' · ' + t.n]; })), 'msTpl') +
@@ -2873,7 +2913,7 @@
     if (!r.targets.length) { toast('No recipients with an e-mail address', 'err'); return; }
     var t = (S.cfg.emailTpls || []).find(function (x) { return x.id === MS.tpl; });
     var btn = document.querySelector('.modal .mf .primary'); if (btn) btn.disabled = true;
-    flush().then(function () { return req('POST', '/mail/compose', { targets: r.targets, template: t ? t.n : 'Composed e-mail', subject: d.subject, body: d.body }); })
+    flush().then(function () { return req('POST', '/mail/compose', { targets: r.targets, template: t ? t.n : 'Composed e-mail', subject: d.subject, body: d.body, reply: MS.reply || undefined }); })
       .then(function (res) {
         closeModal();
         toast('E-mail sent to ' + res.queued + (res.skipped.length ? ' · ' + res.skipped.length + ' skipped (' + uniq(res.skipped.map(function (s) { return s.reason; })).join(', ') + ')' : ''), res.skipped.length ? 'warn' : 'ok');

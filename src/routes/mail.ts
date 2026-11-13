@@ -5,7 +5,10 @@
 //   POST /api/v1/mail/test-send           { to }  sends a test e-mail with the Email Outgoing rules
 //   GET  /api/v1/mail/inbound             the 50 most recent received e-mails and how each was filed
 //   POST /api/v1/mail/inbound/simulate    { from, fromName, subject, text }  runs the Email Incoming rules on a sample e-mail
-//   POST /api/v1/mail/compose             { targets: [{ type: lead|opp|student, id }], template, subject, body }  individual / bulk e-mail
+//   POST /api/v1/mail/inbound/check       reads new e-mails from the mailbox now (otherwise every 5 minutes)
+//   POST /api/v1/mail/compose             { targets: [{ type: lead|opp|student, id }], template, subject, body, reply? }  individual / bulk e-mail
+//                                         reply = { type: lead|student, id, comm?: lead comm id, index?: student comm index }
+//                                         answers a received e-mail in the same conversation
 //   GET  /api/v1/mail/automation/log      the 100 most recent automated e-mails (Configuration → Email Automation)
 //   POST /api/v1/mail/automation/run      runs the switched-on automations now
 // Viewing needs configuration view access; sending and simulating need configuration edit access.
@@ -15,7 +18,7 @@ import { allow } from '../lib/ratelimit';
 import { Repo } from '../lib/db';
 import { HttpError } from '../types';
 import { addAudit } from '../domain/core';
-import { deliverEmail, processInboundEmail, recentInbound } from '../domain/mail';
+import { deliverEmail, processInboundEmail, recentInbound, mailInStatus, pollMailbox } from '../domain/mail';
 import { composeMail, recentAutoMail, runMailAutomations, MAX_BULK, type MailTarget } from '../domain/mail-send';
 import { EMAIL_PLACEHOLDERS } from '../domain/email-templates';
 import { modeFor, smtpMissing } from '../integrations/base';
@@ -36,8 +39,17 @@ mail.get('/status', async (c) => {
   const cfg = await cfgOf(c);
   return c.json({
     outgoing: { provider: 'SMTP', mode: modeFor(c.env, cfg, 'email'), smtp: { ...SMTP_DEFAULTS, ...(cfg?.mailOut?.smtp || {}) }, from: cfg?.mailOut?.smtp?.from || '', missing: smtpMissing(cfg) },
-    incoming: { connected: false, note: 'Automatic import from the mailbox starts when the Gmail connection is set up.' },
+    incoming: await mailInStatus(c.env, cfg),
   });
+});
+
+// ---------------- mailbox (Configuration → Email Incoming → Check now)
+mail.post('/inbound/check', async (c) => {
+  need(c, 'configuration', 'E');
+  if (!(await allow(c.env, 'mail-in-check:' + c.get('user').id, 20, 3600))) throw new HttpError(429, 'At most 20 checks per hour');
+  const r = await pollMailbox(c.env);
+  if (r.jobs.length) await dispatch(c.env, wait(c), r.jobs);
+  return c.json({ ok: r.status !== 'error', status: r.status, imported: r.imported, message: r.message, incoming: await mailInStatus(c.env, await cfgOf(c)) });
 });
 
 // ---------------- SMTP server (Configuration → Email Outgoing)
@@ -142,7 +154,11 @@ mail.post('/compose', async (c) => {
   const bad = [...(subject + ' ' + body).matchAll(/{([^{}]*)}/g)].map((m) => m[1]).find((p) => !EMAIL_PLACEHOLDERS[p]);
   if (bad !== undefined) throw new HttpError(400, `Unknown placeholder {${bad}}`);
   if (!(await allow(c.env, 'mail-compose:' + user.id, 30, 3600))) throw new HttpError(429, 'At most 30 e-mail sends per hour – try again later');
-  const r = await composeMail(c.env, user, targets, { name: String(b.template || '').slice(0, 80), subject, body });
+  const rp = b.reply && typeof b.reply === 'object' && (b.reply.type === 'lead' || b.reply.type === 'student') && typeof b.reply.id === 'string'
+    ? { type: b.reply.type as 'lead' | 'student', id: b.reply.id, comm: typeof b.reply.comm === 'string' ? b.reply.comm : undefined, index: Number.isInteger(b.reply.index) ? b.reply.index : undefined }
+    : undefined;
+  if (b.reply && !rp) throw new HttpError(400, 'The e-mail being answered is not valid');
+  const r = await composeMail(c.env, user, targets, { name: String(b.template || '').slice(0, 80), subject, body, reply: rp });
   await dispatch(c.env, wait(c), r.jobs);
   await addAudit(new Repo(c.env.DB, user.name), r.queued > 1 ? 'Bulk e-mail sent' : 'E-mail sent', targets.length === 1 ? targets[0].id : targets.length + ' recipients', `${subject.slice(0, 80)} – ${r.queued} queued, ${r.skipped.length} skipped`);
   return c.json({ ok: true, queued: r.queued, skipped: r.skipped });
