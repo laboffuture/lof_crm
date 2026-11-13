@@ -128,9 +128,12 @@ export class Repo {
     return Object.fromEntries((r.results || []).map((x) => [x.name, x.value]));
   }
 
-  /** Test records (Testing Console) get TST- ids so business sequences stay gapless. */
+  /** Test records (Testing Console) get TST- ids so business sequences stay gapless. Several ids of one kind are
+   *  often made in the same millisecond (a simulated lead and its messages), so the random part is 6 characters
+   *  (~2 billion values) – 2 characters collided about once in 200 runs. */
   testId(seq: string): string {
-    return `TST-${seq.toUpperCase()}-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0')}`;
+    const rnd = crypto.getRandomValues(new Uint32Array(1))[0].toString(36).toUpperCase().padStart(6, '0').slice(-6);
+    return `TST-${seq.toUpperCase()}-${Date.now().toString(36).toUpperCase()}${rnd}`;
   }
 
   async newId(seq: keyof typeof ID_FORMAT | string): Promise<string> {
