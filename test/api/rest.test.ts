@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { setup, USERS, type TestCtx } from '../helpers/app';
+import { setup, USERS, doc, type TestCtx } from '../helpers/app';
+import { cron } from '../../src/jobs';
 
 let t: TestCtx;
 beforeEach(async () => { t = await setup(); });
@@ -46,5 +47,28 @@ describe('REST resources', () => {
   it('returns notifications filtered for the role', async () => {
     const r = await t.call('GET', '/api/v1/notifications', { token: await t.login(USERS.layla) });
     expect(r.body.items.every((n: any) => !n.roles || n.roles.includes('Reception'))).toBe(true);
+  });
+});
+
+describe('first-call SLA by lead source', () => {
+  it('skips the first-call SLA for Manual (walk-in) leads but keeps it for other sources', async () => {
+    const tok = await t.login(USERS.hassan);
+    const base = { parent: 'Walk In', branch: 'KRM', prog: 'SPA', cat: 'Warm' };
+    const manual = await t.call('POST', '/api/v1/leads', { token: tok, body: { ...base, student: 'Manual Kid', phone: '+971 50 444 1001', src: 'Manual' } });
+    const web = await t.call('POST', '/api/v1/leads', { token: tok, body: { ...base, student: 'Web Kid', phone: '+971 50 444 1002', src: 'Website' } });
+    expect(manual.status).toBe(201);
+    expect(web.status).toBe(201);
+    const firstCall = async (id: string) => (await t.sql<any>("SELECT data FROM docs WHERE type='task' AND ref1=?", id)).map((r) => JSON.parse(r.data)).filter((x) => x.type === 'First call');
+    expect(await firstCall(manual.body.lead.id)).toHaveLength(0);
+    expect(await firstCall(web.body.lead.id)).toHaveLength(1);
+    // both leads waited 3 hours without a call: only the Website lead breaches and escalates
+    const old = new Date(Date.now() - 3 * 3600e3).toISOString();
+    for (const id of [manual.body.lead.id, web.body.lead.id]) await t.env.DB.prepare("UPDATE docs SET data=json_set(data,'$.enq',?) WHERE type='lead' AND id=?").bind(old, id).run();
+    await cron(t.env, () => {});
+    const alerts = (await t.sql<any>("SELECT data FROM docs WHERE type='notification' AND json_extract(data,'$.type')='sla'")).map((r) => JSON.parse(r.data).text).join('\n');
+    expect(alerts).toContain(web.body.lead.id);
+    expect(alerts).not.toContain(manual.body.lead.id);
+    expect((await doc(t, 'lead', manual.body.lead.id)).esc).toBeFalsy();
+    expect((await doc(t, 'lead', web.body.lead.id)).esc).toBe(true);
   });
 });

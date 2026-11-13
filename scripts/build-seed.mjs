@@ -16,13 +16,14 @@ const DEMO_PASSWORD = process.env.DEMO_PASSWORD || 'Welcome@LOF2026';
 const PBKDF2_ITER = 100000; // Workers WebCrypto maximum
 
 export function extractPrototypeScript(html) {
-  const m = html.match(/<script>\n'use strict';([\s\S]*?)<\/script>/);
+  // The prototype may be indented (it was reformatted), so allow whitespace before 'use strict' and boot()
+  const m = html.match(/<script>\s*'use strict';([\s\S]*?)<\/script>/);
   if (!m) throw new Error('Prototype <script> block not found');
   return "'use strict';" + m[1];
 }
 
 export function runPrototypeSeed(html) {
-  const code = extractPrototypeScript(html).replace(/\nboot\(\);\s*$/, '\n');
+  const code = extractPrototypeScript(html).replace(/\n\s*boot\(\);\s*$/, '\n');
   const noop = () => {};
   const el = { addEventListener: noop, querySelector: () => null, querySelectorAll: () => [], dataset: {}, removeAttribute: noop };
   const ctx = vm.createContext({

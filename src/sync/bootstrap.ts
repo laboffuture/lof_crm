@@ -6,6 +6,8 @@ import { INTEGRATIONS, modeFor, missingSecrets, type IntegrationKey } from '../i
 import { cfgDefaults } from '../domain/terms';
 import { DEFAULT_EMAIL_TEMPLATES, EMAIL_PLACEHOLDERS, EMAIL_TPL_CATEGORIES } from '../domain/email-templates';
 import { MAIL_IN_DEFAULTS, MAIL_OUT_DEFAULTS } from '../domain/mail';
+import { mailAutoSettings } from '../domain/mail-send';
+import { SMTP_DEFAULTS } from '../integrations/smtp';
 
 const rows = async (env: Env, sql: string, binds: unknown[]) =>
   ((await env.DB.prepare(sql).bind(...binds).all<{ data: string }>()).results || []).map((r) => JSON.parse(r.data));
@@ -54,7 +56,9 @@ export async function bootstrap(env: Env, repo: Repo, user: User, perms: any) {
   for (const k of ['targets', 'payTerms', 'payTermDefault', 'refund', 'lms'] as const) if (cfgOut[k] === undefined) cfgOut[k] = def[k];
   if (cfgOut.emailTpls === undefined) cfgOut.emailTpls = structuredClone(DEFAULT_EMAIL_TEMPLATES);
   cfgOut.mailOut = { ...MAIL_OUT_DEFAULTS, ...(cfgOut.mailOut || {}) };
+  cfgOut.mailOut.smtp = can(perms, user, 'configuration', 'V') ? { ...SMTP_DEFAULTS, ...(cfgOut.mailOut.smtp || {}) } : undefined; // never the password
   cfgOut.mailIn = { ...structuredClone(MAIL_IN_DEFAULTS), ...(cfgOut.mailIn || {}) };
+  cfgOut.mailAuto = mailAutoSettings(cfgOut);
   cfgOut.integ = cfgOut.integ || {};
   if (!cfgOut.integ.lms) cfgOut.integ.lms = def.lmsInteg;
   for (const p of programs) if (!cfgOut.lms.programmes[p.id]) cfgOut.lms.programmes[p.id] = { track: '', credits: [] };

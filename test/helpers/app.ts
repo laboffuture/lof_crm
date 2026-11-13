@@ -58,8 +58,6 @@ export const SECRETS = {
   ERPNEXT_API_SECRET: 'erp-secret',
   ERPNEXT_PAID_TO_AED: 'Bank AED - LOF',
   ERPNEXT_PAID_TO_INR: 'Bank INR - LOF',
-  RESEND_API_KEY: 're_test',
-  EMAIL_FROM: 'LOF <no-reply@lof.test>',
 };
 
 export interface TestCtx {

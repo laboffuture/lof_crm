@@ -14,8 +14,14 @@ export const INTEGRATIONS: Record<IntegrationKey, { label: string; cfgKey: strin
   razorpay: { label: 'Payment gateway – Razorpay (INR)', cfgKey: 'pay', needs: ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] },
   erpnext: { label: 'ERPNext Accounts', cfgKey: 'erp', needs: ['ERPNEXT_URL', 'ERPNEXT_API_KEY', 'ERPNEXT_API_SECRET', 'ERPNEXT_PAID_TO_AED', 'ERPNEXT_PAID_TO_INR'] },
   gcal: { label: 'Google Calendar', cfgKey: 'cal', needs: ['GCAL_SERVICE_ACCOUNT_JSON', 'GCAL_CALENDAR_ID'] },
-  email: { label: 'E-mail (Resend)', cfgKey: null, needs: ['RESEND_API_KEY', 'EMAIL_FROM'] },
+  email: { label: 'E-mail (SMTP)', cfgKey: null, needs: [] }, // ready when Configuration → Email Outgoing → SMTP server is complete
 };
+
+/** SMTP settings still to fill in (Configuration → Email Outgoing); empty when e-mail can be sent. */
+export function smtpMissing(cfg: any): string[] {
+  const s = cfg?.mailOut?.smtp || {};
+  return [['SMTP server', s.host], ['Username', s.user], ['Password', s.passSet], ['From address', s.from]].filter(([, v]) => !v).map(([k]) => k as string);
+}
 
 export function missingSecrets(env: Env, key: IntegrationKey): string[] {
   return INTEGRATIONS[key].needs.filter((n) => !String(env[n] ?? '').trim()) as string[];
@@ -30,6 +36,7 @@ export function enabledInConfig(cfg: any, key: IntegrationKey): boolean {
 export function modeFor(env: Env, cfg: any, key: IntegrationKey, isTest = false): Mode {
   if (env.INTEGRATION_MODE === 'mock') return 'mock';
   if (isTest && env.APP_ENV === 'production') return 'mock'; // Testing console records never reach live providers in production
+  if (key === 'email' && smtpMissing(cfg).length) return 'mock';
   return enabledInConfig(cfg, key) && missingSecrets(env, key).length === 0 ? 'live' : 'mock';
 }
 

@@ -3,7 +3,7 @@ import { hashPassword, verifyPassword, sha256Hex } from '../lib/crypto';
 import { requireAuth, loadUser, mfaRequiredFor, type AppEnv } from '../lib/auth';
 import { Repo, nowIso } from '../lib/db';
 import { allow, clientIp } from '../lib/ratelimit';
-import { createSession, sessionCookie, clearCookie, revokeAll, revokeSession, setStage, type Stage } from '../lib/session';
+import { createSession, sessionCookie, clearCookie, revokeAll, revokeSession, setStage, readToken, loadSession, type Stage } from '../lib/session';
 import { newTotpSecret, otpauthUri, verifyTotp, encryptSecret, decryptSecret } from '../lib/totp';
 import { addAudit } from '../domain/core';
 import { HttpError } from '../types';
@@ -213,6 +213,14 @@ auth.post('/logout', requireAuth, async (c) => {
   await revokeSession(c.env, c.get('session').id_hash);
   c.header('set-cookie', clearCookie(c.env));
   return c.json({ ok: true });
+});
+
+/** Page start-up check: "not signed in" is a normal answer here, so the browser console shows no 401. */
+auth.get('/session', async (c) => {
+  const t = readToken(c.env, c.req.raw);
+  const s = t ? await loadSession(c.env, t.token) : null;
+  const user = s ? await loadUser(new Repo(c.env.DB), s.staff_id) : null;
+  return c.json(s && user ? { signedIn: true, stage: s.stage } : { signedIn: false });
 });
 
 auth.get('/me', requireAuth, async (c) => {

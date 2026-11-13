@@ -39,10 +39,10 @@ describe('email outgoing', () => {
     const r = await post('/test-send', { to: 'Parent@Example.com' });
     expect(r.body).toMatchObject({ ok: true, mode: 'mock' });
     const m = await lastMail();
-    expect(m.from).toMatch(/^LOF Karama </);
-    expect(m.to).toEqual(['parent@example.com']);
-    expect(m.reply_to).toEqual(['communications@laboffuture.com']);
-    expect(m.bcc).toEqual(['archive@laboffuture.com']);
+    expect(m.fromName).toBe('LOF Karama');
+    expect(m.to).toBe('parent@example.com');
+    expect(m.replyTo).toBe('communications@laboffuture.com');
+    expect(m.bcc).toBe('archive@laboffuture.com');
     expect(m.text).toMatch(/\n\nLab of Future Karama$/);
   });
   it('does not send while sending is paused', async () => {

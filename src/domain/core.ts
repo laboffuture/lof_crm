@@ -33,6 +33,10 @@ export async function notify(repo: Repo, n: { type: string; sev: string; text: s
   await repo.create('notification', doc);
   return doc;
 }
+/** Lead sources with no first-call SLA: a Manual lead is created by staff while the family is at the lab. Other follow-ups are unchanged. */
+export const SLA_EXEMPT_SOURCES = ['Manual'];
+export const needsFirstCall = (l: any) => !SLA_EXEMPT_SOURCES.includes(l?.src);
+
 export const addEv = (l: any, type: string, text: string, by = 'System') => {
   l.events = l.events || [];
   l.events.push({ at: nowIso(), type, text, by });
@@ -192,8 +196,10 @@ export async function createLead(repo: Repo, input: NewLeadInput, by = 'System')
     }
   }
   if (l.cslr) {
-    const tid = await repo.newId('task');
-    await repo.create('task', { id: tid, lead: id, cslr: l.cslr, due: new Date(Date.now() + cfg.sla.mins * 6e4).toISOString(), type: 'First call', status: 'Pending', remarks: 'First-call SLA task', outcome: '', next: '', test: repo.isTest || undefined });
+    if (needsFirstCall(l)) {
+      const tid = await repo.newId('task');
+      await repo.create('task', { id: tid, lead: id, cslr: l.cslr, due: new Date(Date.now() + cfg.sla.mins * 6e4).toISOString(), type: 'First call', status: 'Pending', remarks: 'First-call SLA task', outcome: '', next: '', test: repo.isTest || undefined });
+    }
     await notify(repo, { type: 'new', sev: 'info', text: `New lead created: ${l.student} (${l.src}) – assigned to ${cslrName}`, route: { page: 'lead', id }, roles: ['Counsellor', 'Centre Administrator'], branch: l.branch, cslr: l.cslr });
   } else {
     await notify(repo, { type: 'none', sev: 'crit', text: `No counsellor available: ${l.student} (${branch.name} · ${progName}) – lead in Unassigned queue`, route: { page: 'leads', preset: 'unassigned' }, roles: ['Admissions Head', 'Centre Administrator', 'System Administrator'], branch: l.branch });

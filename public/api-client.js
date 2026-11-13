@@ -116,7 +116,9 @@
       return numCount >= 3;
     }
 
-    function buildPdfBlob(options) {
+    // A PDF is built from one or more sections (a report each). Every section starts on a new page with its own
+    // orientation; page numbers run across the whole document. buildPdfBlob(options) = a one-section document.
+    function layoutPdfSection(options) {
       var cols = options.cols || [];
       var rows = options.rows || [];
       var isLandscape = options.landscape != null ? options.landscape : cols.length > 6;
@@ -139,7 +141,7 @@
       });
       var totalWeight = weights.reduce(function (a, b) { return a + b; }, 0) || 1;
       var colWidths = weights.map(function (w) { return Math.max(minWidth, (w / totalWeight) * contentWidth); });
-      var curTotal = colWidths.reduce(function (a, b) { return a + b; }, 0);
+      var curTotal = colWidths.reduce(function (a, b) { return a + b; }, 0) || 1;
       var factor = contentWidth / curTotal;
       colWidths = colWidths.map(function (w) { return w * factor; });
 
@@ -160,166 +162,167 @@
         curIdx += limit;
         if (curIdx >= rows.length) break;
       }
+      return {
+        opt: options, cols: cols, pages: pagesRows, w: pageWidth, h: pageHeight, margin: margin, contentWidth: contentWidth,
+        colWidths: colWidths, colAlignRight: colAlignRight, rowHeight: rowHeight, headerHeight: headerHeight,
+      };
+    }
 
-      var totalPages = pagesRows.length;
-      var catalogId = 1;
-      var pagesRootId = 2;
-      var fontNormId = 3;
-      var fontBoldId = 4;
+    function renderPdfPage(L, pIdx, pageNo, totalPages) {
+      var options = L.opt, cols = L.cols, pRows = L.pages[pIdx];
+      var pageWidth = L.w, pageHeight = L.h, margin = L.margin, contentWidth = L.contentWidth;
+      var colWidths = L.colWidths, colAlignRight = L.colAlignRight, rowHeight = L.rowHeight, headerHeight = L.headerHeight;
+      var stream = [];
+      var curY = pageHeight - margin;
 
-      var pageObjIds = [];
-      var contentObjIds = [];
-      var nextId = 5;
-      for (var i = 0; i < totalPages; i++) {
-        pageObjIds.push(nextId++);
-        contentObjIds.push(nextId++);
+      if (pIdx === 0) {
+        // Branding Header
+        stream.push('0.114 0.208 0.341 rg'); // #1d3557 deep navy
+        stream.push('BT /F2 15 Tf ' + margin + ' ' + (curY - 14) + ' Td (Lab of Future CRM) Tj ET');
+
+        // Date
+        stream.push('0.45 0.50 0.55 rg');
+        var dateStr = options.date || new Date().toLocaleString('en-GB');
+        stream.push('BT /F1 8.5 Tf ' + (pageWidth - margin - 180).toFixed(2) + ' ' + (curY - 12) + ' Td (' + escapePdf('Generated: ' + dateStr) + ') Tj ET');
+        curY -= 26;
+
+        // Report Title
+        stream.push('0.08 0.12 0.18 rg');
+        stream.push('BT /F2 13 Tf ' + margin + ' ' + (curY - 13) + ' Td (' + escapePdf(options.title || 'Report') + ') Tj ET');
+        curY -= 20;
+
+        // Filter summary / Subtitle
+        var filterLine = [options.filters, options.note ? ('Note: ' + options.note) : ''].filter(Boolean).join('   |   ');
+        if (filterLine) {
+          stream.push('0.40 0.45 0.50 rg');
+          stream.push('BT /F1 8.5 Tf ' + margin + ' ' + (curY - 9) + ' Td (' + escapePdf(filterLine.slice(0, 150)) + ') Tj ET');
+          curY -= 16;
+        }
+        curY -= 6;
+      } else {
+        // Continuation Header
+        stream.push('0.35 0.40 0.45 rg');
+        stream.push('BT /F2 9.5 Tf ' + margin + ' ' + (curY - 12) + ' Td (' + escapePdf((options.title || 'Report') + ' (continued)') + ') Tj ET');
+        curY -= 22;
       }
 
-      var pageStreams = [];
+      // Table Header Background
+      stream.push('0.114 0.208 0.341 rg');
+      stream.push(margin + ' ' + (curY - headerHeight).toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + headerHeight + ' re f');
 
-      for (var pIdx = 0; pIdx < totalPages; pIdx++) {
-        var pRows = pagesRows[pIdx];
-        var stream = [];
-        var curY = pageHeight - margin;
+      // Column Headers Text
+      stream.push('1 1 1 rg');
+      var colX = margin;
+      for (var c = 0; c < cols.length; c++) {
+        var colW = colWidths[c];
+        var title = String(cols[c] == null ? '' : cols[c]);
+        var isRight = colAlignRight[c];
+        var approxCharWidth = 5.2;
+        var displayTitle = title.slice(0, Math.max(4, Math.floor((colW - 8) / approxCharWidth)));
+        var textX = isRight ? (colX + colW - 6 - (displayTitle.length * approxCharWidth)) : (colX + 6);
+        var textY = curY - headerHeight + 6.5;
 
-        if (pIdx === 0) {
-          // Branding Header
-          stream.push('0.114 0.208 0.341 rg'); // #1d3557 deep navy
-          stream.push('BT /F2 15 Tf ' + margin + ' ' + (curY - 14) + ' Td (Lab of Future CRM) Tj ET');
+        stream.push('BT /F2 8.5 Tf ' + textX.toFixed(2) + ' ' + textY.toFixed(2) + ' Td (' + escapePdf(displayTitle) + ') Tj ET');
+        colX += colW;
+      }
+      curY -= headerHeight;
 
-          // Date
-          stream.push('0.45 0.50 0.55 rg');
-          var dateStr = options.date || new Date().toLocaleString('en-GB');
-          stream.push('BT /F1 8.5 Tf ' + (pageWidth - margin - 180).toFixed(2) + ' ' + (curY - 12) + ' Td (' + escapePdf('Generated: ' + dateStr) + ') Tj ET');
-          curY -= 26;
+      // Table Rows
+      for (var r = 0; r < pRows.length; r++) {
+        var row = pRows[r];
+        var isEven = r % 2 === 1;
 
-          // Report Title
-          stream.push('0.08 0.12 0.18 rg');
-          stream.push('BT /F2 13 Tf ' + margin + ' ' + (curY - 13) + ' Td (' + escapePdf(options.title || 'Report') + ') Tj ET');
-          curY -= 20;
-
-          // Filter summary / Subtitle
-          var filterLine = [options.filters, options.note ? ('Note: ' + options.note) : ''].filter(Boolean).join('   |   ');
-          if (filterLine) {
-            stream.push('0.40 0.45 0.50 rg');
-            stream.push('BT /F1 8.5 Tf ' + margin + ' ' + (curY - 9) + ' Td (' + escapePdf(filterLine.slice(0, 150)) + ') Tj ET');
-            curY -= 16;
-          }
-          curY -= 6;
-        } else {
-          // Continuation Header
-          stream.push('0.35 0.40 0.45 rg');
-          stream.push('BT /F2 9.5 Tf ' + margin + ' ' + (curY - 12) + ' Td (' + escapePdf((options.title || 'Report') + ' (continued)') + ') Tj ET');
-          curY -= 22;
+        if (isEven) {
+          stream.push('0.965 0.975 0.985 rg');
+          stream.push(margin + ' ' + (curY - rowHeight).toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + rowHeight + ' re f');
         }
 
-        // Table Header Background
-        stream.push('0.114 0.208 0.341 rg');
-        stream.push(margin + ' ' + (curY - headerHeight).toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + headerHeight + ' re f');
+        // Row separator line
+        stream.push('0.88 0.90 0.92 RG 0.5 w');
+        stream.push(margin + ' ' + (curY - rowHeight).toFixed(2) + ' m ' + (margin + contentWidth).toFixed(2) + ' ' + (curY - rowHeight).toFixed(2) + ' l S');
 
-        // Column Headers Text
-        stream.push('1 1 1 rg');
-        var colX = margin;
-        for (var c = 0; c < cols.length; c++) {
-          var colW = colWidths[c];
-          var title = String(cols[c] == null ? '' : cols[c]);
-          var isRight = colAlignRight[c];
-          var approxCharWidth = 5.2;
-          var displayTitle = title.slice(0, Math.max(4, Math.floor((colW - 8) / approxCharWidth)));
-          var textX = isRight ? (colX + colW - 6 - (displayTitle.length * approxCharWidth)) : (colX + 6);
-          var textY = curY - headerHeight + 6.5;
+        // Cell text
+        stream.push('0.12 0.15 0.20 rg');
+        colX = margin;
+        for (var cIdx = 0; cIdx < cols.length; cIdx++) {
+          var cW = colWidths[cIdx];
+          var val = sanitizePdf(row[cIdx]);
+          var rightAlign = colAlignRight[cIdx];
+          var charW = 4.8;
+          var maxChars = Math.max(4, Math.floor((cW - 10) / charW));
+          var displayVal = val.length > maxChars ? val.slice(0, maxChars - 3) + '...' : val;
+          var cellY = curY - rowHeight + 5.5;
+          var cTextX = rightAlign ? (colX + cW - 6 - (displayVal.length * charW)) : (colX + 6);
 
-          stream.push('BT /F2 8.5 Tf ' + textX.toFixed(2) + ' ' + textY.toFixed(2) + ' Td (' + escapePdf(displayTitle) + ') Tj ET');
-          colX += colW;
-        }
-        curY -= headerHeight;
-
-        // Table Rows
-        for (var r = 0; r < pRows.length; r++) {
-          var row = pRows[r];
-          var isEven = r % 2 === 1;
-
-          if (isEven) {
-            stream.push('0.965 0.975 0.985 rg');
-            stream.push(margin + ' ' + (curY - rowHeight).toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + rowHeight + ' re f');
-          }
-
-          // Row separator line
-          stream.push('0.88 0.90 0.92 RG 0.5 w');
-          stream.push(margin + ' ' + (curY - rowHeight).toFixed(2) + ' m ' + (margin + contentWidth).toFixed(2) + ' ' + (curY - rowHeight).toFixed(2) + ' l S');
-
-          // Cell text
-          stream.push('0.12 0.15 0.20 rg');
-          colX = margin;
-          for (var cIdx = 0; cIdx < cols.length; cIdx++) {
-            var cW = colWidths[cIdx];
-            var val = String(row[cIdx] == null ? '' : row[cIdx]);
-            var rightAlign = colAlignRight[cIdx];
-            var charW = 4.8;
-            var maxChars = Math.max(3, Math.floor((cW - 10) / charW));
-            var displayVal = val.length > maxChars ? val.slice(0, maxChars - 1) + '…' : val;
-            var cellY = curY - rowHeight + 5.5;
-            var cTextX = rightAlign ? (colX + cW - 6 - (displayVal.length * charW)) : (colX + 6);
-
-            stream.push('BT /F1 8 Tf ' + cTextX.toFixed(2) + ' ' + cellY.toFixed(2) + ' Td (' + escapePdf(displayVal) + ') Tj ET');
-            colX += cW;
-          }
-
-          curY -= rowHeight;
+          stream.push('BT /F1 8 Tf ' + cTextX.toFixed(2) + ' ' + cellY.toFixed(2) + ' Td (' + escapePdf(displayVal) + ') Tj ET');
+          colX += cW;
         }
 
-        // Outer table border
-        stream.push('0.80 0.83 0.87 RG 0.75 w');
-        var tableH = headerHeight + pRows.length * rowHeight;
-        stream.push(margin + ' ' + curY.toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + tableH.toFixed(2) + ' re S');
-
-        // Page Footer
-        stream.push('0.50 0.55 0.60 rg');
-        stream.push('BT /F1 7.5 Tf ' + margin + ' ' + margin + ' Td (Lab of Future CRM   •   Confidential) Tj ET');
-        stream.push('BT /F1 7.5 Tf ' + (pageWidth - margin - 70).toFixed(2) + ' ' + margin + ' Td (Page ' + (pIdx + 1) + ' of ' + totalPages + ') Tj ET');
-
-        pageStreams.push(stream.join('\n'));
+        curY -= rowHeight;
       }
 
-      // Assemble Objects
+      // Outer table border
+      stream.push('0.80 0.83 0.87 RG 0.75 w');
+      var tableH = headerHeight + pRows.length * rowHeight;
+      stream.push(margin + ' ' + curY.toFixed(2) + ' ' + contentWidth.toFixed(2) + ' ' + tableH.toFixed(2) + ' re S');
+
+      if (!pRows.length) {
+        stream.push('0.45 0.50 0.55 rg');
+        stream.push('BT /F1 9 Tf ' + margin + ' ' + (curY - 18).toFixed(2) + ' Td (' + escapePdf(options.empty || 'No records for the selected filters.') + ') Tj ET');
+      }
+
+      // Page Footer
+      stream.push('0.50 0.55 0.60 rg');
+      stream.push('BT /F1 7.5 Tf ' + margin + ' ' + margin + ' Td (' + escapePdf('Lab of Future CRM   *   Confidential') + ') Tj ET');
+      stream.push('BT /F1 7.5 Tf ' + (pageWidth - margin - 70).toFixed(2) + ' ' + margin + ' Td (Page ' + pageNo + ' of ' + totalPages + ') Tj ET');
+
+      return stream.join('\n');
+    }
+
+    function assemblePdf(pages) {
+      var catalogId = 1, pagesRootId = 2, fontNormId = 3, fontBoldId = 4;
+      var pageObjIds = [], contentObjIds = [], nextId = 5;
+      pages.forEach(function () { pageObjIds.push(nextId++); contentObjIds.push(nextId++); });
+
       var objTable = {};
       objTable[catalogId] = '<< /Type /Catalog /Pages ' + pagesRootId + ' 0 R >>';
-      objTable[pagesRootId] = '<< /Type /Pages /Kids [' + pageObjIds.map(function (id) { return id + ' 0 R'; }).join(' ') + '] /Count ' + totalPages + ' >>';
+      objTable[pagesRootId] = '<< /Type /Pages /Kids [' + pageObjIds.map(function (id) { return id + ' 0 R'; }).join(' ') + '] /Count ' + pages.length + ' >>';
       objTable[fontNormId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
       objTable[fontBoldId] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
-
-      for (var j = 0; j < totalPages; j++) {
-        var pId = pageObjIds[j];
-        var cId = contentObjIds[j];
-        var strm = pageStreams[j];
-        objTable[pId] = '<< /Type /Page /Parent ' + pagesRootId + ' 0 R /MediaBox [0 0 ' + pageWidth.toFixed(2) + ' ' + pageHeight.toFixed(2) + '] /Contents ' + cId + ' 0 R /Resources << /Font << /F1 ' + fontNormId + ' 0 R /F2 ' + fontBoldId + ' 0 R >> >> >>';
-        objTable[cId] = '<< /Length ' + strm.length + ' >>\nstream\n' + strm + '\nendstream';
-      }
+      pages.forEach(function (pg, j) {
+        objTable[pageObjIds[j]] = '<< /Type /Page /Parent ' + pagesRootId + ' 0 R /MediaBox [0 0 ' + pg.w.toFixed(2) + ' ' + pg.h.toFixed(2) + '] /Contents ' + contentObjIds[j] + ' 0 R /Resources << /Font << /F1 ' + fontNormId + ' 0 R /F2 ' + fontBoldId + ' 0 R >> >> >>';
+        objTable[contentObjIds[j]] = '<< /Length ' + pg.stream.length + ' >>\nstream\n' + pg.stream + '\nendstream';
+      });
 
       var pdf = '%PDF-1.4\n%\xE2\xE3\xCF\xD3\n';
       var offsets = [];
-      var maxObj = 4 + totalPages * 2;
-
+      var maxObj = 4 + pages.length * 2;
       for (var k = 1; k <= maxObj; k++) {
         offsets[k] = pdf.length;
         pdf += k + ' 0 obj\n' + objTable[k] + '\nendobj\n';
       }
-
       var xrefOffset = pdf.length;
       pdf += 'xref\r\n0 ' + (maxObj + 1) + '\r\n';
       pdf += '0000000000 65535 f \r\n';
-      for (var m = 1; m <= maxObj; m++) {
-        pdf += String(offsets[m]).padStart(10, '0') + ' 00000 n \r\n';
-      }
-
+      for (var m = 1; m <= maxObj; m++) pdf += String(offsets[m]).padStart(10, '0') + ' 00000 n \r\n';
       pdf += 'trailer\r\n<< /Size ' + (maxObj + 1) + ' /Root ' + catalogId + ' 0 R >>\r\nstartxref\r\n' + xrefOffset + '\r\n%%EOF\r\n';
 
       var bytes = new Uint8Array(pdf.length);
-      for (var n = 0; n < pdf.length; n++) {
-        bytes[n] = pdf.charCodeAt(n) & 0xff;
-      }
+      for (var n = 0; n < pdf.length; n++) bytes[n] = pdf.charCodeAt(n) & 0xff;
       return new Blob([bytes], { type: 'application/pdf' });
     }
+
+    function buildPdfDoc(sections) {
+      var layouts = sections.map(layoutPdfSection);
+      var total = layouts.reduce(function (a, L) { return a + L.pages.length; }, 0);
+      var out = [], pageNo = 0;
+      layouts.forEach(function (L) {
+        L.pages.forEach(function (_, i) { pageNo++; out.push({ w: L.w, h: L.h, stream: renderPdfPage(L, i, pageNo, total) }); });
+      });
+      return assemblePdf(out);
+    }
+
+    function buildPdfBlob(options) { return buildPdfDoc([options]); }
 
     function generateReportCsvBlob(cols, rows) {
       var escCsv = function (v) {
@@ -515,9 +518,10 @@
       };
     }
 
-    function getActiveReportContext() {
-      var id = S.rep ? S.rep.id : 'r1';
-      if (isReceptionStaff()) {
+    // forId: build the context of any report (export all) without changing the report on screen
+    function getActiveReportContext(forId) {
+      var id = forId || (S.rep ? S.rep.id : 'r1');
+      if (isReceptionStaff() && !forId) {
         if (id !== 'r1' && id !== 'r22') {
           id = 'r1';
           if (S.rep) S.rep.id = 'r1';
@@ -623,35 +627,105 @@
       if (typeof toast === 'function') toast('JSON data downloaded', 'ok');
     };
 
+    // ---------------- all reports in one file (each user gets the reports and branches they can see)
+    function exportableReportIds() {
+      if (isReceptionStaff()) return ['r1', 'r22'];
+      return (RDEF || []).map(function (r) { return r[0]; }).filter(function (id) { return REP && REP[id]; });
+    }
+    function allReportContexts() {
+      return exportableReportIds().map(function (id) {
+        try { return getActiveReportContext(id); } catch (e) { return { id: id, name: id, cols: ['Error'], rows: [[String(e && e.message || e)]], filters: '', note: '' }; }
+      });
+    }
+    var fileDate = function () { return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Dubai' }); };
+
     ACT.repExportAll = function () {
-      if (!isBranchPrivileged()) {
-        if (typeof toast === 'function') toast('Multi-branch summary export is restricted to System Administrators and Management.', 'warn');
-        return;
-      }
-      var summaryRows = [];
-      (RDEF || []).forEach(function (r, idx) {
-        var rId = r[0];
-        var rName = r[1];
-        var rRes = (REP && REP[rId]) ? REP[rId]() : { cols: [], rows: [] };
-        summaryRows.push([
-          String(idx + 1),
-          rId.toUpperCase(),
-          rName,
-          String(rRes.rows ? rRes.rows.length : 0),
-          (rRes.cols || []).slice(0, 4).join(', ') + ((rRes.cols || []).length > 4 ? '...' : '')
-        ]);
+      var ctxs = allReportContexts();
+      if (!ctxs.length) { if (typeof toast === 'function') toast('No reports available for your role', 'warn'); return; }
+      var date = ctxs[0].date || new Date().toLocaleString('en-GB');
+      var sections = ctxs.map(function (c, i) {
+        return { title: (i + 1) + '. ' + c.name, cols: c.cols, rows: c.rows, filters: c.filters, note: c.note, date: date };
       });
-      var blob = buildPdfBlob({
-        title: 'Executive Reports Directory & Summary',
-        cols: ['#', 'Report ID', 'Report Title', 'Active Rows', 'Columns Preview'],
-        rows: summaryRows,
-        filters: 'Consolidated Directory of all 22 CRM Reports',
-        note: 'Complete summary of all operational and management reports',
-        date: new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      // Contents first: one line per report with its row count and the page it starts on
+      var toc = { title: 'All reports (' + ctxs.length + ')', cols: ['#', 'Report', 'Rows', 'Page'], rows: [], filters: ctxs[0].filters, note: 'Each report starts on a new page.', date: date, landscape: false };
+      toc.rows = ctxs.map(function (c, i) { return [String(i + 1), c.name, String(c.rows.length), '']; });
+      var page = layoutPdfSection(toc).pages.length + 1;
+      toc.rows = ctxs.map(function (c, i) {
+        var r = [String(i + 1), c.name, String(c.rows.length), String(page)];
+        page += layoutPdfSection(sections[i]).pages.length;
+        return r;
       });
-      downloadBlob(blob, 'lof-crm-all-22-reports-summary.pdf');
-      if (typeof addAudit === 'function') addAudit('All reports exported (PDF summary)', 'all', '22 Reports Directory');
-      if (typeof toast === 'function') toast('Executive Summary PDF downloaded', 'ok');
+      downloadBlob(buildPdfDoc([toc].concat(sections)), 'lof-crm-all-reports-' + fileDate() + '.pdf');
+      if (typeof addAudit === 'function') addAudit('All reports exported (PDF)', 'all', ctxs.length + ' reports, ' + (page - 1) + ' pages');
+      if (typeof toast === 'function') toast('All ' + ctxs.length + ' reports downloaded as one PDF (' + (page - 1) + ' pages)', 'ok');
+    };
+
+    // Excel 2003 XML workbook: a Contents sheet plus one sheet per report (opens in Excel and LibreOffice)
+    ACT.repExportAllXls = function () {
+      var ctxs = allReportContexts();
+      if (!ctxs.length) { if (typeof toast === 'function') toast('No reports available for your role', 'warn'); return; }
+      var x = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); };
+      var used = {};
+      var sheetName = function (i, name) {
+        var base = ((i + 1) + ' ' + name).replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31).trim(), n = base, k = 2;
+        while (used[n.toLowerCase()]) n = base.slice(0, 28) + ' ' + k++;
+        used[n.toLowerCase()] = 1;
+        return n;
+      };
+      var cell = function (v, style) {
+        var s = String(v == null ? '' : v), num = /^-?\d+(\.\d+)?$/.test(s.replace(/,/g, '')) && s.length < 16;
+        return '<Cell' + (style ? ' ss:StyleID="' + style + '"' : '') + '><Data ss:Type="' + (num ? 'Number' : 'String') + '">' + x(num ? s.replace(/,/g, '') : s) + '</Data></Cell>';
+      };
+      var sheet = function (name, title, sub, cols, rows) {
+        return '<Worksheet ss:Name="' + x(name) + '"><Table>' +
+          '<Row>' + cell(title, 'title') + '</Row>' + (sub ? '<Row>' + cell(sub, 'sub') + '</Row>' : '') + '<Row/>' +
+          '<Row>' + cols.map(function (c) { return cell(c, 'head'); }).join('') + '</Row>' +
+          rows.map(function (r) { return '<Row>' + r.map(function (v) { return cell(v); }).join('') + '</Row>'; }).join('') +
+          '</Table></Worksheet>';
+      };
+      var names = ctxs.map(function (c, i) { return sheetName(i, c.name); });
+      var xml = '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n' +
+        '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">' +
+        '<Styles><Style ss:ID="title"><Font ss:Bold="1" ss:Size="13"/></Style><Style ss:ID="sub"><Font ss:Color="#64748B"/></Style>' +
+        '<Style ss:ID="head"><Font ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#1D3557" ss:Pattern="Solid"/></Style></Styles>' +
+        sheet('Contents', 'Lab of Future CRM – all reports', 'Generated ' + (ctxs[0].date || '') + '  |  ' + (ctxs[0].filters || ''), ['#', 'Report', 'Rows', 'Sheet'],
+          ctxs.map(function (c, i) { return [String(i + 1), c.name, String(c.rows.length), names[i]]; })) +
+        ctxs.map(function (c, i) { return sheet(names[i], c.name, [c.filters, c.note].filter(Boolean).join('  |  '), c.cols, c.rows); }).join('') +
+        '</Workbook>';
+      downloadBlob(new Blob([xml], { type: 'application/vnd.ms-excel;charset=utf-8' }), 'lof-crm-all-reports-' + fileDate() + '.xls');
+      if (typeof addAudit === 'function') addAudit('All reports exported (Excel)', 'all', ctxs.length + ' reports');
+      if (typeof toast === 'function') toast('All ' + ctxs.length + ' reports downloaded as one Excel workbook', 'ok');
+    };
+
+    // ---------------- new single-report formats: Word document and HTML page
+    function reportHtmlDoc(ctx, forWord) {
+      var h = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
+      return '<html' + (forWord ? ' xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40"' : '') + '>' +
+        '<head><meta charset="utf-8"><title>' + h(ctx.name) + '</title>' +
+        (forWord ? '<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->' : '<meta name="viewport" content="width=device-width,initial-scale=1">') +
+        '<style>' + (forWord && ctx.cols.length > 6 ? '@page { size: 841.9pt 595.3pt; mso-page-orientation: landscape; margin: 36pt; } ' : '@page { margin: 36pt; } ') +
+        'body{font-family:Arial,Helvetica,sans-serif;color:#1e293b;font-size:11pt;margin:24px} .brand{color:#1d3557;font-weight:bold;font-size:15pt}' +
+        ' .meta{color:#64748b;font-size:9pt;margin:4px 0 14px} h1{font-size:14pt;margin:14px 0 4px}' +
+        ' table{border-collapse:collapse;width:100%;font-size:9pt} th{background:#1d3557;color:#fff;text-align:left;padding:5px 7px;border:1px solid #1d3557}' +
+        ' td{padding:4px 7px;border:1px solid #e2e8f0} tr:nth-child(even) td{background:#f8fafc} .foot{color:#94a3b8;font-size:8pt;margin-top:14px}</style></head><body>' +
+        '<div class="brand">Lab of Future CRM</div><h1>' + h(ctx.name) + '</h1>' +
+        '<div class="meta">Generated ' + h(ctx.date) + (ctx.filters ? ' &nbsp;|&nbsp; ' + h(ctx.filters) : '') + (ctx.note ? '<br>' + h(ctx.note) : '') + '</div>' +
+        '<table><thead><tr>' + ctx.cols.map(function (c) { return '<th>' + h(c) + '</th>'; }).join('') + '</tr></thead><tbody>' +
+        (ctx.rows.length ? ctx.rows.map(function (r) { return '<tr>' + r.map(function (v) { return '<td>' + h(v) + '</td>'; }).join('') + '</tr>'; }).join('')
+          : '<tr><td colspan="' + Math.max(1, ctx.cols.length) + '">No records for the selected filters.</td></tr>') +
+        '</tbody></table><div class="foot">Lab of Future CRM &middot; Confidential &middot; ' + ctx.rows.length + ' rows</div></body></html>';
+    }
+    ACT.repDoc = function () {
+      var ctx = getActiveReportContext();
+      downloadBlob(new Blob(['﻿' + reportHtmlDoc(ctx, true)], { type: 'application/msword;charset=utf-8' }), ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.doc');
+      if (typeof addAudit === 'function') addAudit('Report exported (Word)', ctx.id, ctx.name);
+      if (typeof toast === 'function') toast('Word document downloaded (' + ctx.rows.length + ' rows)', 'ok');
+    };
+    ACT.repHtml = function () {
+      var ctx = getActiveReportContext();
+      downloadBlob(new Blob([reportHtmlDoc(ctx, false)], { type: 'text/html;charset=utf-8' }), ctx.name.toLowerCase().replace(/[^a-z0-9]+/g, '-') + '.html');
+      if (typeof addAudit === 'function') addAudit('Report exported (HTML)', ctx.id, ctx.name);
+      if (typeof toast === 'function') toast('HTML page downloaded (' + ctx.rows.length + ' rows)', 'ok');
     };
 
     ACT.repExportModal = function () {
@@ -664,6 +738,9 @@
     ACT.doRepXls = function () { if (typeof closeModal === 'function') closeModal(); ACT.repXls(); };
     ACT.doRepJson = function () { if (typeof closeModal === 'function') closeModal(); ACT.repJson(); };
     ACT.doRepAllPdf = function () { if (typeof closeModal === 'function') closeModal(); ACT.repExportAll(); };
+    ACT.doRepAllXls = function () { if (typeof closeModal === 'function') closeModal(); ACT.repExportAllXls(); };
+    ACT.doRepDoc = function () { if (typeof closeModal === 'function') closeModal(); ACT.repDoc(); };
+    ACT.doRepHtml = function () { if (typeof closeModal === 'function') closeModal(); ACT.repHtml(); };
     ACT.repCopyClipboard = function () {
       var ctx = getActiveReportContext();
       var escCsv = function (v) { v = String(v == null ? '' : v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
@@ -684,11 +761,30 @@
       var colCount = ctx.cols.length;
       var isPriv = isBranchPrivileged();
 
-      var allPdfCard = !isPriv ? '' :
+      var nAll = exportableReportIds().length;
+      var allPdfCard = '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepDoc">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">📝</span><b>Word Document (.doc)</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Editable report for Microsoft Word or Google Docs – add comments before sharing.</p>' +
+          '<button class="btn sm" type="button" data-act="doRepDoc">' + ic('download') + ' Download Word</button>' +
+        '</div>' +
+        '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepHtml">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">🌐</span><b>Web Page (.html)</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Self-contained page that opens in any browser – easy to e-mail or archive.</p>' +
+          '<button class="btn sm" type="button" data-act="doRepHtml">' + ic('download') + ' Download HTML</button>' +
+        '</div>' +
+        '</div>' +
+        '<div class="sec" style="margin-top:4px">All reports' + (isPriv ? '' : ' – ' + esc(userAssignedBranchNames())) + '</div>' +
+        '<p class="muted xs" style="margin:2px 0 10px">Every report you can see (' + nAll + '), with the filters currently selected, in one file.</p>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:0 0 6px">' +
         '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepAllPdf">' +
-          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">📚</span><b>All 22 Reports Summary</b></div>' +
-          '<p class="muted xs" style="margin:0 0 10px">Consolidated multi-report executive directory PDF covering all 22 CRM reports.</p>' +
-          '<button class="btn sm ghost" type="button" data-act="doRepAllPdf">' + ic('file') + ' Export All PDF</button>' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">📚</span><b>All reports – PDF</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">Contents page, then each of the ' + nAll + ' reports in full, each starting on a new page.</p>' +
+          '<button class="btn sm primary" type="button" data-act="doRepAllPdf">' + ic('download') + ' Download all as PDF</button>' +
+        '</div>' +
+        '<div class="card" style="padding:14px;border:1px solid var(--line);border-radius:8px;cursor:pointer" data-act="doRepAllXls">' +
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="font-size:22px">🗂️</span><b>All reports – Excel</b></div>' +
+          '<p class="muted xs" style="margin:0 0 10px">One workbook: a Contents sheet plus one sheet per report.</p>' +
+          '<button class="btn sm" type="button" data-act="doRepAllXls">' + ic('download') + ' Download all as Excel</button>' +
         '</div>';
 
       var body = '<div class="banner">' + ic('file') + '<span>Exporting <b>' + esc(ctx.name) + '</b> (' + rowCount + ' row' + (rowCount === 1 ? '' : 's') + ', ' + colCount + ' columns). Select your preferred format:</span></div>' +
@@ -722,7 +818,7 @@
         '</div>';
 
       return {
-        title: 'Export Report – ' + esc(ctx.name),
+        title: 'Export Report – ' + ctx.name,
         size: 'lg',
         foot: '<button class="btn" data-act="closeModal">Close</button><button class="btn" data-act="repCopyClipboard">Copy CSV to Clipboard</button>',
         body: body,
@@ -790,7 +886,8 @@
           '<div class="row" style="gap:6px;display:inline-flex">' +
             '<button class="btn primary" data-act="repPdf" title="Download report as formatted PDF">' + ic('file') + ' Export PDF</button>' +
             '<button class="btn" data-act="repCsv" title="Download report as CSV spreadsheet">' + ic('download') + ' Export CSV</button>' +
-            '<button class="btn ghost" data-act="repExportModal" title="More download formats (Excel, JSON, Print)">' + ic('list') + ' More Formats ▾</button>' +
+            '<button class="btn" data-act="repExportAll" title="Download every report you can see in one PDF">' + ic('file') + ' Export All (PDF)</button>' +
+            '<button class="btn ghost" data-act="repExportModal" title="More download formats (Word, Excel, HTML, JSON, Print, all reports)">' + ic('list') + ' More Formats ▾</button>' +
           '</div>'
         );
       };
@@ -1410,23 +1507,220 @@
     loginScreen(msg);
   }
   var pendingPw = null; // kept in memory only between "sign in" and the forced password change
-  function authCard(sub, msg, inner, btn, foot) {
+  // ---------------- sign-in screens: full-page design with a dark and a light theme (sun/moon switch, top right).
+  // The chosen theme is stored as lof_theme, the same setting the CRM uses after sign-in.
+  var BRAND = { name: 'Learning Based', accent: 'CRM', tagline: 'Connect • Learn • Grow' };
+  var LBI = {
+    mail: '<svg class="lb-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7 8 6 8-6"/></svg>',
+    lock: '<svg class="lb-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
+    eye: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
+    eyeOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 5.6A10 10 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3 3.7M6.6 6.6C3.9 8.3 2.5 12 2.5 12S6 18.5 12 18.5a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>',
+    login: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>',
+    sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+    moon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11Z"/></svg>',
+  };
+  function authTheme() {
+    var t = LS.get('lof_theme');
+    if (t === 'dark' || t === 'light') return t;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  function lbLogo() {
+    return '<img class="lb-logo" src="/logo.png" alt="' + esc(BRAND.name + ' ' + BRAND.accent) + ' logo" width="48" height="48">';
+  }
+  // Left panel: a launch trajectory across a blueprint grid. The four programmes are stops along it and a small
+  // rocket (from the logo) flies it once on load; after that everything holds still. Reduced motion: final state only.
+  var LB_STOPS = [['Space and Astronomy', 0.2, 1], ['Robotics', 0.4, 1], ['Artificial Intelligence', 0.59, -1], ['Aerospace', 0.77, -1]];
+  var LB_PATH = 'M96 812 C 380 812 560 772 650 612 S 742 262 812 128';
+  var LB_EASE = [0.22, 0.8, 0.3, 1], LB_DUR = 2.6, lbPlayed = false;
+  // Night sky behind the trajectory: stars (kept clear of the logo and headline), a crescent moon, a ringed planet
+  function lbSky() {
+    var seed = 11, rnd = function () { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; }, s = '';
+    for (var n = 0, made = 0; made < 95 && n < 800; n++) {
+      var x = rnd() * 900, y = rnd() * 900, r = rnd();
+      if ((x < 660 && y > 150 && y < 400) || (x < 430 && y < 115) || Math.hypot(x - 790, y - 800) < 235) continue;
+      made++;
+      s += r > 0.93
+        ? '<path class="sc-spark" data-x="' + x.toFixed(0) + '" data-y="' + y.toFixed(0) + '" d="M' + x.toFixed(0) + ' ' + (y - 7).toFixed(0) + 'q1 6 7 7q-6 1-7 7q-1-6-7-7q6-1 7-7Z"/>'
+        : '<circle class="sc-star" cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="' + (0.7 + r * 1.4).toFixed(2) + '" opacity="' + (0.3 + rnd() * 0.6).toFixed(2) + '"/>';
+    }
+    return '<defs><radialGradient id="lbPlanet" cx=".34" cy=".28" r=".8"><stop offset="0" class="sc-pl1"/><stop offset="1" class="sc-pl2"/></radialGradient></defs>' +
+      '<g class="sc-sky">' + s + '</g>' +
+      '<g class="sc-moon"><circle cx="520" cy="116" r="17"/><circle class="sc-moon-cut" cx="528" cy="109" r="15"/></g>' +
+      '<g class="sc-planet"><ellipse class="sc-ring" cx="790" cy="800" rx="205" ry="40" transform="rotate(-14 790 800)"/>' +
+      '<circle cx="790" cy="800" r="118" fill="url(#lbPlanet)"/>' +
+      '<path class="sc-ring" d="M585 800 A205 40 0 0 0 995 800" transform="rotate(-14 790 800)"/></g>';
+  }
+  function lbScene() {
+    return '<svg class="lb-scene" viewBox="0 0 900 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">' +
+      '<defs><mask id="lbReveal" maskUnits="userSpaceOnUse" x="0" y="0" width="1000" height="900">' +
+      '<path class="sc-reveal" pathLength="1" d="' + LB_PATH + '" fill="none" stroke="#fff" stroke-width="18"/></mask></defs>' +
+      lbSky() + '<g class="sc-pad"><circle cx="96" cy="812" r="6"/><circle cx="96" cy="812" r="22" fill="none"/><circle cx="96" cy="812" r="40" fill="none"/></g>' +
+      '<path id="lbPath" class="sc-path" d="' + LB_PATH + '" mask="url(#lbReveal)"/>' +
+      LB_STOPS.map(function (s, i) {
+        return '<g class="sc-stop" id="lbStop' + i + '"><circle class="sc-halo" r="16"/><circle class="sc-dot" r="6.5"/>' +
+          '<text x="' + (24 * s[2]) + '" y="5" text-anchor="' + (s[2] > 0 ? 'start' : 'end') + '">' + esc(s[0]) + '</text></g>';
+      }).join('') +
+      '<g id="lbRocket"><g class="sc-rocket" transform="scale(1.25)">' +
+      '<path class="sc-flame" d="M-19 0 L-36 -6 L-31 0 L-36 6 Z"/>' +
+      '<path class="sc-fin" d="M-13 -6 L-22 -15 L-6 -6 Z M-13 6 L-22 15 L-6 6 Z"/>' +
+      '<path class="sc-body" d="M-18 -6.5 H6 C14 -6.5 20 -3 25 0 C20 3 14 6.5 6 6.5 H-18 Z"/>' +
+      '<circle class="sc-window" cx="5" cy="0" r="3"/></g>' +
+      '<animateMotion id="lbFly" dur="' + LB_DUR + 's" begin="indefinite" fill="freeze" rotate="auto" calcMode="spline" keyTimes="0;1" keyPoints="0;1" keySplines="' + LB_EASE.join(' ') + '"><mpath href="#lbPath"/></animateMotion></g>' +
+      '</svg>';
+  }
+  // Time (0..1) at which the eased flight reaches a given share of the path – stops light up as the rocket passes
+  function lbTimeAt(share) {
+    var a = LB_EASE, bz = function (s, p1, p2) { var u = 1 - s; return 3 * u * u * s * p1 + 3 * u * s * s * p2 + s * s * s; };
+    for (var k = 0; k <= 200; k++) { var s = k / 200; if (bz(s, a[1], a[3]) >= share) return bz(s, a[0], a[2]); }
+    return 1;
+  }
+  function lbAnimate(root) {
+    var path = root.querySelector('#lbPath'), len = path.getTotalLength(), rocket = root.querySelector('#lbRocket');
+    var reduce = lbPlayed || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    LB_STOPS.forEach(function (s, i) {
+      var p = path.getPointAtLength(len * s[1]), g = root.querySelector('#lbStop' + i);
+      g.setAttribute('transform', 'translate(' + p.x.toFixed(1) + ' ' + p.y.toFixed(1) + ')');
+      g.style.animationDelay = (lbTimeAt(s[1]) * LB_DUR).toFixed(2) + 's';
+    });
+    // keep the programme labels clear of stars
+    var boxes = LB_STOPS.map(function (s, i) { var g = root.querySelector('#lbStop' + i), t = g.querySelector('text').getBBox(), m = g.transform.baseVal.consolidate().matrix; return [m.e + t.x - 12, m.f + t.y - 10, m.e + t.x + t.width + 12, m.f + t.y + t.height + 10]; });
+    Array.prototype.forEach.call(root.querySelectorAll('.sc-star,.sc-spark'), function (st) {
+      var x = +(st.getAttribute('cx') || st.getAttribute('data-x')), y = +(st.getAttribute('cy') || st.getAttribute('data-y'));
+      if (boxes.some(function (b) { return x > b[0] && x < b[2] && y > b[1] && y < b[3]; })) st.parentNode.removeChild(st);
+    });
+    if (reduce) {
+      // final state, no motion: rocket at the end of its flight, trajectory and stops drawn
+      root.classList.add('lb-still');
+      var a = path.getPointAtLength(len), b = path.getPointAtLength(len * 0.99), ang = Math.atan2(a.y - b.y, a.x - b.x);
+      rocket.removeChild(rocket.querySelector('animateMotion'));
+      rocket.setAttribute('transform', 'translate(' + a.x.toFixed(1) + ' ' + a.y.toFixed(1) + ') rotate(' + (ang * 180 / Math.PI).toFixed(1) + ')');
+      return;
+    }
+    lbPlayed = true;
+    var fly = root.querySelector('#lbFly');
+    if (fly && fly.beginElement) fly.beginElement();
+  }
+  function lbStyles() {
+    if (document.getElementById('lbStyle')) return;
+    var l = document.createElement('link');
+    l.rel = 'stylesheet'; l.href = 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap';
+    document.head.appendChild(l);
+    var st = document.createElement('style'); st.id = 'lbStyle';
+    st.textContent = [
+      '.lb-shell{--lb-accent:#087BFF;min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(460px,1fr);font-family:"Bricolage Grotesque","IBM Plex Sans",system-ui,sans-serif;color:var(--lb-text);background:var(--lb-bg1)}',
+      '.lb-left{position:relative;overflow:hidden;isolation:isolate;min-height:100%}',
+      '.lb-right{position:relative;display:flex;flex-direction:column;background:var(--lb-bg2);border-left:1px solid var(--lb-border)}',
+      '.lb-right .lb-theme{position:absolute;top:28px;right:32px;z-index:1}',
+      '.lb-dark{--lb-bg1:#061A3A;--lb-bg2:#08152B;--lb-card:#071B36;--lb-accent2:#00C8F8;--lb-text:#FFFFFF;--lb-muted:#A9B9D2;--lb-border:#263E60;--lb-input:#0A2347;--lb-input-b:#2A4870;--lb-shadow:0 18px 40px rgba(0,6,20,.45);--lb-pill:#0B2447}',
+      '.lb-light{--lb-bg1:#F7F9FE;--lb-bg2:#EAF2FF;--lb-card:#FFFFFF;--lb-accent2:#123B82;--lb-text:#10264F;--lb-muted:#687B9F;--lb-border:#D8E2F2;--lb-input:#FFFFFF;--lb-input-b:#D3DEEF;--lb-shadow:0 18px 40px rgba(16,38,79,.10);--lb-pill:#FFFFFF}',
+      '.lb-scene{position:absolute;inset:0;width:100%;height:100%;z-index:-1}',
+      // blueprint grid (major every 120px, minor every 24px) – the launch pad the trajectory is plotted on
+      '.lb-left{background:radial-gradient(ellipse 70% 55% at 88% 100%,var(--lb-glow),transparent 70%),var(--lb-bg1)}',
+      '.lb-dark{--lb-glow:rgba(8,123,255,.20);--lb-path:#00C8F8;--lb-ember:#E8543A;--lb-flame:#FFB23E;--lb-rocket:#FFFFFF;--lb-rocket-line:#FFFFFF}',
+      '.lb-light{--lb-glow:rgba(8,123,255,.10);--lb-path:#087BFF;--lb-ember:#E2492E;--lb-flame:#F59E0B;--lb-rocket:#FFFFFF;--lb-rocket-line:#10264F}',
+      '.sc-path{fill:none;stroke:var(--lb-path);stroke-width:2.5;stroke-linecap:round;stroke-dasharray:1 11}',
+      '.sc-pad circle{stroke:var(--lb-path);stroke-opacity:.45;stroke-width:1.5}.sc-pad circle:first-child{fill:var(--lb-path);fill-opacity:.8;stroke:none}',
+      '.sc-reveal{stroke-dasharray:1;stroke-dashoffset:1;animation:lbDraw 2.6s cubic-bezier(.22,.8,.3,1) forwards}',
+      '.sc-stop{opacity:0;animation:lbStop .45s ease-out forwards}',
+      '.sc-star{fill:var(--lb-star)}.sc-spark{fill:var(--lb-spark)}.lb-light .sc-sky{opacity:.55}',
+      '.sc-moon circle{fill:var(--lb-moon)}.sc-moon .sc-moon-cut{fill:var(--lb-bg1)}',
+      '.sc-ring{fill:none;stroke:var(--lb-ring);stroke-width:3}',
+      '.lb-dark{--lb-star:#FFFFFF;--lb-spark:#CFE8FF;--lb-moon:#E8EEF8;--lb-ring:rgba(0,200,248,.5)}.lb-dark .sc-pl1{stop-color:#2D6DBA}.lb-dark .sc-pl2{stop-color:#0A2650}',
+      '.lb-light{--lb-star:#123B82;--lb-spark:#087BFF;--lb-moon:rgba(18,59,130,.35);--lb-ring:rgba(8,123,255,.4)}.lb-light .sc-pl1{stop-color:#EEF4FE}.lb-light .sc-pl2{stop-color:#9FBDEA}',
+      '.sc-dot{fill:var(--lb-ember)}.sc-halo{fill:var(--lb-ember);fill-opacity:.18}',
+      '.sc-stop text{fill:var(--lb-text);font-family:"Bricolage Grotesque",Inter,sans-serif;font-size:17px;font-weight:600;letter-spacing:-.01em}',
+      '.sc-body{fill:var(--lb-rocket);stroke:var(--lb-rocket-line);stroke-width:1.2}.sc-window{fill:#087BFF}.sc-fin{fill:var(--lb-ember)}.sc-flame{fill:var(--lb-flame)}',
+      '@keyframes lbDraw{to{stroke-dashoffset:0}}@keyframes lbStop{from{opacity:0;transform-box:fill-box}to{opacity:1}}',
+      '.lb-still .sc-reveal{animation:none;stroke-dashoffset:0}.lb-still .sc-stop{animation:none;opacity:1}',
+      '@media (prefers-reduced-motion:reduce){.sc-reveal{animation:none;stroke-dashoffset:0}.sc-stop{animation:none;opacity:1}}',
+      // headline: the brand's own words, set large over the grid
+      '.lb-hero{position:absolute;left:clamp(24px,4.4vw,64px);top:clamp(132px,21%,220px);max-width:min(560px,80%)}',
+      '.lb-big{margin:0;font-family:"Bricolage Grotesque",Inter,sans-serif;font-variation-settings:"opsz" 96;font-size:clamp(64px,7.6vw,132px);font-weight:800;line-height:.9;letter-spacing:-.05em;color:var(--lb-text)}',
+      '.lb-lede{margin:22px 0 0;max-width:34ch;font-size:17px;line-height:1.5;color:var(--lb-muted)}',
+      // header
+      '.lb-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;padding:28px 40px;gap:16px}',
+      '.lb-brand{display:flex;align-items:center;gap:14px}.lb-logo{width:52px;height:52px;flex:none;object-fit:contain}',
+      '.lb-dark .lb-logo{filter:drop-shadow(0 0 1px rgba(255,255,255,.35))}',
+      '.lb-name{font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1.1;color:var(--lb-text)}.lb-name b{color:var(--lb-accent);font-weight:800}',
+      '.lb-tag{font-size:13px;color:var(--lb-muted);margin-top:4px;letter-spacing:.04em}',
+      '.lb-theme{display:inline-flex;gap:2px;padding:3px;border-radius:999px;background:var(--lb-pill);border:1px solid var(--lb-border);box-shadow:0 2px 8px rgba(0,0,0,.08);cursor:pointer;font:inherit}',
+      '.lb-theme span{display:grid;place-items:center;width:34px;height:28px;border-radius:999px;color:var(--lb-muted)}',
+      '.lb-theme svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
+      '.lb-theme span.on{background:var(--lb-accent);color:#fff}',
+      '.lb-theme:focus-visible,.lb-btn:focus-visible,.lb-link:focus-visible,.lb-eye:focus-visible{outline:2px solid var(--lb-accent);outline-offset:2px}',
+      // card
+      '.lb-main{flex:1;display:flex;align-items:center;justify-content:center;padding:96px clamp(24px,5vw,72px) 40px;box-sizing:border-box}',
+      '.lb-card{width:min(100%,440px);box-sizing:border-box;background:var(--lb-card);border:1px solid var(--lb-border);border-radius:20px;box-shadow:var(--lb-shadow);padding:40px 40px 32px;display:flex;flex-direction:column;gap:16px}',
+      '.lb-dark .lb-card{border-color:#1E4A85}',
+      '.lb-h1{margin:0;font-size:29px;font-weight:800;letter-spacing:-.02em;color:var(--lb-text)}',
+      '.lb-sub{margin:-8px 0 0;font-size:15px;color:var(--lb-muted)}',
+      '.lb-rule{width:44px;height:3px;border-radius:3px;background:linear-gradient(90deg,var(--lb-accent),var(--lb-accent2));margin:0 0 8px}',
+      '.lb-field{position:relative;display:block}',
+      '.lb-field input,.lb-card .f input{width:100%;box-sizing:border-box;height:50px;border-radius:12px;border:1px solid var(--lb-input-b);background:var(--lb-input);color:var(--lb-text);font:inherit;font-size:15.5px;padding:0 16px;transition:border-color .15s,box-shadow .15s}',
+      '.lb-field input{padding:0 48px 0 46px}',
+      '.lb-field input::placeholder,.lb-card .f input::placeholder{color:var(--lb-muted);opacity:.85}',
+      '.lb-field input:focus,.lb-card .f input:focus{outline:none;border-color:var(--lb-accent);box-shadow:0 0 0 3px rgba(8,123,255,.22)}',
+      '.lb-field .lb-ic{position:absolute;left:15px;top:50%;transform:translateY(-50%);pointer-events:none}',
+      '.lb-ic{width:20px;height:20px;fill:none;stroke:var(--lb-muted);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
+      '.lb-eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:36px;height:36px;border:0;border-radius:8px;background:transparent;cursor:pointer;display:grid;place-items:center;color:var(--lb-muted)}',
+      '.lb-eye:hover{color:var(--lb-text)}.lb-eye svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
+      '.lb-card .f{display:flex;flex-direction:column;gap:6px}.lb-card .f label{font-size:13.5px;font-weight:600;color:var(--lb-text)}.lb-card .help{color:var(--lb-muted)}',
+      '.lb-row{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:14px}',
+      '.lb-check{display:inline-flex;align-items:center;gap:8px;color:var(--lb-muted);cursor:pointer}.lb-check input{width:16px;height:16px;accent-color:var(--lb-accent);margin:0}',
+      '.lb-link{color:var(--lb-accent);font-weight:600;text-decoration:none;cursor:pointer;border-radius:4px}.lb-link:hover{text-decoration:underline}',
+      '.lb-dark .lb-link{color:#3D9BFF}',
+      '.lb-btn{display:flex;align-items:center;justify-content:center;gap:10px;height:50px;width:100%;border:0;border-radius:12px;cursor:pointer;color:#fff;font:inherit;font-size:16.5px;font-weight:600;background:linear-gradient(180deg,#1A86FF,#0870E8);box-shadow:0 6px 16px rgba(8,123,255,.28);transition:filter .15s,transform .05s,box-shadow .15s}',
+      '.lb-btn:hover{filter:brightness(1.07);box-shadow:0 8px 20px rgba(8,123,255,.36)}.lb-btn:active{transform:translateY(1px);filter:brightness(.95)}.lb-btn:disabled{opacity:.65;cursor:progress}',
+      '.lb-btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
+      '.lb-foot{margin:6px 0 0;text-align:center;font-size:13.5px;color:var(--lb-muted)}',
+      '.lb-msg{padding:10px 12px;border-radius:10px;font-size:13.5px;background:rgba(8,123,255,.1);border:1px solid rgba(8,123,255,.3);color:var(--lb-text)}',
+      '.lb-err{font-size:13.5px;color:#F04E5E;min-height:0}.lb-err:empty{display:none}.lb-light .lb-err{color:#C62839}',
+      '.lb-info{font-size:13px;color:var(--lb-muted);text-align:center}.lb-info:empty{display:none}',
+      '.lb-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}',
+      '.lb-card .banner{margin:0}',
+      // phones / narrow windows: the left panel becomes a short banner above the card
+      '@media (max-width:900px){.lb-shell{grid-template-columns:1fr;grid-template-rows:auto 1fr}.lb-left{min-height:88px}.lb-right{border-left:0;border-top:1px solid var(--lb-border)}' +
+      '.lb-hero,.lb-scene{display:none}.lb-right .lb-theme{top:-68px;right:16px}.lb-main{align-items:flex-start;padding:28px 16px 32px}.lb-top{padding:20px 16px}.lb-name{font-size:21px}.lb-logo{width:40px;height:40px}.lb-card{padding:32px 24px 26px}}',
+      '@media (max-width:420px){.lb-tag{display:none}.lb-h1{font-size:25px}}',
+      '@media (prefers-reduced-motion:reduce){.lb-shell *{transition:none!important}}',
+    ].join('\n');
+    document.head.appendChild(st);
+  }
+  function authShell(cardHtml) {
+    lbStyles();
+    var t = authTheme();
+    document.documentElement.dataset.theme = t;
     document.getElementById('app').innerHTML =
-      '<div style="min-height:100%;display:grid;place-items:center;padding:16px;background:var(--bg)">' +
-      '<form id="lofAuth" class="card" style="width:min(100%,410px);box-shadow:0 10px 25px -5px rgba(0,0,0,0.1),0 8px 10px -6px rgba(0,0,0,0.06);border-radius:12px;overflow:hidden" novalidate>' +
-      '<div style="padding:22px 24px 16px;text-align:center;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);border-bottom:1px solid var(--line,#e2e8f0)">' +
-      '<div style="display:flex;justify-content:center;align-items:center;margin-bottom:8px">' +
-      '<img src="/lof-logo.png" alt="Lab of Future - Be Curious" style="max-height:56px;max-width:240px;object-fit:contain" onerror="this.onerror=null;this.src=\'/lof-mark.png\';this.style.maxHeight=\'48px\'">' +
-      '</div>' +
-      '<div style="font-size:11px;font-weight:700;color:var(--accent,#1d4ed8);letter-spacing:1px;text-transform:uppercase">CRM Portal</div>' +
-      '<div class="muted xs" style="margin-top:4px">' + esc(sub) + '</div>' +
-      '</div>' +
-      '<div class="bd" style="padding:20px 24px 24px;display:flex;flex-direction:column;gap:14px">' +
-      (msg ? '<div class="banner" style="margin:0">' + esc(msg) + '</div>' : '') + inner +
-      '<div class="fe" id="lofErr" role="alert"></div>' +
-      '<button class="btn primary" type="submit" style="justify-content:center;padding:10px 16px;font-weight:600">' + esc(btn) + '</button>' +
-      (foot ? '<div style="margin-top:4px;text-align:center">' + foot + '</div>' : '') +
-      '</div></form></div>';
+      // Split screen: left = branding over the library scene, right = solid panel with the sign-in card
+      '<div class="lb-shell lb-' + t + '" id="lbRoot">' +
+      '<section class="lb-left">' + lbScene() +
+      '<header class="lb-top"><div class="lb-brand">' + lbLogo() +
+      '<div><div class="lb-name">' + esc(BRAND.name) + ' <b>' + esc(BRAND.accent) + '</b></div><div class="lb-tag">' + esc(BRAND.tagline) + '</div></div></div></header>' +
+      '<div class="lb-hero"><p class="lb-big">Be curious.</p>' +
+      '<p class="lb-lede">Enquiries, admissions, enrolments and payments for every centre, in one place.</p></div>' +
+      '</section>' +
+      '<section class="lb-right">' +
+      '<button type="button" class="lb-theme" id="lbTheme" role="switch" aria-checked="' + (t === 'dark') + '" aria-label="Dark theme">' +
+      '<span class="' + (t === 'light' ? 'on' : '') + '">' + LBI.sun + '</span><span class="' + (t === 'dark' ? 'on' : '') + '">' + LBI.moon + '</span></button>' +
+      '<main class="lb-main">' + cardHtml + '</main></section></div>';
+    lbAnimate(document.getElementById('lbRoot'));
+    document.getElementById('lbTheme').addEventListener('click', function () {
+      var root = document.getElementById('lbRoot'), dark = !root.classList.contains('lb-dark');
+      root.classList.toggle('lb-dark', dark); root.classList.toggle('lb-light', !dark);
+      var spans = this.querySelectorAll('span'); spans[0].classList.toggle('on', !dark); spans[1].classList.toggle('on', dark);
+      this.setAttribute('aria-checked', String(dark));
+      LS.set('lof_theme', dark ? 'dark' : 'light'); // the CRM opens in the same theme after sign-in
+      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    });
+  }
+  function authCard(sub, msg, inner, btn, foot) {
+    authShell('<form id="lofAuth" class="lb-card" novalidate>' +
+      '<h1 class="lb-h1">' + esc(sub) + '</h1><div class="lb-rule"></div>' +
+      (msg ? '<div class="lb-msg" role="status">' + esc(msg) + '</div>' : '') + inner +
+      '<div class="lb-err" id="lofErr" role="alert"></div>' +
+      '<button class="lb-btn" type="submit">' + LBI.login + '<span>' + esc(btn) + '</span></button>' +
+      (foot ? '<div class="lb-foot">' + foot + '</div>' : '') +
+      '</form>');
     var f = document.getElementById('lofAuth');
     var first = f.querySelector('input:not([type=hidden])');
     if (first) first.focus();
@@ -1446,30 +1740,53 @@
     if (stage === 'password_change' || stage === 'mfa_setup') stageScreen(stage); else start();
   }
   function loginScreen(msg, needCode, remembered) {
-    var foot = needCode ? '' :
-      '<a href="javascript:void(0)" id="linkForgotPw" style="font-size:12.5px;color:var(--accent,#2563eb);text-decoration:none;font-weight:500;cursor:pointer">Forgot your password?</a>';
-
-    var f = authCard(
-      needCode ? 'Enter the 6-digit code from your authenticator app' : 'Sign in with your work credentials',
-      msg,
-      needCode
-        ? '<input type="hidden" name="email" value="' + esc(remembered.email) + '"><input type="hidden" name="password" value="' + esc(remembered.password) + '"><div class="f"><label for="lc">Verification code</label><input id="lc" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required></div>'
-        : '<div class="f"><label for="le">Work E-mail</label><input id="le" name="email" type="email" autocomplete="username" placeholder="name@example.com" required></div>' +
-          '<div class="f"><div style="display:flex;justify-content:space-between;align-items:center"><label for="lp" style="margin:0">Password</label></div><input id="lp" name="password" type="password" autocomplete="current-password" required></div>',
-      needCode ? 'Verify and Sign In' : 'Sign In',
-      foot
-    );
-
-    var forgotLink = document.getElementById('linkForgotPw');
-    if (forgotLink) {
-      forgotLink.addEventListener('click', function (e) {
+    var f;
+    if (needCode) {
+      f = authCard('Two-step verification', msg || 'Enter the 6-digit code from your authenticator app.',
+        '<input type="hidden" name="email" value="' + esc(remembered.email) + '"><input type="hidden" name="password" value="' + esc(remembered.password) + '">' +
+        '<div class="f"><label for="lc">Verification code</label><input id="lc" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required></div>',
+        'Verify and Sign In', '');
+    } else {
+      // Remember Me keeps only the e-mail address on this device – never the password
+      var saved = LS.get('lof_login_email') || '';
+      authShell('<form id="lofAuth" class="lb-card" novalidate>' +
+        '<h1 class="lb-h1">Welcome Back!</h1><p class="lb-sub">Sign in to continue your learning journey</p><div class="lb-rule"></div>' +
+        (msg ? '<div class="lb-msg" role="status">' + esc(msg) + '</div>' : '') +
+        '<div class="lb-field"><label for="le" class="lb-sr">Email Address</label>' + LBI.mail +
+        '<input id="le" name="email" type="email" autocomplete="username" placeholder="Email Address" required value="' + esc(saved) + '"></div>' +
+        '<div class="lb-field"><label for="lp" class="lb-sr">Password</label>' + LBI.lock +
+        '<input id="lp" name="password" type="password" autocomplete="current-password" placeholder="Password" required>' +
+        '<button type="button" class="lb-eye" id="lbEye" aria-label="Show password" aria-pressed="false">' + LBI.eye + '</button></div>' +
+        '<div class="lb-row"><label class="lb-check"><input type="checkbox" name="remember" id="lbRemember"' + (saved ? ' checked' : '') + '><span>Remember Me</span></label>' +
+        '<a href="#" class="lb-link" id="linkForgotPw">Forgot Password?</a></div>' +
+        '<div class="lb-err" id="lofErr" role="alert"></div>' +
+        '<button class="lb-btn" type="submit">' + LBI.login + '<span>Sign In</span></button>' +
+        '<div class="lb-info" id="lbInfo" role="status" aria-live="polite"></div>' +
+        '<p class="lb-foot">Don’t have an account? <a href="#" class="lb-link" id="lbContact">Contact Administrator</a></p>' +
+        '</form>');
+      f = document.getElementById('lofAuth');
+      (saved ? document.getElementById('lp') : document.getElementById('le')).focus();
+      var info = document.getElementById('lbInfo');
+      document.getElementById('lbEye').addEventListener('click', function () {
+        var pw = document.getElementById('lp'), show = pw.type === 'password';
+        pw.type = show ? 'text' : 'password';
+        this.innerHTML = show ? LBI.eyeOff : LBI.eye;
+        this.setAttribute('aria-pressed', String(show));
+        this.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      });
+      document.getElementById('linkForgotPw').addEventListener('click', function (e) {
         e.preventDefault();
-        forgotPasswordScreen();
+        forgotPasswordScreen('', document.getElementById('le').value.trim());
+      });
+      document.getElementById('lbContact').addEventListener('click', function (e) {
+        e.preventDefault();
+        info.textContent = 'Accounts are created by your System Administrator (Settings → Staff & Users). Please contact them to get access.';
       });
     }
 
     onSubmit(f, function (d) {
       return req('POST', '/auth/login', { email: d.email, password: d.password, code: d.code }).then(function (r) {
+        if (!needCode) LS.set('lof_login_email', d.remember ? String(d.email || '').trim() : null);
         if (r.mfaRequired) return loginScreen('', true, { email: d.email, password: d.password });
         pendingPw = r.stage === 'password_change' ? d.password : null;
         afterAuth(r.stage);
@@ -2174,22 +2491,41 @@
   CFG.mailOut = function () {
     var o = S.cfg.mailOut || {}, edit = can('configuration', 'E'), st = MAIL.status && MAIL.status.outgoing;
     var status = !mailReady() ? (MAIL.error ? emptyBox('Could not load', MAIL.error) : emptyBox('Loading…', '')) : mailKV([
-      ['Provider', esc(st.provider)],
+      ['Sending through', st.smtp && st.smtp.host ? '<span class="mono sm">' + esc(st.smtp.host + ':' + st.smtp.port) + '</span> · ' + (st.smtp.security === 'ssl' ? 'SSL' : 'STARTTLS') : esc(st.provider)],
       ['Mode', st.mode === 'live' ? bdg('Live – e-mails are delivered', 'ok') : bdg('Mock – nothing is delivered', 'warn')],
       ['Sending address', '<span class="mono sm">' + esc(st.from || 'not set') + '</span>'],
-      ['Missing settings', st.missing.length ? '<span class="mono xs" style="color:var(--crit)">' + st.missing.map(esc).join(', ') + '</span>' : bdg('None', 'ok')],
+      ['Still to fill in', st.missing.length ? '<span class="mono xs" style="color:var(--crit)">' + st.missing.map(esc).join(', ') + '</span>' : bdg('None', 'ok')],
     ]) + (o.on === false ? '<div class="banner" style="margin-top:12px">' + ic('alert') + '<span><b>Sending is paused.</b> E-mails are not sent until you turn sending back on.</span></div>' : '');
     var form = cfgForm('mailOut',
       swRow('Send e-mails', 'on', o.on !== false, 'Turn off to pause every e-mail the CRM sends (messages are marked Failed and can be sent again).') +
       '<div class="fgrid" style="margin-top:12px">' +
       F('Sender name', 'fromName', { v: o.fromName, req: 1, help: 'Shown to parents as the sender, e.g. Lab of Future' }) +
-      F('Reply-to address', 'replyTo', { v: o.replyTo, ph: 'communications@laboffuture.com', help: 'Where parent replies go. Leave empty to use the sending address.' }) +
+      F('Reply-to address', 'replyTo', { v: o.replyTo, ph: 'ranjith@laboffuture.com', help: 'Where parent replies go. Leave empty to use the sending address.' }) +
       F('Send a copy (BCC) to', 'bcc', { v: o.bcc, ph: 'optional', help: 'Keeps a copy of every e-mail in this mailbox' }) +
       F('Daily sending limit', 'dailyLimit', { t: 'number', min: 0, max: 10000, v: o.dailyLimit, help: 'Stops sending for the day above this number (0 = no limit). Gmail allows about 2,000 a day.' }) +
       F('Signature', 'signature', { t: 'textarea', rows: 4, v: o.signature, full: 1, ph: 'Lab of Future\n+971 4 000 0000 · laboffuture.com', help: 'Added to the end of every e-mail' }) + '</div>');
     var test = '<form data-submit="mailTest" class="row" novalidate style="flex-wrap:wrap;gap:8px"><input type="email" name="to" placeholder="your.name@laboffuture.com" aria-label="Send test e-mail to" style="min-width:min(100%,280px)"><button class="btn primary" type="submit">Send test e-mail</button></form>' +
       '<p class="muted xs">Uses the saved settings above. In mock mode the e-mail is only written to the Integration log.</p>';
+    var sm = o.smtp || {};
+    var smtpForm = '<form data-submit="smtpSave" novalidate autocomplete="off"><div class="fgrid">' +
+      F('SMTP server', 'host', { v: sm.host || 'smtp.gmail.com', req: 1, help: 'Google Workspace: smtp.gmail.com · Microsoft 365: smtp.office365.com' }) +
+      F('Security', 'security', { v: sm.security || 'ssl', opts: [['ssl', 'SSL/TLS – port 465'], ['starttls', 'STARTTLS – port 587']], chg: 'smtpSec' }) +
+      F('Port', 'port', { t: 'number', min: 1, max: 65535, v: sm.port || 465, req: 1, help: '465 for SSL/TLS, 587 for STARTTLS' }) +
+      F('Username', 'user', { v: sm.user, req: 1, ph: 'ranjith@laboffuture.com', help: 'The full mailbox address' }) +
+      F('Password', 'pass', { t: 'password', ph: sm.passSet ? '•••••••• saved – leave empty to keep' : 'App password', req: !sm.passSet, help: 'Google Workspace: a 16-character <b>app password</b> (not the normal password). Stored encrypted on the server and never shown again.' }) +
+      F('From address', 'from', { t: 'email', v: sm.from, req: 1, ph: 'ranjith@laboffuture.com', help: 'The mailbox, or an alias it is allowed to send as' }) +
+      '</div><div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn primary" type="submit">Save SMTP server</button>' +
+      (sm.passSet ? '<button class="btn" type="button" data-act="smtpVerify">Check connection</button>' : '') + '</div></form>';
+    var smtpHelp = '<details style="margin-top:14px"><summary class="sm" style="cursor:pointer"><b>How to set up Google Workspace (ranjith@laboffuture.com)</b></summary><ol class="sm" style="line-height:1.7;margin:8px 0 0 18px;padding:0">' +
+      '<li>Sign in to <b>myaccount.google.com</b> as ranjith@laboffuture.com.</li>' +
+      '<li>Security → turn on <b>2-Step Verification</b> (needed for app passwords).</li>' +
+      '<li>Security → <b>App passwords</b> → name it “LOF CRM” → copy the 16-character password.</li>' +
+      '<li>Here: server <span class="mono">smtp.gmail.com</span>, SSL/TLS, port <span class="mono">465</span>, username and From address <span class="mono">ranjith@laboffuture.com</span>, paste the app password, Save.</li>' +
+      '<li>Click <b>Check connection</b>, then send a test e-mail below.</li></ol>' +
+      '<p class="muted xs" style="margin-top:8px">If “App passwords” is missing, the Workspace administrator must allow 2-Step Verification for the account (Admin console → Security → Authentication). Google limits a mailbox to about 2,000 e-mails a day.</p></details>';
+    var smtpView = mailKV([['SMTP server', esc((sm.host || '—') + ':' + (sm.port || ''))], ['Security', sm.security === 'starttls' ? 'STARTTLS' : 'SSL/TLS'], ['Username', esc(sm.user || '—')], ['From address', esc(sm.from || '—')], ['Password', sm.passSet ? 'Saved' : 'Not set']]);
     return card('Connection', status, { act: '<button class="btn sm ghost" data-act="mailRefresh">Refresh</button>' }) + '<div style="height:14px"></div>' +
+      card('SMTP server', (edit ? smtpForm + smtpHelp : smtpView)) + '<div style="height:14px"></div>' +
       card('Sending rules', edit ? form : mailKV([['Sending', o.on === false ? 'Paused' : 'On'], ['Sender name', esc(o.fromName)], ['Reply-to', esc(o.replyTo || '—')], ['Copy to', esc(o.bcc || '—')], ['Daily limit', esc(o.dailyLimit)]])) +
       (edit ? '<div style="height:14px"></div>' + card('Test', test) : '') +
       '<p class="muted xs">These rules apply to every e-mail the CRM sends: lead messages, enrolment welcome, payment links and e-mail templates.</p>';
@@ -2212,27 +2548,57 @@
       .then(function (r) { toast(r.mode === 'live' ? 'Test e-mail sent to ' + to : 'Mock mode: test e-mail logged, not delivered', r.mode === 'live' ? 'ok' : 'warn'); })
       .catch(function (e) { toast(e.message, 'err'); });
   };
+  CHG.smtpSec = function (el) {
+    var p = el.form && el.form.querySelector('[name=port]');
+    if (p && (p.value === '465' || p.value === '587' || !p.value)) p.value = el.value === 'ssl' ? '465' : '587';
+  };
+  SUB.smtpSave = function (d, f) {
+    clearErrs(f);
+    var sm = (S.cfg.mailOut || {}).smtp || {};
+    if (!need(f, d, sm.passSet ? ['host', 'port', 'user', 'from'] : ['host', 'port', 'user', 'pass', 'from'])) return;
+    if (!MAIL_RE.test(String(d.from).trim())) { setErr(f, 'from', 'Enter a valid e-mail address'); return; }
+    var body = { host: String(d.host).trim(), port: Number(d.port), security: d.security, user: String(d.user).trim(), from: String(d.from).trim(), pass: d.pass || '' };
+    req('PUT', '/mail/smtp', body).then(function (r) {
+      S.cfg.mailOut = Object.assign({}, S.cfg.mailOut || {}, { smtp: r.smtp });
+      MAIL.status = null; mailLoad();
+      toast(r.mode === 'live' ? 'SMTP server saved – e-mails will now be delivered' : (r.missing.length ? 'Saved – still to fill in: ' + r.missing.join(', ') : 'Saved – this server runs in mock mode, so nothing is delivered'), r.mode === 'live' ? 'ok' : 'warn');
+    }).catch(function (e) { toast(e.message, 'err'); });
+  };
+  ACT.smtpVerify = function () {
+    toast('Connecting to the mail server…');
+    req('POST', '/mail/smtp/verify', {}).then(function (r) {
+      toast(r.mode === 'live' ? 'Connected and signed in to ' + r.server : 'Settings complete, but this server runs in mock mode (INTEGRATION_MODE=mock) – no connection made', r.mode === 'live' ? 'ok' : 'warn');
+    }).catch(function (e) { toast(e.message, 'err'); });
+  };
   ACT.mailRefresh = function () { MAIL.status = null; MAIL.inbox = null; MAIL.error = null; mailLoad(); render(); };
 
   CFG.mailIn = function () {
     var r = S.cfg.mailIn || {}, edit = can('configuration', 'E'), ready = mailReady();
     var brs = (S.branches || []).map(function (b) { return [b.id, b.name]; });
     var progs = (S.programs || []).map(function (p) { return [p.id, p.name]; });
-    var conn = '<div class="banner">' + ic('mail') + '<span>' + (ready && MAIL.status.incoming.connected ? 'Mailbox connected – new e-mails are imported every 5 minutes.' : '<b>Mailbox not connected yet.</b> Automatic import starts when the Gmail connection is set up. You can set the rules now and test them with the simulation below.') + '</span></div>';
+    // Mailbox connection: the mailbox signed in under Email Outgoing (same username and app password), read over IMAP
+    var inc = (ready && MAIL.status.incoming) || {};
+    var incState = !inc.on ? bdg('Off – switch on “Import incoming e-mail” below', 'warn')
+      : inc.mode !== 'live' ? bdg('Mock – the mailbox is not read on this server', 'warn')
+      : inc.lastError ? bdg('Cannot read the mailbox', 'crit')
+      : inc.connected ? bdg('Connected – checked every 5 minutes', 'ok') : bdg('Not checked yet – click Check now', 'info');
+    var connBody = !ready ? emptyBox(MAIL.error ? 'Could not load' : 'Loading…', MAIL.error || '') : mailKV([
+      ['Mailbox', inc.mailbox ? '<span class="mono sm">' + esc(inc.mailbox) + '</span><div class="muted xs">The mailbox signed in under Email Outgoing (same app password)</div>' : '<span class="sm" style="color:var(--crit)">Set up the SMTP server under Email Outgoing first</span>'],
+      ['Server', inc.host ? '<span class="mono sm">' + esc(inc.host) + ':993</span> · IMAP over SSL' : '—'],
+      ['Status', incState],
+      ['Last check', inc.lastCheck ? fDT(inc.lastCheck) : '—'],
+      ['Imported', inc.since ? inc.imported + ' e-mail' + (inc.imported === 1 ? '' : 's') + ' since ' + fDT(inc.since) : '—'],
+    ].concat(inc.lastError ? [['Last error', '<span class="sm" style="color:var(--crit)">' + esc(inc.lastError) + '</span>']] : []));
+    var conn = card('Mailbox connection', connBody, { act: edit && inc.on && inc.mailbox ? '<button class="btn sm" data-act="mailInCheck">' + ic('mail') + ' Check now</button>' : '' }) + '<div style="height:14px"></div>';
     var form = cfgForm('mailIn',
-      swRow('Import incoming e-mail', 'on', !!r.on, 'Read new e-mails from the mailbox and file them in the CRM') +
+      swRow('Import incoming e-mail', 'on', !!r.on, 'Read new e-mails from the mailbox every 5 minutes and file them in the CRM') +
       swRow('Notify staff when an e-mail arrives', 'notify', r.notify !== false, 'The counsellor (leads) or the branch team (students) gets a CRM notification') +
       '<div class="fgrid" style="margin-top:12px">' +
-      F('Mailbox', 'mailbox', { v: r.mailbox, ph: 'communications@laboffuture.com' }) +
+      '<input type="hidden" name="mailbox" value="' + esc(inc.mailbox || r.mailbox || '') + '">' +
       F('E-mail from an unknown sender', 'unknown', { v: r.unknown || 'review', opts: [['review', 'Hold for review – notify the Admissions Head'], ['lead', 'Create a new lead'], ['ignore', 'Ignore']] }) +
       F('Branch for new leads', 'branch', { v: r.branch, opts: brs, blank: '— choose —', help: 'Used when unknown senders create a lead' }) +
       F('Programme for new leads', 'prog', { v: r.prog, opts: progs, blank: '— choose —' }) +
       F('Blocked senders', 'block', { t: 'textarea', rows: 4, v: (r.block || []).join('\n'), full: 1, ph: 'spam@example.com\n@marketing-company.com', help: 'One address or domain per line. E-mails from these senders are never filed.' }) + '</div>');
-    var how = '<ol class="sm" style="margin:0;padding-left:18px;line-height:1.7">' +
-      '<li>Sender is a <b>parent on a student record</b> → filed on that student (on each sibling) and the branch team is notified.</li>' +
-      '<li>Sender is a <b>lead’s e-mail</b> → filed on the newest open lead and its counsellor is notified.</li>' +
-      '<li><b>Unknown sender</b> → held for review, a new lead is created, or ignored (rule above).</li>' +
-      '<li>Blocked senders, auto-replies and bounce messages are skipped. The same e-mail is never filed twice.</li></ol>';
     var sim = '<form data-submit="mailSim" novalidate><div class="fgrid">' +
       F('From (e-mail)', 'from', { req: 1, ph: 'parent@example.com', id: 'ms_from' }) + F('Sender name', 'fromName', { ph: 'optional', id: 'ms_name' }) +
       F('Subject', 'subject', { v: 'Question about the next class', full: 1, id: 'ms_subject' }) +
@@ -2252,7 +2618,7 @@
       { h: 'Filed on', f: link },
     ], rows, { ps: 10 }) : emptyBox('No e-mails yet', 'Received e-mails and simulations appear here.');
     return conn + card('Filing rules', edit ? form : mailKV([['Import', r.on ? 'On' : 'Off'], ['Mailbox', esc(r.mailbox || '—')], ['Unknown sender', esc(r.unknown || 'review')]])) +
-      '<div style="height:14px"></div><div class="grid g2" style="align-items:start">' + card('How e-mails are filed', how) + (edit ? card('Simulate an incoming e-mail', sim) : '') + '</div>' +
+      (edit ? '<div style="height:14px"></div>' + card('Simulate an incoming e-mail', sim) : '') +
       '<div style="height:14px"></div>' + card('Recent incoming e-mails', inbox, { np: rows.length ? 1 : 0, act: '<button class="btn sm ghost" data-act="mailRefresh">Refresh</button>' });
   };
   SUB.cfg_mailIn = function (d, f) {
@@ -2276,6 +2642,16 @@
       .then(function (r) {
         toast('Simulation: ' + r.status + (r.ref ? ' – ' + r.ref : ''), /^Matched|^New lead/.test(r.status) ? 'ok' : 'warn');
         MAIL.inbox = null; MAIL.status = null; mailLoad(); return reload(false);
+      })
+      .catch(function (e) { toast(e.message, 'err'); });
+  };
+  ACT.mailInCheck = function () {
+    toast('Checking the mailbox…');
+    req('POST', '/mail/inbound/check', {})
+      .then(function (r) {
+        toast(r.message, r.status === 'error' ? 'err' : (r.status === 'ok' || r.status === 'started') ? 'ok' : 'warn');
+        MAIL.inbox = null; MAIL.status = null; mailLoad();
+        return r.imported ? reload(false) : null;
       })
       .catch(function (e) { toast(e.message, 'err'); });
   };
@@ -2430,8 +2806,215 @@
     render();
   };
 
+  // ------------------------------------------------------------------ E-mail: individual, bulk and automated
+  // Send e-mail (Lead / Opportunity / Student pages), Bulk e-mail (Leads, Opportunities, Admissions, Students) and
+  // Configuration → Email Automation. The server personalises each e-mail, checks branch access and consent,
+  // records it on the history and sends it with the Email Outgoing rules.
+  var MS = {};
+  var MAIL_RES = { lead: 'leads', opp: 'opportunities', student: 'students' };
+  var canMail = function (res) { return can(res, 'E') || can(res, 'C'); };
+  var uniq = function (a) { return a.filter(function (x, i) { return x && a.indexOf(x) === i; }); };
+  var latestEnr = function (stuId) { return (S.enr || []).filter(function (e) { return e.stu === stuId; }).sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); })[0]; };
+  var leadOf = function (id) { return (S.leads || []).find(function (l) { return l.id === id; }); };
+  var MS_SRC = {
+    leads: { label: 'Leads', type: 'lead', res: 'leads', list: function () { return S.leads || []; }, st: function (x) { return x.status; }, prog: function (x) { return x.prog; }, def: 'Open', stLabel: 'Status' },
+    opps: { label: 'Opportunities', type: 'opp', res: 'opportunities', list: function () { return S.opps || []; }, st: function (x) { return x.stage; }, prog: function (x) { return x.prog; }, def: '', stLabel: 'Stage' },
+    adm: { label: 'Admissions', type: 'opp', res: 'opportunities', list: function () { return (S.opps || []).filter(function (o) { return o.stage === 'Admission Decision'; }); }, st: function (x) { return x.decision || 'Pending'; }, prog: function (x) { return x.prog; }, def: '', stLabel: 'Decision' },
+    students: { label: 'Students', type: 'student', res: 'students', list: function () { return S.students || []; }, st: function (x) { return x.status; }, prog: function (x) { var e = latestEnr(x.id); return e && e.prog; }, def: 'Active', stLabel: 'Status' },
+  };
+  // address the server will use, or '' (the server checks again, including consent and branch access)
+  function msAddress(type, rec) {
+    if (type === 'student') return ((rec.parents || [])[0] || {}).email || '';
+    var l = type === 'opp' ? leadOf(rec.lead) : rec;
+    if (!l || !l.email) return '';
+    return (S.cfg.consentReq || {}).em && !l.em ? '' : l.email;
+  }
+  function msRecipients() {
+    var recs;
+    if (MS.fixed) recs = MS.fixed.map(function (t) { return { type: t.type, rec: t.type === 'lead' ? leadOf(t.id) : t.type === 'opp' ? (S.opps || []).find(function (o) { return o.id === t.id; }) : (S.students || []).find(function (s) { return s.id === t.id; }) }; }).filter(function (x) { return x.rec; });
+    else {
+      var src = MS_SRC[MS.src];
+      recs = src.list().filter(function (x) { return (!MS.branch || x.branch === MS.branch) && (!MS.prog || src.prog(x) === MS.prog) && (!MS.status || src.st(x) === MS.status) && !x.test; })
+        .map(function (x) { return { type: src.type, rec: x }; });
+    }
+    var ok = recs.filter(function (r) { return msAddress(r.type, r.rec); });
+    return { targets: ok.map(function (r) { return { type: r.type, id: r.rec.id }; }), total: recs.length, noMail: recs.length - ok.length, recs: recs };
+  }
+  var recName = function (r) { return r.type === 'student' ? (r.rec.first + ' ' + r.rec.last) : (r.rec.student || r.rec.parent || r.rec.id); };
+  function msOpen(o) {
+    MS = Object.assign({ src: 'students', branch: '', prog: '', status: '', tpl: '', subject: '', body: '' }, o);
+    if (!MS.fixed && MS_SRC[MS.src]) MS.status = MS_SRC[MS.src].def;
+    openModal('mailSend', { noFocus: true });
+  }
+  ACT.mailOne = function (d) { msOpen({ fixed: [{ type: d.t, id: d.id }] }); };
+  ACT.mailBulk = function (d) { msOpen({ src: d.src || 'students' }); };
+  ACT.mailSel = function () { msOpen({ fixed: Object.keys(S_sel || {}).map(function (id) { return { type: 'lead', id: id }; }) }); };
+  // Reply to a received e-mail (lead or student communication history): same conversation in the parent's mailbox
+  window.mailReplyBtn = function (type, id, c, i) {
+    if (!c || !c.inbound || c.ch !== 'Email' || !canMail(MAIL_RES[type])) return '';
+    return '<div style="margin-top:6px"><button class="btn sm" type="button" data-act="mailReply" data-t="' + type + '" data-id="' + esc(id) + '"' +
+      (type === 'student' ? ' data-i="' + i + '"' : ' data-c="' + esc(c.id) + '"') + '>' + ic('mail') + ' Reply</button>' +
+      (c.repliedAt ? ' <span class="muted xs">Replied ' + fDT(c.repliedAt) + (c.repliedBy ? ' by ' + esc(c.repliedBy) : '') + '</span>' : '') + '</div>';
+  };
+  ACT.mailReply = function (d) {
+    var c = null;
+    if (d.t === 'student') { var s = (S.students || []).find(function (x) { return x.id === d.id; }); c = s && (s.comm || [])[+d.i]; }
+    else c = (S.comms || []).find(function (x) { return x.id === d.c; });
+    if (!c) { toast('That e-mail was not found – refresh the page', 'err'); return; }
+    // braces would be read as placeholders, so the parent's own text keeps them as ( )
+    var safe = function (x) { return String(x || '').replace(/[{}]/g, function (m) { return m === '{' ? '(' : ')'; }); };
+    var subj = safe(c.subject || c.subj || '');
+    var quoted = safe(c.text).split('\n').map(function (l) { return '> ' + l; }).join('\n');
+    msOpen({
+      fixed: [{ type: d.t, id: d.id }], subject: /^re:/i.test(subj) ? subj : 'Re: ' + subj,
+      body: '\n\n\nOn ' + fDT(c.at) + ', ' + safe(c.from || '') + ' wrote:\n' + quoted,
+      reply: { type: d.t, id: d.id, comm: d.t === 'lead' ? d.c : undefined, index: d.t === 'student' ? +d.i : undefined }, replyTo: c.from || '',
+    });
+  };
+  CHG.msAud = function (el) { MS[el.name] = el.value; if (el.name === 'src') { MS.status = MS_SRC[el.value].def; MS.prog = ''; } render(); };
+  CHG.msTpl = function (el) {
+    var t = (S.cfg.emailTpls || []).find(function (x) { return x.id === el.value; });
+    MS.tpl = el.value; if (t) { MS.subject = t.subject; MS.body = t.body; }
+    render();
+  };
+  INP.msSubj = function (el) { MS.subject = el.value; };
+  INP.msBody = function (el) { MS.body = el.value; };
+  MODALS.mailSend = function () {
+    var r = msRecipients(), meta = SERVER.emailTemplates || { placeholders: {} };
+    var opt = function (v, label, cur) { return '<option value="' + esc(v) + '"' + (String(v) === String(cur) ? ' selected' : '') + '>' + esc(label) + '</option>'; };
+    var sel = function (name, label, cur, opts, chg) { return '<div class="f"><label for="ms_' + name + '">' + label + '</label><select id="ms_' + name + '" name="' + name + '" data-change="' + (chg || 'msAud') + '">' + opts.map(function (o) { return opt(o[0], o[1], cur); }).join('') + '</select></div>'; };
+    var who;
+    if (MS.fixed) {
+      who = '<div class="f full"><label>To</label><div class="sm">' + (r.recs.length === 1
+        ? esc(recName(r.recs[0])) + ' <span class="muted">· ' + esc((MS.reply && MS.replyTo) || msAddress(r.recs[0].type, r.recs[0].rec) || 'no e-mail address') + '</span>'
+        : r.recs.length + ' selected ' + (r.recs[0] && r.recs[0].type === 'lead' ? 'leads' : 'records')) + '</div></div>';
+    } else {
+      var src = MS_SRC[MS.src], all = src.list();
+      who = sel('src', 'Send to', MS.src, Object.keys(MS_SRC).filter(function (k) { return canMail(MS_SRC[k].res); }).map(function (k) { return [k, MS_SRC[k].label]; })) +
+        sel('branch', 'Branch', MS.branch, [['', 'All branches']].concat((S.branches || []).filter(function (b) { return !isArchived(b); }).map(function (b) { return [b.id, b.name]; }))) +
+        sel('prog', 'Programme', MS.prog, [['', 'All programmes']].concat((S.programs || []).map(function (p) { return [p.id, p.name]; }))) +
+        sel('status', src.stLabel, MS.status, [['', 'Any']].concat(uniq(all.map(src.st)).sort().map(function (s) { return [s, s]; })));
+    }
+    var count = '<div class="banner" style="margin:4px 0 0">' + ic('mail') + '<span><b>' + r.targets.length + ' recipient' + (r.targets.length === 1 ? '' : 's') + '</b>' +
+      (r.noMail ? ' · ' + r.noMail + ' without an e-mail address or consent will be skipped' : '') + '. Each person gets their own copy with their details filled in.</span></div>';
+    var tpls = (S.cfg.emailTpls || []).filter(function (t) { return t.active; });
+    var chips = Object.keys(meta.placeholders || {}).map(function (k) { return '<a class="chip" data-act="etIns" data-k="' + k + '" tabindex="0" title="' + esc(meta.placeholders[k].label) + '">{' + k + '}</a>'; }).join('');
+    return { title: MS.reply ? 'Reply' : MS.fixed && r.recs.length === 1 ? 'Send e-mail' : 'Bulk e-mail', size: 'lg', form: 'mailSend',
+      foot: '<button class="btn" type="button" data-act="closeModal">Cancel</button><button class="btn primary" type="submit" form="mform"' + (r.targets.length ? '' : ' disabled') + '>' + ic('mail') + ' Send to ' + r.targets.length + '</button>',
+      body: '<div class="fgrid">' + who + '<div class="f full">' + count + '</div>' +
+        sel('tpl', 'Template', MS.tpl, [['', 'No template – write your own']].concat(tpls.map(function (t) { return [t.id, t.cat + ' · ' + t.n]; })), 'msTpl') +
+        F('Subject', 'subject', { v: MS.subject, req: 1, full: 1, inp: 'msSubj' }) +
+        F('Message', 'body', { t: 'textarea', rows: 10, v: MS.body, req: 1, full: 1, inp: 'msBody', help: 'Placeholders such as {student_name} are filled in for each recipient.' }) +
+        '<div class="f full"><label>Placeholders – click to insert at the cursor</label><div class="chips">' + chips + '</div></div></div>' };
+  };
+  SUB.mailSend = function (d, f) {
+    if (!need(f, d, ['subject', 'body'])) return;
+    var r = msRecipients();
+    if (!r.targets.length) { toast('No recipients with an e-mail address', 'err'); return; }
+    var t = (S.cfg.emailTpls || []).find(function (x) { return x.id === MS.tpl; });
+    var btn = document.querySelector('.modal .mf .primary'); if (btn) btn.disabled = true;
+    flush().then(function () { return req('POST', '/mail/compose', { targets: r.targets, template: t ? t.n : 'Composed e-mail', subject: d.subject, body: d.body, reply: MS.reply || undefined }); })
+      .then(function (res) {
+        closeModal();
+        toast('E-mail sent to ' + res.queued + (res.skipped.length ? ' · ' + res.skipped.length + ' skipped (' + uniq(res.skipped.map(function (s) { return s.reason; })).join(', ') + ')' : ''), res.skipped.length ? 'warn' : 'ok');
+        if (MS.fixed && MS.fixed[0] && MS.fixed[0].type === 'lead') S_sel = {};
+        return reload(true);
+      })
+      .catch(function (e) { if (btn) btn.disabled = false; toast(e.message, 'err'); });
+  };
+  // Buttons on the record and list pages
+  function mailButtons() {
+    if (!S || !S.route) return;
+    var rt = S.route, head = document.querySelector('#main .ph > .row') || document.querySelector('.ph > .row');
+    var one = { lead: 'lead', opp: 'opp', student: 'student' }[rt.page];
+    if (one && rt.id && canMail(MAIL_RES[one]) && !document.querySelector('[data-act=mailOne]')) {
+      var btn = '<button class="btn" data-act="mailOne" data-t="' + one + '" data-id="' + esc(rt.id) + '">' + ic('mail') + ' Send e-mail</button>';
+      // record pages without a page header (student, opportunity): at the end of the "List / ID" breadcrumb line
+      var crumb = !head && Array.prototype.find.call(document.querySelectorAll('#main .muted.sm'), function (x) { return x.querySelector('a[data-act=go]') && x.textContent.indexOf(rt.id) >= 0; });
+      if (head) head.insertAdjacentHTML('afterbegin', btn);
+      else if (crumb) { crumb.style.cssText += ';display:flex;align-items:center;gap:8px'; crumb.insertAdjacentHTML('beforeend', '<span style="margin-left:auto">' + btn + '</span>'); }
+    }
+    if (head && !head.querySelector('[data-act=mailBulk]')) {
+      var bulk = { leads: 'leads', opps: 'opps', admPipeline: 'adm', admDecisions: 'adm', students: 'students' }[rt.page];
+      if (bulk && canMail(MS_SRC[bulk].res)) head.insertAdjacentHTML('afterbegin', '<button class="btn" data-act="mailBulk" data-src="' + bulk + '">' + ic('mail') + ' Bulk e-mail</button>');
+    }
+    if (rt.page === 'leads' && canMail('leads')) {
+      var bar = Array.prototype.find.call(document.querySelectorAll('#main .tb'), function (x) { var b = x.querySelector('b'); return b && / selected$/.test(b.textContent); });
+      if (bar && !bar.querySelector('[data-act=mailSel]')) bar.querySelector('b').insertAdjacentHTML('afterend', '<button class="btn sm" data-act="mailSel">' + ic('mail') + ' Send e-mail</button>');
+    }
+  }
+  var _renderMail = window.render;
+  window.render = function () { _renderMail.apply(this, arguments); try { mailButtons(); } catch (e) { /* buttons are optional */ } };
+
+  // ---------------- Configuration → Email Automation
+  CTABS.splice(CTABS.findIndex(function (t) { return t[0] === 'mailIn'; }) + 1, 0, ['mailAuto', 'Email Automation']);
+  var MA = { log: null, loading: false };
+  var MA_KINDS = [
+    ['payRemind', 'Payment reminders', 'E-mails the parent before each instalment is due, and once when an instalment becomes overdue.'],
+    ['birthday', 'Birthdays', 'Sends birthday wishes to the parents of active students on the birthday.'],
+    ['welcome', 'Welcome', 'Welcomes the family after each new enrolment.'],
+    ['quotation', 'Quotations', 'Sends the fee quotation (programme, package, total, valid 14 days) when an admission decision is Accepted.'],
+    ['receipt', 'Receipt confirmations', 'Confirms each payment with the receipt number, amount and balance; the tax invoice follows from accounts.'],
+  ];
+  function maLoad() {
+    if (MA.loading) return; MA.loading = true;
+    req('GET', '/mail/automation/log').then(function (r) { MA.log = r.items; }).catch(function (e) { MA.log = []; MA.error = e.message; }).then(function () { MA.loading = false; safeRender(); });
+  }
+  CFG.mailAuto = function () {
+    var a = S.cfg.mailAuto || {}, edit = can('configuration', 'E');
+    if (!MA.log && !MA.loading) maLoad();
+    var names = uniq((S.cfg.emailTpls || []).filter(function (t) { return t.active; }).map(function (t) { return t.n; }));
+    var tplSel = function (name, cur) { return F('Template', name, { v: cur, opts: uniq([cur].concat(names)) }); };
+    var hours = []; for (var h = 0; h < 24; h++) hours.push([h, (h < 10 ? '0' : '') + h + ':00']);
+    var blocks = MA_KINDS.map(function (k) {
+      var v = a[k[0]] || {};
+      var since = v.on && v.since ? ' Sending since ' + fDT(v.since) + '.' : '';
+      return '<div class="sec" style="margin-top:14px">' + esc(k[1]) + '</div>' + swRow('Switched on', 'on_' + k[0], !!v.on, esc(k[2]) + since) +
+        '<div class="fgrid" style="margin-top:8px">' + tplSel('tpl_' + k[0], v.tpl) +
+        (k[0] === 'payRemind' ? F('Days before the due date', 'days', { v: (v.days || [3]).join(', '), help: 'Up to 5 values, for example 7, 3, 1' }) +
+          '</div>' + swRow('Also send an overdue notice', 'overdue', v.overdue !== false, 'Once per instalment, after the payment term’s grace days') + '<div class="fgrid" style="margin-top:8px">' + tplSel('overdueTpl', v.overdueTpl) : '') + '</div>';
+    }).join('');
+    var form = cfgForm('mailAuto', '<div class="fgrid">' + F('Daily send time (Asia/Dubai)', 'hour', { v: a.hour, opts: hours, help: 'Payment reminders and birthday e-mails go out once a day from this time. Welcome, quotation and receipt e-mails go out within about 5 minutes.' }) + '</div>' + blocks);
+    var log = !MA.log ? emptyBox(MA.error ? 'Could not load' : 'Loading…', MA.error || '') : MA.log.length ? table('maLog', [
+      { h: 'When', f: function (i) { return fDT(i.at || i.receivedAt); }, s: function (i) { return i.at || i.receivedAt; } },
+      { h: 'Automation', f: function (i) { return esc((MA_KINDS.find(function (k) { return k[0] === i.kind; }) || [0, i.kind])[1]); } },
+      { h: 'Record', f: function (i) { return '<span class="mono xs">' + esc(i.ref || '') + '</span>'; } },
+      { h: 'To', f: function (i) { return esc(i.to || '—'); } },
+      { h: 'Template', f: function (i) { return esc(i.template || ''); } },
+      { h: 'Result', f: function (i) { return bdg(i.status, i.status === 'Queued' ? 'ok' : /^Skipped/.test(i.status) ? 'warn' : ''); } },
+    ], MA.log, { ps: 10 }) : emptyBox('No automated e-mails yet', 'Switch an automation on; what it sends appears here.');
+    return '<div class="banner">' + ic('mail') + '<span>Automations start switched off. When you switch one on it only covers new events from that moment, so nothing older is sent. Each e-mail goes out once, uses the template you choose (Email Templates) and follows Email Outgoing.</span></div>' +
+      card('Automated e-mails', edit ? form : emptyBox('View only', 'You need configuration edit access to change automations.')) + '<div style="height:14px"></div>' +
+      card('Recent automated e-mails', log, { np: MA.log && MA.log.length ? 1 : 0, act: (edit ? '<button class="btn sm" data-act="mailAutoRun">Run now</button>' : '') + '<button class="btn sm ghost" data-act="mailAutoRefresh">Refresh</button>' });
+  };
+  SUB.cfg_mailAuto = function (d, f) {
+    clearErrs(f);
+    var days = String(d.days || '').split(/[,\s]+/).filter(Boolean).map(Number);
+    if (!days.length || days.length > 5 || days.some(function (x) { return !Number.isInteger(x) || x < 0 || x > 60; })) { setErr(f, 'days', 'Up to 5 whole numbers from 0 to 60'); return; }
+    var prev = S.cfg.mailAuto || {}, next = { hour: +d.hour };
+    MA_KINDS.forEach(function (k) { next[k[0]] = Object.assign({}, prev[k[0]] || {}, { on: !!d['on_' + k[0]], tpl: d['tpl_' + k[0]] }); });
+    Object.assign(next.payRemind, { days: days, overdue: !!d.overdue, overdueTpl: d.overdueTpl });
+    var note = '';
+    if (next.welcome.on) {
+      // the automation replaces the Communication welcome e-mail, so families get one welcome, not two
+      var t4 = (S.cfg.comms || []).find(function (t) { return t.id === 'T4' && t.ch === 'Email'; });
+      if (t4 && t4.auto) { t4.auto = false; note = ' – the Communication “Enrolment welcome” e-mail is switched off so families get one welcome'; }
+    }
+    S.cfg.mailAuto = next;
+    cfgSave('Email Automation', MA_KINDS.filter(function (k) { return next[k[0]].on; }).map(function (k) { return k[1]; }).join(', ') || 'all off');
+    if (note) toast('Saved' + note, 'ok');
+    flush().then(function () { return reload(true); });
+  };
+  ACT.mailAutoRefresh = function () { MA.log = null; MA.error = null; maLoad(); render(); };
+  ACT.mailAutoRun = function () {
+    flush().then(function () { return req('POST', '/mail/automation/run', {}); })
+      .then(function (r) { toast(r.queued ? r.queued + ' automated e-mail' + (r.queued === 1 ? '' : 's') + ' sent' : 'Nothing to send right now', r.queued ? 'ok' : 'warn'); MA.log = null; maLoad(); })
+      .catch(function (e) { toast(e.message, 'err'); });
+  };
+
+
   // ------------------------------------------------------------------ go
   var _closeModal = window.closeModal;
   window.closeModal = function () { _closeModal(); if (deferredRender) { deferredRender = false; render(); } };
-  req('GET', '/auth/me').then(function (r) { afterAuth(r.stage); }).catch(function () { loginScreen(); });
+  req('GET', '/auth/session').then(function (r) { if (r.signedIn) afterAuth(r.stage); else loginScreen(); }).catch(function () { loginScreen(); });
 })();

@@ -9,10 +9,10 @@
 name: Deploy to VPS
 on:
   push:
-    branches: [main]
+    branches: [main, uat] # uat → the UAT copy at uat.crm.laboffuture.com (deploy/vps/uat-setup.sh)
   workflow_dispatch:
 concurrency:
-  group: deploy-vps
+  group: deploy-vps-${{ github.ref_name }}
   cancel-in-progress: false
 jobs:
   test:
@@ -38,6 +38,7 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
       - name: Deploy
+        if: github.ref_name != 'uat'
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
@@ -46,3 +47,19 @@ jobs:
           if [ -z "$SSH_HOST" ]; then echo "::warning::SSH_HOST secret not set – skipping deployment (see DEPLOY-VPS.md)"; exit 0; fi
           ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" -o StrictHostKeyChecking=yes -o BatchMode=yes \
             "$SSH_USER@$SSH_HOST" "bash /opt/lof-crm/deploy/vps/remote-deploy.sh $GITHUB_SHA"
+      # UAT (uat branch): sets the copy up on the first run, then updates it – no server terminal needed.
+      # The administrator password (secret UAT_ADMIN_PASSWORD) is sent inside the SSH connection, never on a command line.
+      - uses: actions/checkout@v4
+        if: github.ref_name == 'uat'
+      - name: Deploy UAT
+        if: github.ref_name == 'uat'
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+          UAT_ADMIN_PASSWORD: ${{ secrets.UAT_ADMIN_PASSWORD }}
+        run: |
+          if [ -z "$SSH_HOST" ]; then echo "::warning::SSH_HOST secret not set – skipping deployment (see DEPLOY-VPS.md)"; exit 0; fi
+          { printf '%s\n' "$UAT_ADMIN_PASSWORD"; cat deploy/vps/uat-setup.sh; } |
+            ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              "$SSH_USER@$SSH_HOST" "IFS= read -r ADMIN_PASSWORD; export ADMIN_PASSWORD; bash -s -- $GITHUB_SHA"

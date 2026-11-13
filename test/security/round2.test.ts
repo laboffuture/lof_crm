@@ -116,9 +116,11 @@ describe('sign-in hardening (N12, N13)', () => {
 
 describe('integration safety (N7, N14)', () => {
   it('test records never reach live providers in production', () => {
-    const env: any = { APP_ENV: 'production', INTEGRATION_MODE: 'auto', RESEND_API_KEY: 'k', EMAIL_FROM: 'x' };
-    expect(modeFor(env, {}, 'email', false)).toBe('live');
-    expect(modeFor(env, {}, 'email', true)).toBe('mock');
+    const env: any = { APP_ENV: 'production', INTEGRATION_MODE: 'auto' };
+    const cfg = { mailOut: { smtp: { host: 'smtp.gmail.com', port: 465, security: 'ssl', user: 'a@b.co', from: 'a@b.co', passSet: true } } };
+    expect(modeFor(env, cfg, 'email', false)).toBe('live');
+    expect(modeFor(env, cfg, 'email', true)).toBe('mock');
+    expect(modeFor(env, {}, 'email', false)).toBe('mock'); // no SMTP server yet
   });
   it('removes any configured secret from integration logs', async () => {
     await writeLog(t.env, { integration: 'lms', direction: 'out', operation: 'x', mode: 'live', ok: false, response: 'echo ' + t.env.ERPNEXT_API_SECRET + ' and ' + t.env.WHATSAPP_ACCESS_TOKEN });

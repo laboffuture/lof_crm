@@ -1,10 +1,12 @@
 import { Repo, nowIso } from './lib/db';
 import type { Env, Job } from './types';
 import { processSync, sendComm, sendStudentMail, pushPaymentToErp, calendarForTask, settleLink } from './domain/workflows';
-import { addAudit, addEv, notify, money } from './domain/core';
+import { addAudit, addEv, notify, money, needsFirstCall } from './domain/core';
 import { instStatus } from './domain/terms';
 import { modeFor } from './integrations/base';
 import { telrCheck } from './integrations/payments';
+import { runMailAutomations } from './domain/mail-send';
+import { pollMailbox } from './domain/mail';
 
 export async function runJob(env: Env, job: Job) {
   const repo = new Repo(env.DB, 'System');
@@ -50,10 +52,10 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
   const now = Date.now();
   const jobs: Job[] = [];
 
-  // First-call SLA: notify on breach, escalate after escMins
+  // First-call SLA: notify on breach, escalate after escMins (not for Manual / walk-in leads)
   const open = await repo.many<any>('lead', 'status=?', ['Open']);
   for (const l of open) {
-    if (l.fc) continue;
+    if (l.fc || !needsFirstCall(l)) continue;
     const el = (now - new Date(l.enq).getTime()) / 6e4;
     let dirty = false;
     if (el >= cfg.sla.mins && !l.slaNotified) {
@@ -132,6 +134,12 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
     env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(Math.floor(now / 1000) - 86400),
     env.DB.prepare('DELETE FROM call_events WHERE at < ?').bind(d(2)),
   ]);
+
+  // Configuration → Email Automation (payment reminders, birthdays, welcome, quotations, receipts)
+  try { jobs.push(...(await runMailAutomations(env, now)).jobs); } catch (e) { console.error('mail automation failed', e); }
+
+  // Configuration → Email Incoming: new e-mails from the mailbox, filed on students and leads
+  try { jobs.push(...(await pollMailbox(env)).jobs); } catch (e) { console.error('mailbox check failed', e); }
 
   await dispatch(env, waitUntil, jobs);
   return { leadsChecked: open.length, overdue: tasks.length, overdueInstalments: overdueInst, lmsRetries: jobs.filter((j) => j.kind === 'moodle_sync').length };

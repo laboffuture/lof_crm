@@ -106,7 +106,7 @@ export async function sendComm(env: Env, repo: Repo, commId: string) {
       const mode = modeFor(env, cfg, 'email', isTest);
       const branch = await repo.get<any>('branch', l.branch);
       const subject = c.subj || tpl?.subject || `Your enquiry at Lab of Future ${branch?.name || ''}`.trim();
-      const r = await deliverEmail(env, cfg, { mode, isTest }, { to: l.email, subject, text: c.text, ref: c.id });
+      const r = await deliverEmail(env, cfg, { mode, isTest }, { to: l.email, subject, text: c.text, ref: c.id, inReplyTo: c.inReplyTo, references: c.refs });
       c.mailId = r.id;
       c.status = mode === 'live' ? 'Sent' : 'Sent (mock)';
     }
@@ -129,7 +129,7 @@ export async function sendStudentMail(env: Env, repo: Repo, studentId: string, i
   const to = entry.to || (s.parents || [])[0]?.email;
   try {
     if (!to) throw new Error('No parent e-mail');
-    const r = await deliverEmail(env, cfg, { mode, isTest: repo.isTest || !!s.test }, { to, subject: `Welcome to Lab of Future – ${s.first} ${s.last} (${s.id})`, text: entry.text, ref: s.id });
+    const r = await deliverEmail(env, cfg, { mode, isTest: repo.isTest || !!s.test }, { to, subject: entry.subject || `Welcome to Lab of Future – ${s.first} ${s.last} (${s.id})`, text: entry.text, ref: s.id, inReplyTo: entry.inReplyTo, references: entry.refs });
     entry.mailId = r.id;
     entry.status = mode === 'live' ? 'Sent' : 'Sent (mock)';
   } catch (err: any) {

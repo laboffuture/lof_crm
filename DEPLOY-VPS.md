@@ -104,6 +104,25 @@ it is enabled in *Settings → Integrations* **and** its secrets are set. Otherw
 
 Never change `JWT_SECRET` once people use the CRM. Changing it signs everyone out and breaks two-step codes.
 
+### UAT copy (uat.crm.laboffuture.com)
+
+A second, separate CRM for testing runs on the same server. It has its own code, database, logins and secrets, and
+listens on port 8788 under the pm2 name `lof-crm-uat`. It follows the `uat` branch. The live CRM is not affected.
+
+1. GitHub → *Settings → Secrets and variables → Actions*: add `UAT_ADMIN_PASSWORD`, the first password for the
+   UAT administrator (ranjith@laboffuture.com). It needs 10+ characters with letters and numbers.
+2. Push to the `uat` branch. The *Deploy to VPS* workflow runs the tests, then
+   [deploy/vps/uat-setup.sh](deploy/vps/uat-setup.sh) on the server as `lofcrm`. The first run creates UAT under
+   `/home/lofcrm/lof-crm-uat` (code) and `/home/lofcrm/lof-crm-uat-data` (database and `env` settings). Later
+   runs update it. No root access or server terminal is needed.
+3. CyberPanel: create the website `uat.crm.laboffuture.com` and issue its SSL. Then add the
+   [OpenLiteSpeed blocks](deploy/vps/openlitespeed-proxy.conf) to its vHost Conf and Rewrite Rules, with two
+   changes: the `extprocessor` is named `lofcrmuat` with address `127.0.0.1:8788`, and the last rule proxies to
+   `http://lofcrmuat/$1`.
+
+If the *production* environment in GitHub only allows `main`, add `uat` under *Settings → Environments →
+production → Deployment branches*.
+
 ## 5. Day to day
 
 ```bash
