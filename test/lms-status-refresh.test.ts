@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createContext, runInContext } from 'node:vm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const call = (status = 'Pending', extra = {}) => ({
+const call = <T extends object = Record<string, never>>(status = 'Pending', extra = {} as T) => ({
   id: 'MS-PAYMENT',
   enr: 'EN-TEST',
   stu: 'STUDENT-TEST',
@@ -12,7 +12,7 @@ const call = (status = 'Pending', extra = {}) => ({
   ...extra,
 });
 
-function browser() {
+function browser(server = {}, role = 'System Administrator') {
   const req = vi.fn();
   const render = vi.fn();
   const toast = vi.fn();
@@ -25,14 +25,17 @@ function browser() {
     pay: [],
     enr: [{ id: 'EN-TEST', paid: 0 }],
     students: [],
+    staff: [{ id: 'ADMIN', role }],
   });
+  const debugConsole = { group: vi.fn(), log: vi.fn(), groupEnd: vi.fn() };
   const ctx = createContext({
     S: state(),
     S_sel: {},
     seed: state,
-    COLL: { leads: 1, ms: 1, pay: 1, enr: 1, students: 1 },
+    COLL: { leads: 1, ms: 1, pay: 1, enr: 1, students: 1, staff: 1 },
     SETTINGS: [],
-    SERVER: {},
+    SERVER: server,
+    console: debugConsole,
     LS: { get: () => null },
     ACT: {},
     SUB: {},
@@ -60,15 +63,33 @@ function browser() {
   // Keep the save indicator out of these tests; exercise the real sync merge and renderer guard.
   ctx.setSaving = vi.fn();
   ctx.loginScreen = vi.fn();
-  const merge = (doc: ReturnType<typeof call>) => ctx.mergeDocs([{ coll: 'ms', doc }]);
+  const merge = (doc: ReturnType<typeof call> & Record<string, unknown>) => ctx.mergeDocs([{ coll: 'ms', doc }]);
   const bootstrap = (doc: ReturnType<typeof call>, keepUi = true) =>
-    ctx.applyBootstrap({ server: {}, me: { id: 'ADMIN' }, data: { ...state(), ms: [doc] }, seq: {} }, keepUi);
-  return { ctx, req, render, toast, merge, bootstrap };
+    ctx.applyBootstrap({ server, me: { id: 'ADMIN' }, data: { ...state(), ms: [doc] }, seq: {} }, keepUi);
+  return { ctx, req, render, toast, merge, bootstrap, debugConsole };
 }
 
 describe('LMS status refresh', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+
+  it('keeps request and response payloads out of the console during refresh and delivery', async () => {
+    const b = browser({ env: 'development', integrations: { lms: 'live' } });
+    const delivered = call('Success', {
+      deliveryMode: 'live',
+      payload: { reference: 'EN-TEST', student_email: 'private.student@example.com' },
+      response: { accepted: true, inboxid: 5, warnings: [] },
+    });
+    b.bootstrap(delivered);
+    b.req.mockResolvedValue(delivered);
+    b.merge(call());
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(b.ctx.S.ms[0].status).toBe('Success');
+    b.merge(call('Failed', { err: 'No answer from LMS' }));
+    expect(b.debugConsole.group).not.toHaveBeenCalled();
+    expect(b.debugConsole.log).not.toHaveBeenCalled();
+    expect(b.debugConsole.groupEnd).not.toHaveBeenCalled();
+  });
 
   it('follows a purchase activated by a later payment and updates the saved snapshot without reloading', async () => {
     const b = browser();

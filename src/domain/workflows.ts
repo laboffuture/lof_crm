@@ -17,9 +17,9 @@ import { activatePaidLms } from './lms-orders';
 const testFlags = (repo: Repo) => repo.setting<any>('test_flags');
 
 // ---------------- LMS (enrol / cancel calls) ----------------
-export async function processSync(env: Env, repo: Repo, syncId: string) {
+export async function processSync(env: Env, repo: Repo, syncId: string, options: { queued?: boolean } = {}) {
   const m = await repo.get<any>('moodle_sync', syncId);
-  if (!m || ['Success', 'Closed', 'Warnings'].includes(m.status)) return m;
+  if (!m || ['Success', 'Closed', 'Warnings'].includes(m.status) || (options.queued && m.status !== 'Pending')) return m;
   // Queue jobs get a fresh System repository. Keep notifications/audit for test calls
   // in the test namespace as well, without changing the caller's repository scope.
   if (m.test && !repo.isTest) repo = new Repo(repo.db, repo.actor, true);
@@ -40,10 +40,15 @@ export async function processSync(env: Env, repo: Repo, syncId: string) {
   if (!s || !e) return hold('Retry Required', 'Student or enrolment record missing');
   if (op === 'enrol' && e.status === 'Withdrawn') return hold('Closed', 'Not sent – the enrolment was withdrawn');
   if (op === 'enrol' && e.payStatus !== 'Paid') return hold('Awaiting Payment', 'Not sent – waiting for full payment (guide section 7)');
-  if (env.APP_ENV === 'production' && !isTest && lc.mode !== 'live') return hold('Awaiting Setup', 'Not sent – enable LMS and configure LMS_URL / LMS_TOKEN; production orders cannot be simulated');
+  // Business orders must reach Moodle in local/UAT environments too. Only explicit
+  // Testing Console records and the automated test environment may simulate delivery.
+  if (env.APP_ENV !== 'test' && !isTest && lc.mode !== 'live') return hold('Awaiting Setup', 'Not sent – enable LMS, set INTEGRATION_MODE=auto and configure LMS_URL / LMS_TOKEN; business orders cannot be simulated');
   if (lc.mode === 'live' && op === 'enrol' && !m.payload && (!cfg.lms?.confirmed || !cfg.lms?.packages?.[e.prog]?.[e.pkg])) return hold('Awaiting Setup', 'Not sent – confirm the exact LMS package mapping and branch codes with LOF');
   // Claim atomically. Queue redelivery and simultaneous retries must not issue overlapping calls.
-  const claim = await env.DB.prepare("UPDATE docs SET status='Processing', data=json_set(data,'$.status','Processing','$.processingAt',?) WHERE type='moodle_sync' AND id=? AND status NOT IN ('Processing','Success','Closed','Warnings')")
+  // A redelivered queue job may only claim Pending. Failed calls must first be
+  // requeued by the timed scheduler or a staff retry, including after retryMax.
+  const queuedOnly = options.queued ? " AND status='Pending'" : '';
+  const claim = await env.DB.prepare("UPDATE docs SET status='Processing', data=json_set(data,'$.status','Processing','$.processingAt',?) WHERE type='moodle_sync' AND id=? AND status NOT IN ('Processing','Success','Closed','Warnings')" + queuedOnly)
     .bind(nowIso(), m.id).run();
   if (!claim.meta.changes) return repo.get<any>('moodle_sync', m.id);
   m.status = 'Processing'; m.processingAt = nowIso();
@@ -55,6 +60,8 @@ export async function processSync(env: Env, repo: Repo, syncId: string) {
     if (op === 'cancel') {
       const purchases = await repo.many<any>('moodle_sync', 'ref1=?', [e.id]);
       if (purchases.some((x) => x.op !== 'cancel' && x.status === 'Processing')) throw new lms.LmsError('Purchase is still processing; cancellation will retry', true);
+      m.requestUrl = lc.mode === 'live' ? lms.diagnosticEndpoint(env) : null;
+      await repo.put('moodle_sync', m);
       result = await lms.cancel(lc, e.id, m.id, m.reason);
     } else {
       const program = await repo.get<any>('program', e.prog);
@@ -65,6 +72,7 @@ export async function processSync(env: Env, repo: Repo, syncId: string) {
       m.payload = payload;
       m.cid = payload.items[0]?.track || payload.skillslabs[0]?.program || '';
       m.credits = payload.items.flatMap((x) => x.credits);
+      m.requestUrl = lc.mode === 'live' ? lms.diagnosticEndpoint(env) : null;
       await repo.put('moodle_sync', m);
       result = await lms.enrol(lc, payload, m.id);
     }

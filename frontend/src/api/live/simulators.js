@@ -72,6 +72,7 @@ window.runSync = function (id) {
 
 // One read-only watcher per queued call, shared by registration, payments and retries.
 var lmsPolls = new Map();
+
 function showLmsResult(m) {
   var op = m.op === 'cancel' ? 'cancel' : 'enrol';
   toast(

@@ -1,6 +1,21 @@
 /* Three-step registration and enrolment wizard. */
 /* ====== enrolment wizard ====== */
 const WSTEPS = ['Student', 'Programme & fees', 'Payment & confirm'];
+// A shared parent contact identifies a family, not necessarily the same child.
+function wizStudentMatches(d) {
+  const text = (value) =>
+    String(value || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+  const name = text(d.first + ' ' + d.last),
+    email = text(d.semail);
+  return S.students.filter(
+    (s) =>
+      (email && text(s.email) === email) ||
+      (d.first && d.last && d.dob && text(s.first + ' ' + s.last) === name && s.dob === d.dob),
+  );
+}
 ACT.enrollOpp = (d) => {
   const o = oppById(d.id),
     l = leadById(o.lead);
@@ -210,11 +225,12 @@ CHG.wizOpp = (el) => {
 };
 CHG.wizDup = (el) => {
   const f = el.form,
-    d = findDup(f.querySelector('[name=pmob]').value, f.querySelector('[name=pemail]').value).filter(
-      (x) => x.kind === 'Student',
-    );
-  $('#dupbox').innerHTML = d.length
-    ? `<div class="banner" style="display:block;background:var(--warn-bg)"><b>This parent already has a student profile.</b> One student keeps one master profile.${d.map((x) => `<div class="row" style="margin-top:6px;color:var(--fg)"><span>${esc(x.name)} · <span class="mono">${x.id}</span></span><button type="button" class="btn sm" data-act="wizUse" data-id="${x.id}">Use existing student</button></div>`).join('')}</div>`
+    values = fd(f),
+    children = wizStudentMatches(values),
+    parents = findDup(values.pmob, values.pemail).filter((x) => x.kind === 'Student'),
+    matches = children.length ? children.map((s) => ({ id: s.id, name: s.first + ' ' + s.last })) : parents;
+  $('#dupbox').innerHTML = matches.length
+    ? `<div class="banner" style="display:block;${children.length ? 'background:var(--warn-bg)' : ''}"><b>${children.length ? 'Possible existing student.' : 'Parent contact already on file.'}</b> ${children.length ? 'The student email or full name and date of birth match a saved student. Use their existing profile if this is the same child. For a different child, verify the details and click Continue again.' : 'This parent phone or email is linked to the student(s) below. You can keep these parent details and continue registering a different child.'}${matches.map((x) => `<div class="row" style="margin-top:6px;color:var(--fg)"><span>${esc(x.name)} · <span class="mono">${x.id}</span></span><button type="button" class="btn sm" data-act="wizUse" data-id="${x.id}">Use existing student</button></div>`).join('')}</div>`
     : '';
 };
 ACT.wizUse = (d) => {
@@ -249,14 +265,18 @@ SUB.wizStep1 = (d, f) => {
     setErr(f, 'dob', 'Check the date of birth (age ' + age(d.dob) + ')');
     return;
   }
-  const dups = findDup(d.pmob, d.pemail).filter((x) => x.kind === 'Student');
-  if (dups.length && !f._ack) {
-    f._ack = true;
-    CHG.wizDup(f.querySelector('[name=pmob]'));
-    toast('A student profile already exists for this parent – use it or continue to create a new one', 'warn');
+  Object.assign(S.wiz.d, d);
+  const matches = wizStudentMatches(d);
+  const matchKey = JSON.stringify([d.first, d.last, d.dob, d.semail, matches.map((s) => s.id)]);
+  CHG.wizDup(f.querySelector('[name=pmob]'));
+  if (matches.length && S.wiz.studentMatchAck !== matchKey) {
+    S.wiz.studentMatchAck = matchKey;
+    toast(
+      'Possible existing student. Review the match above; use their profile or click Continue again for a different child.',
+      'warn',
+    );
     return;
   }
-  Object.assign(S.wiz.d, d);
   S.wiz.step = 2;
   render();
 };

@@ -11,7 +11,7 @@ import { LMS_CONTRACT, activatePaidLms } from './domain/lms-orders';
 export async function runJob(env: Env, job: Job) {
   const repo = new Repo(env.DB, 'System');
   switch (job.kind) {
-    case 'moodle_sync': return processSync(env, repo, job.id);
+    case 'moodle_sync': return processSync(env, repo, job.id, { queued: true });
     case 'send_comm': return sendComm(env, repo, job.id);
     case 'send_student_mail': return sendStudentMail(env, repo, job.studentId, job.index);
     case 'erp_payment': return pushPaymentToErp(env, repo, job.id);

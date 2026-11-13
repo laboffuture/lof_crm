@@ -77,6 +77,21 @@ const FIELDS = [
   'parent_phone',
 ] as const;
 
+/** Public endpoint metadata only: never expose URL credentials, query values or tokens. */
+export function diagnosticEndpoint(env: Pick<Env, 'LMS_URL' | 'LMS_TOKEN'>): string | null {
+  try {
+    const url = new URL(env.LMS_URL || '');
+    if (!['https:', 'http:'].includes(url.protocol)) return null;
+    url.username = '';
+    url.password = '';
+    url.search = '';
+    url.hash = '';
+    return redact(url.toString(), [env.LMS_TOKEN, env.LMS_TOKEN && encodeURIComponent(env.LMS_TOKEN)]);
+  } catch {
+    return null;
+  }
+}
+
 /** Explicit allowlist: financial fields and credentials from payloads can never reach Moodle. */
 export function purchaseForm(payload: Purchase): URLSearchParams {
   const form = new URLSearchParams();

@@ -7,8 +7,8 @@ import { Repo } from '../../src/lib/db';
 import { processSync, createPaymentLink, settleLink } from '../../src/domain/workflows';
 import { lmsEnrolPayload, lmsMissing, lmsProblem } from '../../src/domain/terms';
 import { calcFee, feeFor, dayKey } from '../../src/domain/core';
-import { catalogue, studentLookup, enrol, type Purchase } from '../../src/integrations/lms';
-import { cron } from '../../src/jobs';
+import { catalogue, studentLookup, enrol, diagnosticEndpoint, type Purchase } from '../../src/integrations/lms';
+import { cron, queueConsumer } from '../../src/jobs';
 import { LMS_CONTRACT } from '../../src/domain/lms-orders';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -106,6 +106,19 @@ async function newOrder(t: TestCtx, amount: 'none' | 'part' | 'full', withBrowse
 }
 
 describe('Moodle v1.1 wire contract', () => {
+  it('sanitizes endpoint diagnostics and records the actual endpoint on each attempt', async () => {
+    expect(diagnosticEndpoint({ LMS_URL: 'javascript:secret' })).toBeNull();
+    expect(diagnosticEndpoint({ LMS_URL: '' })).toBeNull();
+    expect(
+      diagnosticEndpoint({ LMS_URL: 'https://lms.test/private-token/server.php', LMS_TOKEN: 'private-token' }),
+    ).not.toContain('private-token');
+    const t = await liveFixture();
+    stubFetch([[/lms\.test/, () => ({ json: accepted })]]);
+    const result = await processSync(t.env, new Repo(t.env.DB), 'MS-003');
+    expect(result.requestUrl).toBe(t.env.LMS_URL);
+    expect((await doc(t, 'moodle_sync', 'MS-003')).requestUrl).toBe(t.env.LMS_URL);
+  });
+
   it('encodes multiple Tracks and Skills Labs, preserves +phones, strips money and redacts tokens', async () => {
     const t = await setup();
     const { calls } = stubFetch([[/lms\.test/, () => ({ json: accepted })]]);
@@ -237,12 +250,62 @@ describe('Moodle v1.1 wire contract', () => {
     expect(r.err).toContain('has not received');
   });
 
-  it('never simulates delivery for a real production order with missing setup', async () => {
+  it.each(['development', 'uat', 'staging', 'production'])(
+    'never simulates a business order in %s when credentials, enablement or mode are missing',
+    async (environment) => {
+      for (const missing of ['token', 'enabled', 'mode']) {
+        const t = await liveFixture();
+        t.env.APP_ENV = environment;
+        if (missing === 'token') t.env.LMS_TOKEN = '';
+        if (missing === 'enabled')
+          await t.setCfg((c) => {
+            c.integ.lms.on = false;
+          });
+        if (missing === 'mode') t.env.INTEGRATION_MODE = 'mock';
+        const { calls } = stubFetch([]);
+        const repo = new Repo(t.env.DB);
+        const before = await repo.get<any>('moodle_sync', 'MS-003');
+        const result = await processSync(t.env, repo, 'MS-003');
+        expect(result.status).toBe('Awaiting Setup');
+        expect(result.attempts).toBe(before.attempts);
+        expect(result.payload).toBeUndefined();
+        expect(result.deliveryMode).toBeUndefined();
+        expect(calls).toHaveLength(0);
+        expect(await t.sql("SELECT id FROM integration_logs WHERE integration='lms'")).toHaveLength(0);
+      }
+    },
+  );
+
+  it('delivers a local business order to Moodle after setup is completed', async () => {
     const t = await liveFixture();
-    t.env.APP_ENV = 'production';
+    t.env.APP_ENV = 'development';
+    await t.setCfg((c) => {
+      c.integ.lms.on = false;
+    });
+    const { calls } = stubFetch([[/lms\.test/, () => ({ json: accepted })]]);
+    const repo = new Repo(t.env.DB);
+    const before = await repo.get<any>('moodle_sync', 'MS-003');
+    expect((await processSync(t.env, repo, 'MS-003')).status).toBe('Awaiting Setup');
+    await t.setCfg((c) => {
+      c.integ.lms.on = true;
+    });
+    const result = await t.call('POST', '/api/v1/lms/calls/MS-003/retry', { token: await t.login(USERS.admin) });
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ status: 'Success', deliveryMode: 'live', attempts: before.attempts + 1 });
+    expect(new URLSearchParams(calls[0].body).get('reference')).toBe('EN-26-0003');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('keeps explicit Testing Console records simulated when local LMS setup is missing', async () => {
+    const t = await liveFixture();
+    t.env.APP_ENV = 'development';
     t.env.LMS_TOKEN = '';
+    const repo = new Repo(t.env.DB);
+    const m = await repo.get<any>('moodle_sync', 'MS-003');
+    await repo.put('moodle_sync', { ...m, test: true });
     const { calls } = stubFetch([]);
-    expect((await processSync(t.env, new Repo(t.env.DB), 'MS-003')).status).toBe('Awaiting Setup');
+    const result = await processSync(t.env, repo, m.id);
+    expect(result).toMatchObject({ status: 'Success', deliveryMode: 'mock' });
     expect(calls).toHaveLength(0);
   });
 
@@ -290,6 +353,54 @@ describe('Moodle v1.1 wire contract', () => {
       processSync(t.env, new Repo(t.env.DB), 'MS-003'),
     ]);
     expect(calls).toHaveLength(1);
+  });
+
+  it('does not let queue redelivery bypass the retry interval or retry limit', async () => {
+    const t = await liveFixture();
+    const repo = new Repo(t.env.DB);
+    const initial = await repo.get<any>('moodle_sync', 'MS-003');
+    await repo.put('moodle_sync', { ...initial, contract: LMS_CONTRACT, status: 'Pending', attempts: 0 });
+    const { calls } = stubFetch([[/lms\.test/, () => ({ status: 503, json: {} })]]);
+    const ack = vi.fn(),
+      retry = vi.fn();
+    const batch = {
+      messages: [{ body: { kind: 'moodle_sync', id: initial.id }, ack, retry }],
+    } as unknown as MessageBatch<any>;
+
+    await queueConsumer(batch, t.env);
+    expect(await doc(t, 'moodle_sync', initial.id)).toMatchObject({ status: 'Failed', attempts: 1 });
+    for (let n = 0; n < 4; n++) await queueConsumer(batch, t.env);
+    expect(calls).toHaveLength(1);
+
+    // The scheduler queues no retry before the configured 15-minute delay.
+    const background: Promise<unknown>[] = [];
+    await cron(t.env, (p) => background.push(p));
+    await Promise.all(background);
+    expect(calls).toHaveLength(1);
+
+    const failed = await repo.get<any>('moodle_sync', initial.id);
+    await repo.put('moodle_sync', { ...failed, last: new Date(Date.now() - 16 * 60e3).toISOString() });
+    await cron(t.env, (p) => background.push(p));
+    await Promise.all(background);
+    expect(calls).toHaveLength(2);
+    expect(await doc(t, 'moodle_sync', initial.id)).toMatchObject({ status: 'Failed', attempts: 2 });
+    expect(calls[1].body).toBe(calls[0].body);
+
+    // A queued duplicate must not become a fourth attempt after exhaustion.
+    const latest = await repo.get<any>('moodle_sync', initial.id);
+    await repo.put('moodle_sync', { ...latest, status: 'Retry Required', attempts: 3 });
+    await queueConsumer(batch, t.env);
+    expect(calls).toHaveLength(2);
+    expect(await doc(t, 'moodle_sync', initial.id)).toMatchObject({ status: 'Retry Required', attempts: 3 });
+    expect(ack).toHaveBeenCalledTimes(6);
+    expect(retry).not.toHaveBeenCalled();
+
+    // A deliberate staff retry can still recover the same frozen order.
+    stubFetch([[/lms\.test/, () => ({ json: accepted })]]);
+    const result = await t.call('POST', '/api/v1/lms/calls/' + initial.id + '/retry', {
+      token: await t.login(USERS.admin),
+    });
+    expect(result.body).toMatchObject({ status: 'Success', attempts: 4, payload: latest.payload });
   });
 });
 

@@ -457,6 +457,12 @@ async function moodleRetry(env: Env, repo: Repo, user: User, perms: any, run: (s
   });
   await run('Outage cleared, retry succeeds (the LMS applies each reference once)', async () => {
     await repo.putSetting('test_flags', { ...(await repo.setting('test_flags')), moodleFail: false });
+    // This scenario explicitly requests a staff retry; queue redelivery alone
+    // must not turn a Failed call into an immediate new attempt.
+    const call = await repo.get<any>('moodle_sync', ids.ms);
+    const at = nowIso();
+    await repo.put('moodle_sync', { ...call, status: 'Pending', last: at,
+      hist: [...(call.hist || []), { at, s: 'Pending', msg: 'Explicit retry in mock outage scenario' }] });
     await runJob(env, { kind: 'moodle_sync', id: ids.ms });
     const after = await repo.get<any>('moodle_sync', ids.ms);
     if (after.status !== 'Success') throw new Error(`Expected Success, got ${after.status}: ${after.err}`);
