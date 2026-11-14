@@ -109,6 +109,12 @@ df -iP / /tmp 2>/dev/null | awk 'NR>1 && !s[$6]++ {print "inodes " $6 ": " $5 " 
 for d in /tmp /tmp/lshttpd /tmp/lshttpd/swap; do [ -e "$d" ] && note "$d: $(stat -c '%A %U' "$d" 2>/dev/null)"; done
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'content-type: application/json' --data '{"email":"nobody@example.com","password":"x-check-only-1"}' "http://127.0.0.1:$PORT/api/v1/auth/login" || echo none)
 note "sign-in straight to the app (expect 401): $code"
+# A POST with a body through the site (LiteSpeed), then the web server's own error log lines about it
+curl -s -o /dev/null -X POST --data 'a=1' "https://$DOMAIN/" || true
+for f in /usr/local/lsws/logs/error.log "/home/$DOMAIN/logs/$DOMAIN.error_log"; do
+  if [ -r "$f" ]; then tail -n 400 "$f" | grep -iE "$DOMAIN|uat|POST|body|swap|500|modsec" | tail -n 12 | cut -c1-300 | while read -r l; do note "$(basename "$f"): $l"; done
+  else note "$f: not readable by $(id -un)"; fi
+done
 echo
 echo "✔ UAT is running on 127.0.0.1:$PORT – CyberPanel proxies https://$DOMAIN to it (DEPLOY-VPS.md, 'UAT copy')"
 exit 0
