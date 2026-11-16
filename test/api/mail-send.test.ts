@@ -75,7 +75,13 @@ describe('email automation', () => {
     const last = (await doc(t, 'student', fresh.stu)).comm.at(-1);
     expect(last.tpl).toBe('Fee receipt');
     expect(last.text).toContain('RC-KRM-26-9001');
-    expect(last.text).toContain('tax invoice');
+    expect(last.text).toContain('invoice and receipt are attached');
+    // sent with the receipt layout and both PDFs (the log keeps names and sizes only)
+    expect(last).toMatchObject({ docs: { payment: 'PY-26-9001' }, status: 'Sent (mock)' });
+    expect(last.attached).toEqual([expect.stringMatching(/^Invoice-INV-26-\d{4}\.pdf$/), 'Receipt-RC-KRM-26-9001.pdf']);
+    const log = JSON.parse((await t.sql<any>("SELECT request FROM integration_logs WHERE integration='email' ORDER BY id DESC LIMIT 1"))[0].request);
+    expect(log.attachments.map((a: any) => a.contentType)).toEqual(['application/pdf', 'application/pdf']);
+    expect(log.attachments.every((a: any) => a.bytes > 1000 && !('content' in a))).toBe(true);
   });
   it('reminds parents before an instalment is due', async () => {
     const e = await one("SELECT data FROM docs WHERE type='enrollment' LIMIT 1");

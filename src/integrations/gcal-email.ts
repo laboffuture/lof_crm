@@ -1,7 +1,7 @@
 // Google Calendar (service account) and transactional e-mail (SMTP)
 import type { Env } from '../types';
 import { callApi, logMock, writeLog, type Mode } from './base';
-import { loadSmtp, smtpSend } from './smtp';
+import { loadSmtp, smtpSend, type MailAttachment } from './smtp';
 import { signRs256 } from '../lib/crypto';
 
 export interface SimpleCtx { env: Env; mode: Mode; isTest?: boolean }
@@ -57,14 +57,16 @@ export async function calendarPing(g: SimpleCtx) {
 // ---------------- E-mail (SMTP – Configuration → Email Outgoing) ----------------
 const esc = (s: string) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-export async function sendEmail(e: SimpleCtx, m: { to: string; subject: string; text: string; ref?: string; fromName?: string; replyTo?: string; bcc?: string; inReplyTo?: string; references?: string }) {
+export async function sendEmail(e: SimpleCtx, m: { to: string; subject: string; text: string; ref?: string; fromName?: string; replyTo?: string; bcc?: string; inReplyTo?: string; references?: string; html?: string; attachments?: MailAttachment[] }) {
   const smtp = e.mode === 'live' ? await loadSmtp(e.env) : null;
   const msg = {
     from: smtp?.from || 'not-configured@localhost', fromName: m.fromName, to: m.to, subject: m.subject.replace(/[\r\n]+/g, ' '), text: m.text,
-    replyTo: m.replyTo, bcc: m.bcc, inReplyTo: m.inReplyTo, references: m.references,
-    html: `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#1b2633">${esc(m.text).replace(/\n/g, '<br>')}<p style="color:#5d6a7a;font-size:12px;margin-top:24px">Lab of Future</p></div>`,
+    replyTo: m.replyTo, bcc: m.bcc, inReplyTo: m.inReplyTo, references: m.references, attachments: m.attachments,
+    html: m.html || `<div style="font-family:Arial,sans-serif;font-size:14px;line-height:1.5;color:#1b2633">${esc(m.text).replace(/\n/g, '<br>')}<p style="color:#5d6a7a;font-size:12px;margin-top:24px">Lab of Future</p></div>`,
   };
-  const logged = { from: msg.from, fromName: msg.fromName, to: msg.to, subject: msg.subject, text: msg.text, replyTo: msg.replyTo, bcc: msg.bcc, inReplyTo: msg.inReplyTo, references: msg.references };
+  // the log keeps attachment names and sizes, not their contents
+  const files = m.attachments?.length ? m.attachments.map((a) => ({ filename: a.filename, contentType: a.contentType, bytes: a.content.length })) : undefined;
+  const logged = { from: msg.from, fromName: msg.fromName, to: msg.to, subject: msg.subject, text: msg.text, replyTo: msg.replyTo, bcc: msg.bcc, inReplyTo: msg.inReplyTo, references: msg.references, attachments: files };
   if (e.mode === 'mock') {
     const id = 'mock-' + crypto.randomUUID();
     await logMock(e.env, 'email', 'emails.send', logged, { id }, m.ref, e.isTest);

@@ -6,7 +6,7 @@ import { Repo, nowIso } from '../lib/db';
 import { allow } from '../lib/ratelimit';
 import { sendEmail } from '../integrations/gcal-email';
 import { modeFor, writeLog, type Mode } from '../integrations/base';
-import { loadSmtp } from '../integrations/smtp';
+import { loadSmtp, type MailAttachment } from '../integrations/smtp';
 import { imapImport, imapHostFor, type ImapConnect } from '../integrations/imap';
 import { parseMail } from '../integrations/mime';
 import { addEv, createLead, notify } from './core';
@@ -57,14 +57,17 @@ export function checkMailSettings(out: unknown, inn: unknown, branches: { id: st
 const outSettings = (cfg: any) => ({ ...MAIL_OUT_DEFAULTS, ...(cfg?.mailOut || {}) });
 
 /** Sends one e-mail with the Email Outgoing rules applied. Every CRM e-mail goes through here. */
-export async function deliverEmail(env: Env, cfg: any, g: { mode: Mode; isTest?: boolean }, m: { to: string; subject: string; text: string; ref?: string; inReplyTo?: string; references?: string }) {
+export async function deliverEmail(env: Env, cfg: any, g: { mode: Mode; isTest?: boolean }, m: { to: string; subject: string; text: string; ref?: string; inReplyTo?: string; references?: string; html?: string; attachments?: MailAttachment[] }) {
   const o = outSettings(cfg);
   if (!o.on) throw new Error('E-mail sending is paused (Configuration → Email Outgoing)');
   if (g.mode === 'live' && !g.isTest && o.dailyLimit > 0 && !(await allow(env, 'email-out-day', o.dailyLimit, 86400))) {
     throw new Error(`Daily e-mail limit of ${o.dailyLimit} reached – sending resumes tomorrow`);
   }
-  const text = o.signature.trim() ? `${m.text}\n\n${o.signature.trim()}` : m.text;
-  return sendEmail({ env, mode: g.mode, isTest: g.isTest }, { ...m, text, fromName: o.fromName, replyTo: o.replyTo || undefined, bcc: o.bcc || undefined });
+  const sig = o.signature.trim();
+  const text = sig ? `${m.text}\n\n${sig}` : m.text;
+  const escSig = sig.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!).replace(/\n/g, '<br>');
+  const html = m.html && sig ? `${m.html}<div style="max-width:720px;margin:16px auto 0;font-family:Arial,sans-serif;font-size:13px;line-height:1.5;color:#1b2633">${escSig}</div>` : m.html;
+  return sendEmail({ env, mode: g.mode, isTest: g.isTest }, { ...m, text, html, fromName: o.fromName, replyTo: o.replyTo || undefined, bcc: o.bcc || undefined });
 }
 
 // ---------------------------------------------------------------- incoming

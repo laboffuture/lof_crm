@@ -12,7 +12,8 @@ import { createPaymentLink, processSync } from '../domain/workflows';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
 import { clickToCall } from '../integrations/exotel';
-import { receiptHtml } from './receipt';
+import { receiptPage } from './receipt';
+import { loadBillingDoc, invoicePdf, receiptPdf, docFileNames } from '../domain/billing-docs';
 import { sendToParent } from '../domain/workflows';
 
 export const api = new Hono<AppEnv>();
@@ -233,11 +234,29 @@ api.get('/payments/:id/receipt', async (c) => {
   const p = await repo.get<any>('payment', c.req.param('id'));
   if (!p) throw new HttpError(404, 'Payment not found');
   needScope(c, p.branch);
-  const [e, s, b, programs] = await Promise.all([repo.get<any>('enrollment', p.enr), repo.get<any>('student', p.stu), repo.get<any>('branch', p.branch), repo.many<any>('program')]);
+  const d = await loadBillingDoc(repo, p.id);
+  if (!d) throw new HttpError(404, 'Payment not found');
   await addAudit(repo, 'Receipt generated', p.id, p.rc);
   c.header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   c.header('cache-control', 'no-store');
-  return c.html(receiptHtml(p, e, s, b, programs));
+  return c.html(receiptPage(d));
+});
+/** Invoice or receipt PDF for a payment (the same files the parent receives by e-mail). */
+api.get('/payments/:id/:file{(?:invoice|receipt)\\.pdf}', async (c) => {
+  need(c, 'payments', 'V');
+  const repo = c.get('repo');
+  const p = await repo.get<any>('payment', c.req.param('id'));
+  if (!p) throw new HttpError(404, 'Payment not found');
+  needScope(c, p.branch);
+  const d = await loadBillingDoc(repo, p.id);
+  if (!d) throw new HttpError(404, 'Payment not found');
+  const kind: 'invoice' | 'receipt' = c.req.param('file').startsWith('invoice') ? 'invoice' : 'receipt';
+  const bytes = kind === 'invoice' ? await invoicePdf(d) : await receiptPdf(d);
+  await addAudit(repo, kind === 'invoice' ? 'Invoice PDF downloaded' : 'Receipt PDF downloaded', p.id, kind === 'invoice' ? d.invoiceNo : d.receiptNo);
+  return new Response(bytes, { headers: {
+    'content-type': 'application/pdf', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+    'content-disposition': `attachment; filename="${docFileNames(d)[kind]}"`,
+  } });
 });
 
 api.post('/payments/links', async (c) => {

@@ -2062,9 +2062,24 @@
       if (w) w.location = url; else location.href = url;
     }).catch(function (e) { if (w) w.close(); toast(e.message, 'err'); });
   };
+  // Invoice / receipt PDF – the same files the parent receives with the receipt e-mail
+  ACT.payPdf = function (d) {
+    fetch(API + '/payments/' + encodeURIComponent(d.id) + '/' + (d.kind === 'invoice' ? 'invoice' : 'receipt') + '.pdf', { credentials: 'same-origin' }).then(function (r) {
+      if (!r.ok) return r.json().catch(function () { return {}; }).then(function (j) { throw new Error(j.error || 'Could not create the PDF'); });
+      var name = ((r.headers.get('content-disposition') || '').match(/filename="([^"]+)"/) || [])[1] || (d.kind + '.pdf');
+      return r.blob().then(function (b) {
+        var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = name;
+        document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      });
+    }).catch(function (e) { toast(e.message, 'err'); });
+  };
   var _receipt = MODALS.receipt;
   MODALS.receipt = function (m) {
     var x = _receipt(m);
+    x.foot = x.foot.replace('<button class="btn primary" data-act="genReceipt"',
+      '<button class="btn" data-act="payPdf" data-kind="invoice" data-id="' + esc(m.id) + '">' + ic('download') + ' Invoice PDF</button>' +
+      '<button class="btn" data-act="payPdf" data-kind="receipt" data-id="' + esc(m.id) + '">' + ic('download') + ' Receipt PDF</button>' +
+      '<button class="btn primary" data-act="genReceipt"');
     x.foot = x.foot.replace('Generate receipt (simulated)', 'Open printable receipt');
     x.body = x.body.replace('<span class="sim">Simulated</span>', '').replace('Prototype receipt – not a valid tax document. Finance linkage to ERPNext Accounts is pending integration.', 'Receipt numbers are issued by the server. Payments are posted to ERPNext Accounts as Payment Entries.');
     return x;
@@ -2469,9 +2484,20 @@
       body: '<p class="muted xs" style="margin-top:0">Shown with sample values. Real e-mails use the student’s and parent’s details.</p>' +
         '<div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden"><div style="padding:10px 14px;border-bottom:1px solid var(--bd)">' +
         '<div class="muted xs">To: ' + esc(p.parent_name ? p.parent_name.sample : '') + '</div><b>' + esc(etSample(t.subject || '')) + '</b></div>' +
-        '<div class="sm" style="padding:14px;white-space:pre-wrap;line-height:1.55">' + esc(etSample(t.body || '')) + '</div></div>'
+        '<div class="sm" style="padding:14px;white-space:pre-wrap;line-height:1.55">' + esc(etSample(t.body || '')) + '</div>' + etReceiptExtras(t) + '</div>'
     };
   };
+  // The template used for receipt confirmations is sent with the receipt (in the e-mail) and two PDF attachments
+  function etReceiptExtras(t) {
+    var a = S.cfg.mailAuto || {}, tpl = (a.receipt && a.receipt.tpl) || 'Fee receipt';
+    if (t.n !== tpl) return '';
+    var rc = etSample('{receipt_no}'), inv = 'INV-26-0042';
+    var chip = function (n) { return '<span class="badge" style="display:inline-flex;gap:6px;align-items:center;padding:5px 10px">' + ic('download') + esc(n) + '</span>'; };
+    return '<div style="padding:12px 14px;border-top:1px solid var(--bd);background:var(--bg2,rgba(127,127,127,.06))">' +
+      '<div class="sm" style="margin-bottom:8px"><b>Sent with this message</b> <span class="muted xs">– automatically, after each payment (Email Automation → Receipt confirmations' + (a.receipt && a.receipt.on ? ', on' : ', currently off') + ')</span></div>' +
+      '<div class="xs muted" style="margin-bottom:8px">Below the message: the receipt in the Lab of Future layout – amount paid, items, VAT, totals and payment history.</div>' +
+      '<div class="row" style="gap:8px;flex-wrap:wrap">' + chip('Invoice-' + inv + '.pdf') + chip('Receipt-' + rc + '.pdf') + '</div></div>';
+  }
 
   // ------------------------------------------------------------------ Configuration → Email Outgoing / Email Incoming
   CTABS.splice(CTABS.findIndex(function (t) { return t[0] === 'emailTpls'; }) + 1, 0, ['mailOut', 'Email Outgoing'], ['mailIn', 'Email Incoming']);
@@ -2954,7 +2980,7 @@
     ['birthday', 'Birthdays', 'Sends birthday wishes to the parents of active students on the birthday.'],
     ['welcome', 'Welcome', 'Welcomes the family after each new enrolment.'],
     ['quotation', 'Quotations', 'Sends the fee quotation (programme, package, total, valid 14 days) when an admission decision is Accepted.'],
-    ['receipt', 'Receipt confirmations', 'Confirms each payment with the receipt number, amount and balance; the tax invoice follows from accounts.'],
+    ['receipt', 'Receipt confirmations', 'Confirms each payment with the receipt in the e-mail and the invoice and receipt attached as PDFs (Lab of Future layout).'],
   ];
   function maLoad() {
     if (MA.loading) return; MA.loading = true;

@@ -68,11 +68,11 @@ export async function resolveTarget(repo: Repo, cfg: any, L: Lookups, t: MailTar
 }
 
 /** Writes the e-mail to the history as Queued and returns the job that sends it. */
-export async function queueMail(repo: Repo, r: Resolved, subject: string, text: string, tpl: string, by: string, thread: Thread = {}): Promise<Job> {
+export async function queueMail(repo: Repo, r: Resolved, subject: string, text: string, tpl: string, by: string, thread: Thread = {}, docs?: MailDocs): Promise<Job> {
   const at = nowIso();
   if (r.type === 'student') {
     const s = await repo.get<any>('student', r.id);
-    s.comm = [...(s.comm || []), { at, ch: 'Email', tpl, subject, text, to: r.to, status: 'Queued', by, ...thread }];
+    s.comm = [...(s.comm || []), { at, ch: 'Email', tpl, subject, text, to: r.to, status: 'Queued', by, ...thread, ...(docs ? { docs } : {}) }];
     await repo.put('student', s);
     return { kind: 'send_student_mail', studentId: s.id, index: s.comm.length - 1 };
   }
@@ -83,6 +83,8 @@ export async function queueMail(repo: Repo, r: Resolved, subject: string, text: 
 
 /** A reply's place in the conversation: In-Reply-To and References of the e-mail being answered. */
 interface Thread { inReplyTo?: string; refs?: string }
+/** Documents sent with a student e-mail: the invoice and receipt PDFs for a payment (built when the e-mail is sent). */
+export interface MailDocs { payment: string }
 /** The received e-mail a user answers: a lead's comm record, or an entry in a student's communication list. */
 export interface MailReply { type: 'lead' | 'student'; id: string; comm?: string; index?: number }
 
@@ -192,7 +194,7 @@ export async function runMailAutomations(env: Env, now = Date.now(), opts: { for
   const L = await lookups(repo);
   const since = (k: Kind) => (A[k].since ? dayKey(A[k].since) : today);
 
-  const send = async (kind: Kind, key: string, target: MailTarget, tplName: string, extra: Record<string, string> = {}) => {
+  const send = async (kind: Kind, key: string, target: MailTarget, tplName: string, extra: Record<string, string> = {}, docs?: MailDocs) => {
     if (jobs.length >= MAX_PER_RUN) return;
     const claim = await env.DB.prepare('INSERT OR IGNORE INTO webhook_events (provider,event_id,result) VALUES (?,?,?)')
       .bind(PROVIDER, key, JSON.stringify({ at: nowIso(), kind, ref: target.id, status: 'Processing' })).run();
@@ -204,7 +206,7 @@ export async function runMailAutomations(env: Env, now = Date.now(), opts: { for
     else if (!t) status = `Skipped – template "${tplName}" is switched off`;
     else {
       const m = renderEmailTemplate(t, { ...r.values, ...extra });
-      jobs.push(await queueMail(repo, r, m.subject, m.body, t.n, 'Email automation'));
+      jobs.push(await queueMail(repo, r, m.subject, m.body, t.n, 'Email automation', {}, docs));
       counts[kind] = (counts[kind] || 0) + 1;
     }
     await env.DB.prepare('UPDATE webhook_events SET result=? WHERE provider=? AND event_id=?')
@@ -252,7 +254,8 @@ export async function runMailAutomations(env: Env, now = Date.now(), opts: { for
       await send('quotation', `quote:${o.id}`, { type: 'opp', id: o.id }, A.quotation.tpl);
     }
   }
-  // Receipt confirmation: payments recorded since switched on (tax invoices follow from accounts / ERPNext)
+  // Receipt confirmation: payments recorded since switched on; the e-mail carries the receipt and the
+  // invoice and receipt PDFs (Lab of Future layout, built when the e-mail is sent)
   if (A.receipt.on) {
     for (const p of await repo.many<any>('payment', 'at >= ?', [A.receipt.since])) {
       if (p.test || !p.stu) continue;
@@ -260,7 +263,7 @@ export async function runMailAutomations(env: Env, now = Date.now(), opts: { for
       await send('receipt', `rcpt:${p.id}`, { type: 'student', id: p.stu }, A.receipt.tpl, {
         amount: amt(p.amt), currency: p.cur || e?.cur || '', receipt_no: p.rc || p.id, payment_date: fmtDay(p.at), payment_method: p.method || '',
         balance_due: e ? amt(r2((+e.total || 0) - (+e.paid || 0))) : '', programme: e ? nameOf(L.programs, e.prog) : '',
-      });
+      }, { payment: p.id });
     }
   }
   return { jobs, counts };

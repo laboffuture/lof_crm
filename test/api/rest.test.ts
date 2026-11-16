@@ -32,7 +32,8 @@ describe('REST resources', () => {
     const s = await t.call('GET', '/api/v1/students/LOF-26-000001', { token: tok });
     expect(s.body.enrollments).toHaveLength(2);
     const rc = await t.call('GET', `/api/v1/payments/${s.body.payments[0].id}/receipt`, { token: tok });
-    expect(rc.text).toContain('Payment receipt');
+    expect(rc.text).toContain('>Receipt</td>'); // receipt + invoice in the Lab of Future layout
+    expect(rc.text).toContain('>Invoice</td>');
     expect(rc.text).toContain(s.body.payments[0].rc);
   });
   it('lets Reception send a payment link to the parent', async () => {

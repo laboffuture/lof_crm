@@ -8,6 +8,8 @@ import * as wa from '../integrations/whatsapp';
 import * as erp from '../integrations/erpnext';
 import { calendarInsert } from '../integrations/gcal-email';
 import { deliverEmail } from './mail';
+import { loadBillingDoc, invoicePdf, receiptPdf, paymentEmailHtml, docFileNames } from './billing-docs';
+import type { MailAttachment } from '../integrations/smtp';
 import { gatewayFor, telrCreate, razorpayCreate, type LinkInput } from '../integrations/payments';
 import { addAudit, addEv, fmtDT, money, notify, recordPayment, r2, templateParams } from './core';
 import { ID_FORMAT } from '../lib/indexing';
@@ -129,7 +131,27 @@ export async function sendStudentMail(env: Env, repo: Repo, studentId: string, i
   const to = entry.to || (s.parents || [])[0]?.email;
   try {
     if (!to) throw new Error('No parent e-mail');
-    const r = await deliverEmail(env, cfg, { mode, isTest: repo.isTest || !!s.test }, { to, subject: entry.subject || `Welcome to Lab of Future – ${s.first} ${s.last} (${s.id})`, text: entry.text, ref: s.id, inReplyTo: entry.inReplyTo, references: entry.refs });
+    // Payment e-mails: the receipt in the e-mail body, invoice and receipt as PDF attachments
+    let extra: { html?: string; attachments?: MailAttachment[] } = {};
+    if (entry.docs?.payment) {
+      try {
+        const d = await loadBillingDoc(repo, String(entry.docs.payment));
+        if (d) {
+          const names = docFileNames(d), logo = `${String(env.APP_BASE_URL || '').replace(/\/+$/, '')}/lof-logo.png`;
+          extra = {
+            html: paymentEmailHtml(entry.text, d, logo),
+            attachments: [
+              { filename: names.invoice, contentType: 'application/pdf', content: await invoicePdf(d) },
+              { filename: names.receipt, contentType: 'application/pdf', content: await receiptPdf(d) },
+            ],
+          };
+        }
+      } catch (err: any) {
+        console.warn(`invoice/receipt for ${entry.docs.payment} not attached:`, err?.message || err); // the text e-mail still goes out
+      }
+    }
+    const r = await deliverEmail(env, cfg, { mode, isTest: repo.isTest || !!s.test }, { to, subject: entry.subject || `Welcome to Lab of Future – ${s.first} ${s.last} (${s.id})`, text: entry.text, ref: s.id, inReplyTo: entry.inReplyTo, references: entry.refs, ...extra });
+    if (extra.attachments) entry.attached = extra.attachments.map((a) => a.filename);
     entry.mailId = r.id;
     entry.status = mode === 'live' ? 'Sent' : 'Sent (mock)';
   } catch (err: any) {
