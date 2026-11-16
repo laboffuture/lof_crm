@@ -29,6 +29,34 @@ const patches = [
   // No first-call SLA for Manual leads (created by staff while the family is at the lab): no First call task, no SLA badge/breach
   ["if (l.cslr) S.tasks.push({ id: 'T-' + (S.seq.task++), lead: id, cslr: l.cslr, due: new Date(NOW.getTime() + R.sla.mins", "if (l.cslr && l.src !== 'Manual') S.tasks.push({ id: 'T-' + (S.seq.task++), lead: id, cslr: l.cslr, due: new Date(NOW.getTime() + R.sla.mins"],
   [/function sla\(l\) \{/, "function sla(l) {\n      if (l.src === 'Manual') return { s: 'Not required', k: '' };"],
+  // Follow-ups a counsellor schedules (follow-up form, next call after a call log, parent-requested slot) go on
+  // that counsellor's own calendar, also on leads owned by a colleague or not yet assigned. Other roles schedule
+  // for the lead's counsellor as before. Automatic cadence tasks stay with the lead's counsellor.
+  ['function syncNext(l) {', "function fuOwner(l) { const u = me(); return u && u.role === 'Counsellor' ? u.id : l.cslr }\n    function syncNext(l) {"],
+  ["S.tasks.push({ id: 'T-' + (S.seq.task++), lead: l.id, cslr: l.cslr, due: locIso(d.next)", "S.tasks.push({ id: 'T-' + (S.seq.task++), lead: l.id, cslr: fuOwner(l), due: locIso(d.next)"],
+  ["S.tasks.push({ id: 'T-' + (S.seq.task++), lead: l.id, cslr: l.cslr, due: l.avail.slot", "S.tasks.push({ id: 'T-' + (S.seq.task++), lead: l.id, cslr: fuOwner(l), due: l.avail.slot"],
+  ["S.tasks.push({ id: 'T-' + (S.seq.task++), lead: l.id, cslr: l.cslr, due, type: d.type", "S.tasks.push({ id: 'T-' + (S.seq.task++), lead: l.id, cslr: fuOwner(l), due, type: d.type"],
+  ["F('Assigned counsellor', 'cs', { v: l.cslr || '', opts: optCslr(l.branch), blank: 'Unassigned', dis: 1 })", "F('On the calendar of', 'cs', { v: fuOwner(l) || '', opts: optCslr(), blank: 'Unassigned', dis: 1 })"],
+  // Calendar: managers can pick one counsellor's calendar (counsellors always see their own)
+  ["const tasks = visTasks().filter(t => t.status !== 'Cancelled');", "const tasks = visTasks().filter(t => t.status !== 'Cancelled' && (!S.calCs || me().role === 'Counsellor' || t.cslr === S.calCs));"],
+  ["'Scheduled calls, follow-ups and parent-requested slots', `<button class=\"btn sm\" data-act=\"calNav\" data-n=\"-1\">",
+    "me().role === 'Counsellor' ? 'Your scheduled calls, follow-ups and parent-requested slots' : 'Scheduled calls, follow-ups and parent-requested slots', `${me().role === 'Counsellor' ? '' : `<select data-change=\"calCs\" aria-label=\"Counsellor\"><option value=\"\">All counsellors</option>${optCslr().map(([v, n]) => `<option value=\"${esc(v)}\"${S.calCs === v ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`}<button class=\"btn sm\" data-act=\"calNav\" data-n=\"-1\">"],
+  // Payment Collection: tick the instalments being paid (2nd only, or 2nd + 3rd together); the amount follows the
+  // ticks instead of always starting at the whole outstanding balance. Ticking a later instalment includes the
+  // earlier unpaid ones (payments are applied to instalments in order). The amount can still be typed by hand.
+  ['function schedTable(rows, cur) {', `function payOpen(e) { return instStatus(e).filter(r => r.bal > 0.005) }
+    function payUpto(e) { const un = payOpen(e); if (!un.length) return 0; const s = S.payInst && S.payInst.enr === e.id ? S.payInst.upto : 0; return s >= un[0].n ? s : un[0].n }
+    function paySum(e, upto) { return r2(payOpen(e).filter(r => r.n <= upto).reduce((a, r) => a + r.bal, 0)) }
+    function payAmtDefault(e) { const un = payOpen(e); return un.length ? paySum(e, payUpto(e)) : r2(e.total - e.paid) }
+    function payInstTable(e) {
+      const rows = instStatus(e), un = rows.filter(r => r.bal > 0.005); if (rows.length < 2 || !un.length) return schedTable(rows, e.cur); const u = payUpto(e);
+      return \`<div class="tbl-wrap"><table class="tbl"><thead><tr><th style="width:56px">Pay</th><th>Instalment</th><th>Due</th><th class="r">Amount</th><th class="r">Paid</th><th class="r">Balance</th><th>Status</th></tr></thead><tbody>\${rows.map(r => { const open = r.bal > 0.005; return \`<tr><td>\${open ? \`<input type="checkbox" data-change="payInst" data-n="\${r.n}" aria-label="Pay instalment \${r.n} of \${rows.length}"\${r.n <= u ? ' checked' : ''} style="width:18px;height:18px;cursor:pointer">\` : ''}</td><td>\${r.n} of \${rows.length} <span class="muted xs">(\${r.pct}%)</span></td><td>\${dayFmt(r.due)}</td><td class="r num">\${money(r.amt, e.cur)}</td><td class="r num">\${money(r.paid, e.cur)}</td><td class="r num">\${money(r.bal, e.cur)}</td><td>\${instB(r.st)}</td></tr>\` }).join('')}</tbody></table></div><div class="muted xs" style="margin-top:6px">Tick the instalments being paid – the amount below follows. Ticking a later instalment includes the unpaid ones before it.</div>\`
+    }
+    CHG.payInst = el => { const e = enrById(S.payPick); if (!e) return; const n = +el.dataset.n, upto = el.checked ? n : n - 1; S.payInst = { enr: e.id, upto }; document.querySelectorAll('[data-change="payInst"]').forEach(c => { c.checked = +c.dataset.n <= upto }); const a = document.querySelector('#payf [name=amt]'); if (a) { const v = paySum(e, upto); a.value = v > 0 ? v : ''; a.dispatchEvent(new Event('input', { bubbles: true })) } };
+    function schedTable(rows, cur) {`],
+  ['<div class="sec">Instalments</div>${schedTable(instStatus(pick), pick.cur)}<form id="payf"', '<div class="sec">Instalments</div>${payInstTable(pick)}<form id="payf"'],
+  ["F('Amount (' + pick.cur + ')', 'amt', { t: 'number', min: 0.01, step: '0.01', v: out, req: 1 })", "F('Amount (' + pick.cur + ')', 'amt', { t: 'number', min: 0.01, step: '0.01', v: payAmtDefault(pick), req: 1, help: 'Follows the ticked instalments; outstanding in total ' + money(out, pick.cur) + '.' })"],
+  ['CHG.callF = el => { S.callF = el.value; render() };','CHG.callF = el => { S.callF = el.value; render() };\n    CHG.calCs = el => { S.calCs = el.value; render() };'],
   // KPI cards stretch across the full width instead of leaving empty slots at the end of the row
   // (all 7 fit on one row on a laptop), and in a two-column chart grid an odd last card spans the full width
   ['grid-template-columns: repeat(auto-fill, minmax(172px, 1fr));','grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));'],

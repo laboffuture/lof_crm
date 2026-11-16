@@ -441,6 +441,8 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             if (!onlyDone) { reject(c, `${user.role} cannot manage follow-ups`); break; }
           }
           if (d.cslr && !isCounsellor(d.cslr)) d.cslr = lead.cslr;
+          // A counsellor's new follow-up goes on their own calendar (or the lead owner's), never on a third colleague's
+          if (!o && user.role === 'Counsellor' && d.cslr !== user.id && d.cslr !== lead.cslr) d.cslr = user.id;
           if (!o && cfg.integ?.cal?.on && d.status === 'Pending' && d.type !== 'First call') jobs.push({ kind: 'calendar_event', taskId: d.id });
         }
         writes.push({ type, doc: d, coll: c.coll });
