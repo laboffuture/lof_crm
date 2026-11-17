@@ -92,6 +92,7 @@ describe('email automation', () => {
     const last = (await doc(t, 'student', e.stu)).comm.at(-1);
     expect(last.tpl).toBe('Fee reminder');
     expect(last.text).toContain('1,200.00');
+    expect(last.text).toMatch(/\/webhooks\/pay\/l\/(TST-)?PL-[A-Z0-9]+/); // the reminder carries its own payment link
   });
   it('sends a quotation when an admission decision is accepted after switching on', async () => {
     await saveAuto((a) => { a.quotation.on = true; });

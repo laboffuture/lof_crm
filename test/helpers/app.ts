@@ -18,6 +18,9 @@ const SCHEMA = readFileSync(new URL('migrations/0001_schema.sql', root), 'utf8')
 const VIEWS = readFileSync(new URL('migrations/0003_reporting_views.sql', root), 'utf8');
 const SECURITY = readFileSync(new URL('migrations/0004_security.sql', root), 'utf8');
 const DATA_VIEWS = readFileSync(new URL('migrations/0005_data_views.sql', root), 'utf8');
+const OPP_LINKS = readFileSync(new URL('migrations/0007_opportunity_payment_links.sql', root), 'utf8');
+const LINK_EXPIRY = readFileSync(new URL('migrations/0008_payment_link_expiry.sql', root), 'utf8');
+const PAY_CANCEL = readFileSync(new URL('migrations/0009_payment_cancellation.sql', root), 'utf8');
 
 export const PASSWORD = 'Welcome@LOF2026';
 export const USERS = {
@@ -77,6 +80,9 @@ export async function setup(overrides: Partial<Env> = {}, opts: { keepMustChange
   d1.db.exec(VIEWS);
   d1.db.exec(SECURITY);
   d1.db.exec(DATA_VIEWS);
+  d1.db.exec(OPP_LINKS);
+  d1.db.exec(LINK_EXPIRY);
+  d1.db.exec(PAY_CANCEL);
   // Demo logins must change their password; most tests start from accounts that already did
   if (!opts.keepMustChange) d1.db.exec('UPDATE staff_auth SET must_change=0');
   // Sync tests write hand-picked ids (RF-26-0009, CL-900 …). In the app those numbers come from /seq first;

@@ -1,6 +1,8 @@
 // Integration-backed workflows: LMS enrol/cancel calls, outbound messages, ERPNext push, calendar, payment links.
 import { Repo, nowIso } from '../lib/db';
-import type { Env } from '../types';
+import type { Env, Job, User } from '../types';
+import { applySync, type Change } from '../sync/sync';
+import { loadUser } from '../lib/auth';
 import { modeFor, enabledInConfig, writeLog } from '../integrations/base';
 import * as lms from '../integrations/lms';
 import { lmsEnrolPayload, lmsMissing } from './terms';
@@ -10,8 +12,8 @@ import { calendarInsert } from '../integrations/gcal-email';
 import { deliverEmail } from './mail';
 import { loadBillingDoc, invoicePdf, receiptPdf, paymentEmailHtml, docFileNames } from './billing-docs';
 import type { MailAttachment } from '../integrations/smtp';
-import { gatewayFor, telrCreate, razorpayCreate, type LinkInput } from '../integrations/payments';
-import { addAudit, addEv, fmtDT, money, notify, recordPayment, r2, templateParams } from './core';
+import { gatewayFor, telrCreate, razorpayCreate, razorpayCancel, type LinkInput } from '../integrations/payments';
+import { addAudit, addEv, dayKey, fmtDT, money, notify, recordPayment, r2, templateParams } from './core';
 import { ID_FORMAT } from '../lib/indexing';
 
 const testFlags = (repo: Repo) => repo.setting<any>('test_flags');
@@ -227,7 +229,14 @@ export async function calendarForTask(env: Env, repo: Repo, taskId: string) {
 }
 
 // ---------------- Payment links ----------------
-export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amount: number | undefined, createdBy: string) {
+/** Links staff share are valid for this long; reminder links stay open until the next reminder replaces them. */
+export const LINK_HOURS = 24;
+/** The address parents get: the CRM's own page, which shows "already paid" / "expired" or forwards to the gateway. */
+export const payLinkUrl = (env: Env, id: string) => `${env.APP_BASE_URL.replace(/\/+$/, '')}/webhooks/pay/l/${id}`;
+/** True when a link that is still open has run past its validity. */
+export const linkExpired = (link: any, now = nowIso()) => link.status === 'created' && !!link.expires_at && link.expires_at < now;
+
+export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amount: number | undefined, createdBy: string, opts: { kind?: 'collect' | 'reminder' } = {}) {
   const e = await repo.get<any>('enrollment', enrId);
   if (!e) throw new Error('Enrollment not found');
   if (e.status === 'Withdrawn') throw new Error('Enrollment is withdrawn');
@@ -236,28 +245,151 @@ export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amo
   if (!(amt > 0) || amt > outstanding + 0.005) throw new Error(`Amount must be between 0 and the outstanding ${money(outstanding, e.cur)}`);
   const s = await repo.get<any>('student', e.stu);
   const parent = (s?.parents || [])[0] || {};
+  const programs = await repo.many<any>('program');
+  return makeLink(env, repo, {
+    amount: amt, currency: e.cur, enrollmentId: e.id, isTest: repo.isTest || !!e.test, createdBy, kind: opts.kind || 'collect',
+    description: `Lab of Future – ${(programs.find((p) => p.id === e.prog) || { name: e.prog }).name} – ${s?.first} ${s?.last} (${e.id})`,
+    customer: { name: parent.name || `${s?.first} ${s?.last}`, email: parent.email, phone: parent.mobile },
+  });
+}
+
+/** Creates the hosted link at the gateway and stores it. */
+async function makeLink(env: Env, repo: Repo, a: {
+  amount: number; currency: string; enrollmentId: string; isTest: boolean; createdBy: string; description: string;
+  customer: LinkInput['customer']; oppId?: string; draft?: string; draftBy?: string; kind: 'collect' | 'opp' | 'reminder';
+}) {
   const cfg = await repo.setting<any>('cfg');
-  const provider = gatewayFor(e.cur);
-  const mode = modeFor(env, cfg, provider, repo.isTest || !!e.test);
+  const provider = gatewayFor(a.currency);
+  const mode = modeFor(env, cfg, provider, a.isTest);
   // Random, unguessable link ids (they appear in customer-facing URLs)
   const rand = [...crypto.getRandomValues(new Uint8Array(10))].map((x) => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[x % 31]).join('');
-  const linkId = (repo.isTest || e.test ? 'TST-PL-' : 'PL-') + rand;
-  if (mode === 'mock' && env.APP_ENV === 'production' && !(repo.isTest || e.test)) {
+  const linkId = (a.isTest ? 'TST-PL-' : 'PL-') + rand;
+  if (mode === 'mock' && env.APP_ENV === 'production' && !a.isTest) {
     throw new Error(`Online payments are not set up yet – ${provider === 'telr' ? 'Telr' : 'Razorpay'} is not live. Record the payment at the counter instead.`);
   }
   const base = env.APP_BASE_URL.replace(/\/+$/, '');
-  const programs = await repo.many<any>('program');
+  // Reminder links have no time limit (the next reminder replaces them); everything else works for 24 hours
+  const expiresAt = a.kind === 'reminder' ? null : new Date(Date.now() + LINK_HOURS * 36e5).toISOString();
   const input: LinkInput = {
-    linkId, amount: amt, currency: e.cur, description: `Lab of Future – ${(programs.find((p) => p.id === e.prog) || { name: e.prog }).name} – ${s?.first} ${s?.last} (${e.id})`,
-    customer: { name: parent.name || `${s?.first} ${s?.last}`, email: parent.email, phone: parent.mobile },
+    linkId, amount: a.amount, currency: a.currency, description: a.description, customer: a.customer,
     returnUrl: `${base}/webhooks/pay/return?link=${linkId}`, callbackUrl: `${base}/webhooks/${provider}`,
+    ...(expiresAt ? { expireBy: Math.floor(Date.parse(expiresAt) / 1000) } : {}),
   };
-  const ctx = { env, mode, isTest: repo.isTest || !!e.test };
+  const ctx = { env, mode, isTest: a.isTest };
   const r = provider === 'telr' ? await telrCreate(ctx, input) : await razorpayCreate(ctx, input);
-  await env.DB.prepare('INSERT INTO payment_links (id,provider,provider_ref,enrollment_id,amount,currency,url,status,created_by,is_test) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .bind(linkId, mode === 'mock' ? `${provider}-mock` : provider, r.providerRef, e.id, amt, e.cur, r.url, 'created', createdBy, ctx.isTest ? 1 : 0).run();
-  await addAudit(repo, 'Payment link created', linkId, `${money(amt, e.cur)} via ${provider}${mode === 'mock' ? ' (mock)' : ''} for ${e.id}`, createdBy);
-  return { id: linkId, provider, mode, url: r.url, providerRef: r.providerRef, amount: amt, currency: e.cur };
+  await env.DB.prepare('INSERT INTO payment_links (id,provider,provider_ref,enrollment_id,amount,currency,url,status,created_by,is_test,opp_id,draft,draft_by,expires_at,kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(linkId, mode === 'mock' ? `${provider}-mock` : provider, r.providerRef, a.enrollmentId, a.amount, a.currency, r.url, 'created', a.createdBy, a.isTest ? 1 : 0, a.oppId ?? null, a.draft ?? null, a.draftBy ?? null, expiresAt, a.kind).run();
+  await addAudit(repo, 'Payment link created', linkId, `${money(a.amount, a.currency)} via ${provider}${mode === 'mock' ? ' (mock)' : ''} for ${a.oppId ? `${a.oppId} (enrols ${a.enrollmentId} on payment)` : a.enrollmentId}`, a.createdBy);
+  return { id: linkId, provider, mode, url: payLinkUrl(env, linkId), providerRef: r.providerRef, amount: a.amount, currency: a.currency, expiresAt };
+}
+
+/**
+ * Link for an instalment reminder e-mail. It has no time limit; sending it closes the link of the previous reminder
+ * for the same enrolment, so only the latest reminder's link can be paid.
+ */
+export async function reminderLink(env: Env, repo: Repo, enrId: string, amount: number) {
+  const old = (await env.DB.prepare("SELECT id,provider,provider_ref,is_test FROM payment_links WHERE enrollment_id=? AND kind='reminder' AND status='created'").bind(enrId).all<any>()).results || [];
+  await env.DB.prepare("UPDATE payment_links SET status='replaced' WHERE enrollment_id=? AND kind='reminder' AND status='created'").bind(enrId).run();
+  const cfg = await repo.setting<any>('cfg');
+  for (const l of old) {
+    if (!String(l.provider).startsWith('razorpay')) continue;
+    try { await razorpayCancel({ env, mode: l.provider.endsWith('-mock') ? 'mock' : modeFor(env, cfg, 'razorpay', !!l.is_test), isTest: !!l.is_test }, l.provider_ref); } catch (e) { console.error('razorpay cancel', l.id, e); }
+  }
+  return createPaymentLink(env, repo, enrId, amount, 'Email automation', { kind: 'reminder' });
+}
+
+// ---------------- Payment links shared from an opportunity ----------------
+// The enrolment form is filled in when the link is shared. It is checked then (dry run) and kept with the link;
+// when the parent pays, the same changes are applied – the student is enrolled – and the payment is recorded.
+const DRAFT_COLLS = ['students', 'enr', 'opps', 'leads', 'ms', 'notifs', 'audit'];
+/** The parent's payment is what enrols the student: whoever may share the link has enrolment rights for this one form. */
+export function linkPerms(perms: any, user: User) {
+  const p = structuredClone(perms || {});
+  p.enrollments ||= {};
+  const cur = String(p.enrollments[user.role] || '');
+  if (!cur.includes('C')) p.enrollments[user.role] = cur + 'C';
+  return p;
+}
+/** Counsellors (edit opportunities), enrolment staff and payment staff may share an opportunity's payment link. */
+export const canShareOppLink = (perms: any, user: User) =>
+  String(perms?.enrollments?.[user.role] || '').includes('C') || String(perms?.opportunities?.[user.role] || '').includes('E') || String(perms?.payments?.[user.role] || '').includes('C');
+
+export async function createOppPaymentLink(env: Env, repo: Repo, user: User, perms: any, oppId: string, changes: Change[], amount: number | undefined) {
+  const opp = await repo.get<any>('opp', oppId);
+  if (!opp) throw new Error('Opportunity not found');
+  if (['Enrolled', 'Lost'].includes(opp.stage)) throw new Error(`This opportunity is already ${opp.stage.toLowerCase()}`);
+  if (!Array.isArray(changes) || !changes.length || changes.length > 20) throw new Error('Fill in the enrolment details first');
+  if (changes.some((c) => !c || c.op !== 'upsert' || !DRAFT_COLLS.includes(c.coll))) throw new Error('The payment link form can hold only the student, the enrolment and the opportunity');
+  const enrCh = changes.filter((c) => c.coll === 'enr');
+  if (enrCh.length !== 1 || enrCh[0].doc?.opp !== oppId || enrCh[0].base) throw new Error('The form must hold one new enrolment for this opportunity');
+  if (changes.some((c) => (c.coll === 'opps' && c.id !== oppId) || (c.coll === 'leads' && (c.id !== opp.lead || !c.base)))) throw new Error('The form can change only this opportunity and its lead');
+  const draft: Change[] = changes.map((c) => ({ coll: c.coll, id: c.id, op: 'upsert' as const, doc: c.doc, ...(c.base ? { base: c.base } : {}) }));
+  const check = await applySync(env, repo, user, linkPerms(perms, user), structuredClone(draft), [], { dryRun: true });
+  if (!check.ok) throw new Error(check.rejected.map((x) => x.reason).join('; '));
+  const e = check.docs.find((x) => x.coll === 'enr')!.doc;
+  const stu = check.docs.find((x) => x.coll === 'students')?.doc || (await repo.get<any>('student', e.stu));
+  const lead = await repo.get<any>('lead', opp.lead);
+  const amt = r2(amount ?? e.sched?.[0]?.amt ?? e.total);
+  if (!(amt > 0) || amt > e.total + 0.005) throw new Error(`Amount must be between 0 and the fee ${money(e.total, e.cur)}`);
+  const parent = (stu?.parents || [])[0] || {};
+  const programs = await repo.many<any>('program');
+  // One open link per opportunity: a new one replaces the previous (a payment on an older link still enrols only once)
+  await env.DB.prepare("UPDATE payment_links SET status='replaced' WHERE opp_id=? AND status='created' AND draft IS NOT NULL").bind(oppId).run();
+  const link = await makeLink(env, repo, {
+    amount: amt, currency: e.cur, enrollmentId: e.id, isTest: repo.isTest || !!opp.test, createdBy: user.name, oppId, draft: JSON.stringify(draft), draftBy: user.id, kind: 'opp',
+    description: `Lab of Future – ${(programs.find((p) => p.id === e.prog) || { name: e.prog }).name} – ${stu ? `${stu.first} ${stu.last}` : opp.student} (${oppId})`,
+    customer: { name: parent.name || lead?.parent || opp.parent || opp.student, email: parent.email || lead?.email, phone: parent.mobile || lead?.phone },
+  });
+  const full = amt >= e.total - 0.005;
+  opp.hist = [...(opp.hist || []), { at: nowIso(), by: user.name, text: `Payment link ${link.id} shared: ${money(amt, e.cur)}${full ? ' (full fee)' : ` of ${money(e.total, e.cur)} (first instalment)`} – the student is enrolled automatically on payment` }];
+  await repo.put('opp', opp);
+  return { ...link, opp: oppId, enrollment: e.id, total: e.total, full, student: stu ? `${stu.first} ${stu.last}` : opp.student, oppDoc: opp };
+}
+
+/** Makes sure the enrolment a paid opportunity link stands for exists; applies the stored form when it does not. */
+async function enrolFromDraft(env: Env, repo: Repo, link: any): Promise<{ enrId: string; jobs: Job[] } | { error: string }> {
+  const have = await repo.get<any>('enrollment', link.enrollment_id);
+  if (have) return { enrId: have.id, jobs: [] };
+  const opp = link.opp_id ? await repo.get<any>('opp', link.opp_id) : null;
+  if (!opp) return { error: 'the opportunity no longer exists' };
+  if (opp.stage === 'Enrolled') {
+    // Enrolled meanwhile (at the counter or through another link): the payment goes to that enrolment
+    const e = (await repo.many<any>('enrollment', "json_extract(data,'$.opp')=?", [opp.id])).find((x) => x.status !== 'Withdrawn');
+    return e ? { enrId: e.id, jobs: [] } : { error: 'the opportunity is enrolled but its enrolment was not found' };
+  }
+  if (opp.stage === 'Lost') return { error: 'the opportunity was marked lost' };
+  const user = link.draft_by ? await loadUser(repo, link.draft_by) : null;
+  if (!user) return { error: 'the staff member who shared the link no longer has access' };
+  if (!user.scope.includes(opp.branch)) return { error: `${user.name} no longer has access to this branch` };
+  const draft: Change[] = JSON.parse(link.draft);
+  for (const c of draft) if (c.coll === 'enr' && c.doc) c.doc.date = dayKey(new Date()); // enrolled on the day the parent paid
+  const perms = await repo.setting<any>('perms');
+  const r = await applySync(env, repo, user, linkPerms(perms, user), draft);
+  if (!r.ok) return { error: r.rejected.map((x) => x.reason).join('; ') };
+  await addAudit(repo, 'Enrolled from payment link', link.enrollment_id, `${opp.id} enrolled when the parent paid ${link.id}`, 'Payment gateway');
+  return { enrId: link.enrollment_id, jobs: r.jobs };
+}
+
+/** A Telr order closes on Telr's side after a while; a link that is still valid in the CRM gets a fresh order. */
+export async function reopenTelrOrder(env: Env, repo: Repo, link: any) {
+  let name = 'Parent', email: string | undefined, phone: string | undefined;
+  const e = await repo.get<any>('enrollment', link.enrollment_id);
+  if (e) {
+    const p = ((await repo.get<any>('student', e.stu))?.parents || [])[0] || {};
+    name = p.name || name; email = p.email; phone = p.mobile;
+  } else if (link.opp_id) {
+    const o = await repo.get<any>('opp', link.opp_id);
+    const l = o ? await repo.get<any>('lead', o.lead) : null;
+    name = l?.parent || o?.parent || name; email = l?.email; phone = l?.phone;
+  }
+  const cfg = await repo.setting<any>('cfg');
+  const base = env.APP_BASE_URL.replace(/\/+$/, '');
+  const r = await telrCreate({ env, mode: modeFor(env, cfg, 'telr', !!link.is_test), isTest: !!link.is_test }, {
+    linkId: link.id, amount: link.amount, currency: link.currency, description: `Lab of Future – payment ${link.id}`, customer: { name, email, phone },
+    returnUrl: `${base}/webhooks/pay/return?link=${link.id}`, callbackUrl: `${base}/webhooks/telr`,
+  });
+  await env.DB.prepare("UPDATE payment_links SET provider_ref=?, url=? WHERE id=? AND status='created'").bind(r.providerRef, r.url, link.id).run();
+  return r.url;
 }
 
 /** Marks a link paid and records the CRM payment exactly once (webhook, return URL or reconciliation). */
@@ -270,9 +402,21 @@ export async function settleLink(env: Env, repo: Repo, linkId: string, info: { a
   if (!claim.meta.changes) return { already: true };
   repo.isTest = repo.isTest || !!link.is_test;
   let p: any;
+  let jobs: Job[] = [];
   try {
-    const amt = Math.min(info.amount || link.amount, link.amount);
-    p = await recordPayment(repo, { enr: link.enrollment_id, amt, method: info.method, ref: info.txnRef, by: 'Payment gateway', gateway: { provider: link.provider, link: linkId, ref: link.provider_ref, txn: info.txnRef } });
+    let enrId = link.enrollment_id;
+    let amt = Math.min(info.amount || link.amount, link.amount);
+    if (link.draft) {
+      // Shared from an opportunity: enrol the student first (once), then record the payment against that enrolment
+      const ready = await enrolFromDraft(env, repo, link);
+      const e = 'enrId' in ready ? await repo.get<any>('enrollment', ready.enrId) : null;
+      const open = e ? r2(e.total - e.paid) : 0;
+      if (!('enrId' in ready) || !e || open <= 0.005) return await paidNotApplied(env, repo, link, info, 'error' in ready ? ready.error : 'the enrolment is already fully paid');
+      enrId = e.id;
+      jobs = ready.jobs;
+      amt = Math.min(amt, open);
+    }
+    p = await recordPayment(repo, { enr: enrId, amt, method: info.method, ref: info.txnRef, by: 'Payment gateway', gateway: { provider: link.provider, link: linkId, ref: link.provider_ref, txn: info.txnRef } });
   } catch (err) {
     // nothing was recorded – reopen the link so the gateway can retry
     await env.DB.prepare("UPDATE payment_links SET status='created', paid_at=NULL WHERE id=? AND payment_id IS NULL").bind(linkId).run();
@@ -285,7 +429,19 @@ export async function settleLink(env: Env, repo: Repo, linkId: string, info: { a
     await notify(repo, { type: 'pay', sev: 'ok', text: `Payment received online: ${money(p.amt, p.cur)} – ${s?.first} ${s?.last} (${p.rc})`, route: { page: 'payRecords' }, roles: ['Reception', 'Centre Administrator', 'Management'], branch: p.branch });
     await addAudit(repo, 'Payment recorded (gateway)', p.id, `${money(p.amt, p.cur)} · ${link.provider} ${info.txnRef} · ${p.rc}`, 'Payment gateway');
   } catch (e) { console.error('post-payment notification failed', e); }
-  return { paymentId: p.id, payment: p };
+  return { paymentId: p.id, payment: p, jobs };
+}
+
+/** The parent paid but the student could not be enrolled automatically: the link stays paid and the centre finishes by hand. */
+async function paidNotApplied(env: Env, repo: Repo, link: any, info: { amount: number; txnRef: string }, why: string) {
+  await env.DB.prepare('UPDATE payment_links SET apply_error=? WHERE id=?').bind(why.slice(0, 500), link.id).run();
+  const opp = link.opp_id ? await repo.get<any>('opp', link.opp_id) : null;
+  const text = `Online payment ${money(info.amount || link.amount, link.currency)} received on link ${link.id}${opp ? ` for ${opp.student}` : ''}, but the student could not be enrolled automatically: ${why}. Enrol the student and record the payment with reference ${info.txnRef}.`;
+  try {
+    await notify(repo, { type: 'pay', sev: 'crit', text: text.slice(0, 300), route: { page: 'opps' }, roles: ['Reception', 'Centre Administrator', 'Admissions Head'], branch: opp?.branch });
+    await addAudit(repo, 'Payment link paid – enrolment not completed', link.id, text.slice(0, 1000), 'Payment gateway');
+  } catch (e) { console.error('paid-not-applied notification failed', e); }
+  return { paymentId: null as string | null, needsManual: true, reason: why, jobs: [] as Job[] };
 }
 
 const SECRET_KEYS = /token|secret|password|authkey|signature|api[_-]?key/i;

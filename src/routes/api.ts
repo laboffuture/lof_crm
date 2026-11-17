@@ -6,14 +6,15 @@ import { EXACT_SEQS, BLOCK_SEQS } from '../lib/indexing';
 import { HttpError } from '../types';
 import { bootstrap } from '../sync/bootstrap';
 import { applySync } from '../sync/sync';
-import { createLead, findDup, addAudit, addEv, money, r2, dayKey } from '../domain/core';
+import { createLead, findDup, addAudit, addEv, money, r2, dayKey, notify, recalcEnrollment } from '../domain/core';
 import { instStatus, refundCalc, daysBetween, lmsEnrolPayload, lmsMissing } from '../domain/terms';
-import { createPaymentLink, processSync } from '../domain/workflows';
+import { createPaymentLink, createOppPaymentLink, canShareOppLink, processSync, payLinkUrl, linkExpired } from '../domain/workflows';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
 import { clickToCall } from '../integrations/exotel';
 import { receiptPage } from './receipt';
 import { loadBillingDoc, invoicePdf, receiptPdf, docFileNames } from '../domain/billing-docs';
+import { importLeads, IMPORT_MAX } from '../domain/lead-import';
 import { sendToParent } from '../domain/workflows';
 
 export const api = new Hono<AppEnv>();
@@ -93,6 +94,55 @@ api.get('/leads/:id', async (c) => {
   needScope(c, l.branch);
   const [tasks, calls, comms, opps] = await Promise.all(['task', 'call', 'comm', 'opp'].map((t) => repo.many(t, 'ref1=?', [l.id], 'at')));
   return c.json({ lead: l, tasks, calls, comms, opportunities: opps });
+});
+
+/**
+ * Remarks on a communication with a lead (a call, WhatsApp or e-mail, sent or received). They can be written or
+ * changed until 24 hours after the communication; after that the record is closed for remarks.
+ */
+export const REMARK_HOURS = 24;
+api.post('/leads/:id/remarks', async (c) => {
+  const u = c.get('user');
+  if (!(can(c.get('perms'), u, 'leads', 'E') || can(c.get('perms'), u, 'leads', 'C'))) throw new HttpError(403, `${u.role} cannot add communication remarks`);
+  const repo = c.get('repo');
+  const lead = await repo.get<any>('lead', c.req.param('id'));
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  needScope(c, lead.branch);
+  const body = await c.req.json<{ kind?: string; rec?: string; text?: string }>().catch(() => ({} as any));
+  const type = body.kind === 'call' ? 'call' : body.kind === 'comm' ? 'comm' : '';
+  if (!type) throw new HttpError(400, 'kind must be call or comm');
+  const rec = await repo.get<any>(type, String(body.rec || ''));
+  if (!rec || rec.lead !== lead.id) throw new HttpError(404, 'Communication not found on this lead');
+  if (!(Date.now() - Date.parse(rec.at) <= REMARK_HOURS * 36e5)) throw new HttpError(409, `Remarks can only be added within ${REMARK_HOURS} hours of the communication – this one was on ${new Date(rec.at).toISOString().slice(0, 16).replace('T', ' ')} UTC`);
+  const text = String(body.text ?? '').replace(/\r\n/g, '\n').trim();
+  if (text.length < 3) throw new HttpError(400, 'Write the remarks (at least 3 characters)');
+  if (text.length > 1000) throw new HttpError(400, 'Remarks can be at most 1000 characters');
+  const prev = rec.remark?.text;
+  rec.remark = { text, by: u.name, byId: u.id, at: nowIso(), ...(prev ? { edited: true } : {}) };
+  await repo.put(type, rec);
+  const what = type === 'call' ? `${rec.dir || ''} call`.trim() : `${rec.inbound ? 'Received ' : ''}${rec.ch}`;
+  addEv(lead, 'note', `Remarks on ${what} (${new Date(rec.at).toISOString().slice(0, 16).replace('T', ' ')} UTC): ${text.slice(0, 200)}`, u.name);
+  await repo.put('lead', lead);
+  await addAudit(repo, prev ? 'Communication remarks changed' : 'Communication remarks added', rec.id, prev ? `"${prev.slice(0, 300)}" → "${text.slice(0, 300)}"` : text.slice(0, 500));
+  return c.json({ ok: true, kind: type, rec, lead });
+});
+
+/** Bulk lead import from an Excel / CSV sheet: dryRun checks every row, then the same rows are created. */
+api.post('/leads/import', async (c) => {
+  need(c, 'leads', 'C');
+  const raw = await c.req.text();
+  if (raw.length > 3_000_000) throw new HttpError(413, 'The file is too large');
+  let body: any;
+  try { body = JSON.parse(raw); } catch { throw new HttpError(400, 'Invalid JSON body'); }
+  const rows = Array.isArray(body?.rows) ? body.rows : null;
+  if (!rows || !rows.length) throw new HttpError(400, 'The sheet has no rows to import');
+  if (rows.length > IMPORT_MAX) throw new HttpError(413, `At most ${IMPORT_MAX} leads per file – split the sheet`);
+  const r = await importLeads(c.get('repo'), c.get('user'), rows, {
+    defaults: body.defaults && typeof body.defaults === 'object' ? body.defaults : {},
+    sendMessages: body.sendMessages === true, allowDuplicates: body.allowDuplicates === true, dryRun: body.dryRun !== false,
+  });
+  if (r.queuedComms.length) await dispatch(c.env, wait(c), r.queuedComms.map((id) => ({ kind: 'send_comm' as const, id })));
+  return c.json({ results: r.results, summary: r.summary });
 });
 
 api.post('/leads', async (c) => {
@@ -241,6 +291,39 @@ api.get('/payments/:id/receipt', async (c) => {
   c.header('cache-control', 'no-store');
   return c.html(receiptPage(d));
 });
+/**
+ * Cancel a transaction (wrong course, miscommunication …). Payments are never deleted: the payment keeps its receipt
+ * and invoice numbers, is marked Cancelled with who/when/parent's knowledge/reason, and drops out of every total.
+ * A cancellation is final. Refunds of the money are handled separately.
+ */
+api.post('/payments/:id/cancel', async (c) => {
+  const u = c.get('user');
+  if (!(can(c.get('perms'), u, 'payments', 'C') || can(c.get('perms'), u, 'payments', 'E'))) throw new HttpError(403, `${u.role} cannot cancel payments`);
+  const repo = c.get('repo');
+  const p = await repo.get<any>('payment', c.req.param('id'));
+  if (!p) throw new HttpError(404, 'Payment not found');
+  needScope(c, p.branch);
+  if (p.status === 'Cancelled') throw new HttpError(409, 'This transaction is already cancelled');
+  const body = await c.req.json<{ parentAware?: string; reason?: string; confirm?: boolean }>().catch(() => ({} as any));
+  const parentAware = body.parentAware === 'Yes' || body.parentAware === 'No' ? body.parentAware : '';
+  const reason = String(body.reason ?? '').replace(/\s+/g, ' ').trim();
+  if (!parentAware) throw new HttpError(400, 'Answer whether the transaction is being cancelled with the parent\'s knowledge');
+  if (reason.length < 10) throw new HttpError(400, 'Describe the reason for the cancellation (at least 10 characters)');
+  if (reason.length > 500) throw new HttpError(400, 'The reason can be at most 500 characters');
+  if (body.confirm !== true) throw new HttpError(400, 'Confirm that the cancellation cannot be undone');
+  const refunds = (await repo.many<any>('refund', 'ref1=?', [p.enr])).filter((r) => r.status !== 'Rejected');
+  if (refunds.length) throw new HttpError(409, `The enrolment has a refund (${refunds.map((r) => r.id).join(', ')}) – settle the refund before cancelling a payment`);
+  p.status = 'Cancelled';
+  p.cancel = { at: nowIso(), by: u.name, byId: u.id, parentAware, reason };
+  await repo.put('payment', p);
+  const e = await recalcEnrollment(repo, p.enr);
+  const s = await repo.get<any>('student', p.stu);
+  const who = s ? `${s.first} ${s.last}` : p.stu;
+  await addAudit(repo, 'Payment cancelled', p.id, `${p.rc} · ${money(p.amt, p.cur)} · ${who} · with parent's knowledge: ${parentAware} · ${reason}${p.erp?.name ? ' · cancel ERPNext entry ' + p.erp.name : ''}`);
+  await notify(repo, { type: 'pay', sev: 'warn', text: `Transaction cancelled: ${p.rc}, ${money(p.amt, p.cur)} – ${who}, by ${u.name}${parentAware === 'No' ? ' (parent not informed)' : ''}. Reason: ${reason}`.slice(0, 300), route: { page: 'payRecords' }, roles: ['Centre Administrator', 'Management', 'Reception'], branch: p.branch });
+  return c.json({ ok: true, payment: p, enrollment: e });
+});
+
 /** Invoice or receipt PDF for a payment (the same files the parent receives by e-mail). */
 api.get('/payments/:id/:file{(?:invoice|receipt)\\.pdf}', async (c) => {
   need(c, 'payments', 'V');
@@ -276,26 +359,76 @@ api.get('/payments/links', async (c) => {
   need(c, 'payments', 'V');
   const enr = c.req.query('enrollmentId');
   const sc = c.get('user').scope;
-  const r = await c.env.DB.prepare(`SELECT l.* FROM payment_links l JOIN docs e ON e.type='enrollment' AND e.id=l.enrollment_id WHERE e.branch IN (${inList(sc)}) ${enr ? 'AND l.enrollment_id=?' : ''} ORDER BY l.created_at DESC LIMIT 100`).bind(...sc, ...(enr ? [enr] : [])).all();
-  return c.json({ items: r.results || [] });
+  const r = await c.env.DB.prepare(`SELECT l.* FROM payment_links l JOIN docs e ON e.type='enrollment' AND e.id=l.enrollment_id WHERE e.branch IN (${inList(sc)}) ${enr ? 'AND l.enrollment_id=?' : ''} ORDER BY l.created_at DESC LIMIT 100`).bind(...sc, ...(enr ? [enr] : [])).all<any>();
+  return c.json({ items: (r.results || []).map((l) => ({ ...l, draft: undefined, status: linkExpired(l) ? 'expired' : l.status, url: payLinkUrl(c.env, l.id) })) });
+});
+
+/** Payment link shared from an opportunity (Opportunity or Admission Decision stage). The body carries the filled-in
+ *  enrolment form as sync changes; it is checked now and applied – the student is enrolled – when the parent pays. */
+api.post('/opps/:id/payment-link', async (c) => {
+  const u = c.get('user');
+  if (!canShareOppLink(c.get('perms'), u)) throw new HttpError(403, `${u.role} cannot share payment links`);
+  const repo = c.get('repo');
+  const opp = await repo.get<any>('opp', c.req.param('id'));
+  if (!opp) throw new HttpError(404, 'Opportunity not found');
+  needScope(c, opp.branch);
+  const raw = await c.req.text();
+  if (raw.length > 400_000) throw new HttpError(413, 'Too much data');
+  let body: { changes?: any[]; amount?: number };
+  try { body = JSON.parse(raw); } catch { throw new HttpError(400, 'Invalid JSON body'); }
+  const amount = body.amount === undefined || body.amount === null ? undefined : Number(body.amount);
+  try {
+    return c.json(await createOppPaymentLink(c.env, repo, u, c.get('perms'), opp.id, body.changes as any, amount), 201);
+  } catch (err: any) {
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(422, err.message);
+  }
+});
+api.get('/opps/:id/payment-links', async (c) => {
+  need(c, 'opportunities', 'V');
+  const repo = c.get('repo');
+  const opp = await repo.get<any>('opp', c.req.param('id'));
+  if (!opp) throw new HttpError(404, 'Opportunity not found');
+  needScope(c, opp.branch);
+  const r = await c.env.DB.prepare('SELECT id,provider,enrollment_id,amount,currency,status,payment_id,created_by,created_at,paid_at,apply_error,expires_at,kind FROM payment_links WHERE opp_id=? ORDER BY created_at DESC LIMIT 20').bind(opp.id).all<any>();
+  return c.json({ items: (r.results || []).map((l) => ({ ...l, status: linkExpired(l) ? 'expired' : l.status, url: payLinkUrl(c.env, l.id) })) });
 });
 
 /** Send a payment link to the parent over WhatsApp or e-mail (respects consent). */
 api.post('/payments/links/:id/send', async (c) => {
-  need(c, 'payments', 'C');
   const { channel } = await c.req.json<{ channel: 'WhatsApp' | 'Email' }>();
   const link = await c.env.DB.prepare('SELECT * FROM payment_links WHERE id=?').bind(c.req.param('id')).first<any>();
   if (!link) throw new HttpError(404, 'Link not found');
   const repo = c.get('repo');
-  const e = await repo.get<any>('enrollment', link.enrollment_id);
-  needScope(c, e.branch);
+  if (linkExpired(link)) throw new HttpError(409, 'This link has expired – create a new one');
   if (link.status !== 'created') throw new HttpError(409, `This link is ${link.status}`);
+  const linkUrl = payLinkUrl(c.env, link.id);
   if (!['WhatsApp', 'Email'].includes(channel)) throw new HttpError(400, 'Choose WhatsApp or Email');
+  const e = await repo.get<any>('enrollment', link.enrollment_id);
+  if (!e && link.opp_id) {
+    // Shared from an opportunity: the student is not enrolled yet – the message goes to the lead's parent
+    if (!canShareOppLink(c.get('perms'), c.get('user'))) throw new HttpError(403, `${c.get('user').role} cannot share payment links`);
+    const opp = await repo.get<any>('opp', link.opp_id);
+    if (!opp) throw new HttpError(404, 'Opportunity not found');
+    needScope(c, opp.branch);
+    const lead = await repo.get<any>('lead', opp.lead);
+    if (!lead) throw new HttpError(404, 'Lead not found');
+    const progs = await repo.many<any>('program');
+    const prog = (progs.find((p) => p.id === opp.prog) || { name: opp.prog }).name;
+    const text = `Dear ${lead.parent || 'Parent'}, please use this secure link to pay ${money(link.amount, link.currency)} for ${opp.student}'s enrolment in ${prog} at Lab of Future: ${linkUrl} – the seat is confirmed as soon as the payment is received. The link is valid for 24 hours.`;
+    const id = await repo.newId('cm');
+    await repo.put('comm', { id, lead: lead.id, ch: channel, tpl: 'Payment link', text, at: nowIso(), status: 'Queued', by: c.get('user').name });
+    await dispatch(c.env, wait(c), [{ kind: 'send_comm', id }]);
+    return c.json({ ok: true, commId: id });
+  }
+  need(c, 'payments', 'C');
+  if (!e) throw new HttpError(404, 'Enrollment not found');
+  needScope(c, e.branch);
   const s = await repo.get<any>('student', e.stu);
   const opp = e.opp ? await repo.get<any>('opp', e.opp) : null;
   const lead = opp ? await repo.get<any>('lead', opp.lead) : null;
   const parent = (s?.parents || [])[0] || {};
-  const text = `Dear ${lead?.parent || parent.name || 'Parent'}, please use this secure link to pay ${money(link.amount, link.currency)} for ${s.first}'s enrolment at Lab of Future: ${link.url}`;
+  const text = `Dear ${lead?.parent || parent.name || 'Parent'}, please use this secure link to pay ${money(link.amount, link.currency)} for ${s.first}'s enrolment at Lab of Future: ${linkUrl}${link.expires_at ? ' – the link is valid for 24 hours.' : ''}`;
   if (lead) {
     const id = await repo.newId('cm');
     await repo.put('comm', { id, lead: lead.id, ch: channel, tpl: 'Payment link', text, at: nowIso(), status: 'Queued', by: c.get('user').name });

@@ -56,6 +56,25 @@ const patches = [
     function schedTable(rows, cur) {`],
   ['<div class="sec">Instalments</div>${schedTable(instStatus(pick), pick.cur)}<form id="payf"', '<div class="sec">Instalments</div>${payInstTable(pick)}<form id="payf"'],
   ["F('Amount (' + pick.cur + ')', 'amt', { t: 'number', min: 0.01, step: '0.01', v: out, req: 1 })", "F('Amount (' + pick.cur + ')', 'amt', { t: 'number', min: 0.01, step: '0.01', v: payAmtDefault(pick), req: 1, help: 'Follows the ticked instalments; outstanding in total ' + money(out, pick.cur) + '.' })"],
+  // Communication remarks: one list of calls, WhatsApp and e-mails with a Remarks column (api-client.js → commTable)
+  ["card('Communication history', table('lcomm', [", "card('Communication history', window.commTable ? window.commTable(l) : table('lcomm', ["],
+  ["{ np: 1, act: edit ? `<button class=\"btn sm\" data-act=\"mWa\"", "{ np: 1, act: edit ? `<button class=\"btn sm\" data-act=\"mCall\" data-id=\"${l.id}\">Log call</button><button class=\"btn sm\" data-act=\"mWa\""],
+  ["{ h: 'Recording', f: c => c.rec ? esc(c.rec) : '<span class=\"faint\">—</span>' }], calls,", "{ h: 'Recording', f: c => c.rec ? esc(c.rec) : '<span class=\"faint\">—</span>' }, { h: 'Remarks', f: c => window.remarkCell ? window.remarkCell('call', c) : '' }], calls,"],
+  // Communications tab: the full list across the page, availability and consent cards below it
+  ["if (tab === 'comms') { const av = l.avail; return `<div class=\"grid g2\"><div>", "if (tab === 'comms') { const av = l.avail; return `<div class=\"grid\"><div>"],
+  ["</div><div class=\"grid\">${card('Parent call availability'", "</div><div class=\"grid g2\">${card('Parent call availability'"],
+  // Cancelled transactions keep their receipt numbers in every list but drop out of all totals
+  ["S.pay.filter(p => p.branch === b[0] && dayKey(p.at)", "S.pay.filter(p => p.status !== 'Cancelled' && p.branch === b[0] && dayKey(p.at)"],
+  ["S.pay.filter(p => p.branch === b.id && dayKey(p.at)", "S.pay.filter(p => p.status !== 'Cancelled' && p.branch === b.id && dayKey(p.at)"],
+  ['const RP = () => S.pay.filter(p => inScope(p.branch)', "const RP = () => S.pay.filter(p => p.status !== 'Cancelled' && inScope(p.branch)"],
+  ['const tot = x.reduce((a, p) => a + toAED(p.amt, p.cur), 0);', "const tot = x.filter(p => p.status !== 'Cancelled').reduce((a, p) => a + toAED(p.amt, p.cur), 0);"],
+  ["{ h: 'Status', f: p => bdg(p.status, 'info') }], x, { ps: 12 })", "{ h: 'Status', f: p => bdg(p.status, p.status === 'Cancelled' ? 'crit' : 'info') + (p.cancel ? '<div class=\"muted xs\">' + esc(p.cancel.reason) + '</div>' : '') }, { h: '', f: p => window.payCancelBtn ? payCancelBtn(p) : '' }], x, { ps: 12 })"],
+  ["{ h: 'Amount', f: p => money(p.amt, p.cur), r: 1 }, { h: 'Method', f: p => p.method }, { h: '', f: p => `<button class=\"btn sm\" data-act=\"receipt\"", "{ h: 'Amount', f: p => money(p.amt, p.cur) + (p.status === 'Cancelled' ? ' ' + bdg('Cancelled', 'crit') : ''), r: 1 }, { h: 'Method', f: p => p.method }, { h: '', f: p => `<button class=\"btn sm\" data-act=\"receipt\""],
+  ["{ h: 'Amount', f: p => money(p.amt, p.cur), r: 1 }, { h: 'Method', f: p => p.method }, { h: 'Reference', f: p => esc(p.ref) }], S.pay.filter(p => p.stu === pick.stu)", "{ h: 'Amount', f: p => money(p.amt, p.cur) + (p.status === 'Cancelled' ? ' ' + bdg('Cancelled', 'crit') : ''), r: 1 }, { h: 'Method', f: p => p.method }, { h: 'Reference', f: p => esc(p.ref) }], S.pay.filter(p => p.stu === pick.stu)"],
+  ["'Method', 'Reference', 'Receipt'], rows: ps.map(p => [p.id, fDT(p.at), stuById(p.stu).first + ' ' + stuById(p.stu).last, branchName(p.branch), p.enr, p.amt, p.cur, p.method, p.ref, p.rc])", "'Method', 'Reference', 'Receipt', 'Status', 'Cancellation reason'], rows: ps.map(p => [p.id, fDT(p.at), stuById(p.stu).first + ' ' + stuById(p.stu).last, branchName(p.branch), p.enr, p.amt, p.cur, p.method, p.ref, p.rc, p.status, p.cancel ? p.cancel.reason : ''])"],
+  // Payment link from an opportunity: whoever may share it fills in the enrolment form (applied when the parent pays)
+  ["wizard: ['enrollments', 'C']", "wizard: ['*wiz']"],
+  ['function allowed(rt) { const a = ACCESS[rt.page]; if (!a) return true; ', "function allowed(rt) { const a = ACCESS[rt.page]; if (!a) return true; if (a[0] === '*wiz') return can('enrollments', 'C') || !!((S.wiz && S.wiz.viaLink) || S.pendingViaLink); "],
   ['CHG.callF = el => { S.callF = el.value; render() };','CHG.callF = el => { S.callF = el.value; render() };\n    CHG.calCs = el => { S.calCs = el.value; render() };'],
   // KPI cards stretch across the full width instead of leaving empty slots at the end of the row
   // (all 7 fit on one row on a laptop), and in a two-column chart grid an odd last card spans the full width

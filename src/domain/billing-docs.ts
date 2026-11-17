@@ -15,6 +15,8 @@ export interface BillingDoc {
   from: { name: string; lines: string[] }; billTo: { name: string; lines: string[] };
   history: { method: string; at: string; amount: number; receiptNo: string }[];
   student: string; studentId: string; enrolmentId: string; paymentId: string;
+  /** Set when the transaction was cancelled: the documents keep their numbers and are marked Cancelled. */
+  cancelled?: { at: string; reason: string } | null;
 }
 
 const day = (iso: string) => new Date(iso.length === 10 ? iso + 'T12:00:00Z' : iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Dubai' });
@@ -53,7 +55,7 @@ export async function loadBillingDoc(repo: Repo, paymentId: string): Promise<Bil
   const taxLabel = `${country.startsWith('ind') || cur === 'INR' ? 'GST' : 'VAT'}${rate ? ' ' + rate + '%' : ''}`;
 
   // Payments on this enrolment up to and including this one
-  const all = e ? await repo.many<any>('payment', 'ref1=?', [e.id]) : [p];
+  const all = (e ? await repo.many<any>('payment', 'ref1=?', [e.id]) : [p]).filter((x) => x.id === p.id || x.status !== 'Cancelled');
   const upto = all.filter((x) => (x.at || '') < (p.at || '') || (x.at === p.at && x.id <= p.id) || x.id === p.id)
     .sort((a, c) => String(a.at).localeCompare(String(c.at)) || String(a.id).localeCompare(String(c.id)));
   const paidToDate = r2(upto.reduce((a, x) => a + (+x.amt || 0), 0));
@@ -78,6 +80,7 @@ export async function loadBillingDoc(repo: Repo, paymentId: string): Promise<Bil
     billTo: { name: real(parent.name) || studentName || 'Parent / guardian', lines: [real(parent.email), real(parent.mobile), studentName ? `Student: ${studentName} (${s.id})` : ''].filter(Boolean) },
     history: upto.map((x) => ({ method: clean(x.method) + (real(x.ref) && !/^(cash)$/i.test(clean(x.method)) ? ' · ' + clean(x.ref) : ''), at: x.at, amount: r2(+x.amt || 0), receiptNo: x.rc || x.id })),
     student: studentName, studentId: s?.id || p.stu || '', enrolmentId: e?.id || '', paymentId: p.id,
+    cancelled: p.status === 'Cancelled' ? { at: p.cancel?.at || '', reason: clean(p.cancel?.reason) } : null,
   };
 }
 
@@ -109,7 +112,7 @@ async function renderPdf(d: BillingDoc, kind: 'invoice' | 'receipt'): Promise<Ui
   const rule = (y: number, x1 = L, x2 = R, t = 0.6, color = RULE) => page.drawLine({ start: { x: x1, y }, end: { x: x2, y }, thickness: t, color });
 
   // Title and logo
-  text(page, kind === 'invoice' ? 'Invoice' : 'Receipt', L, H - 78, { f: bold, size: 24 });
+  text(page, (kind === 'invoice' ? 'Invoice' : 'Receipt') + (d.cancelled ? ' – CANCELLED' : ''), L, H - 78, { f: bold, size: 24 });
   const lw = 170, lh = (lw * LOF_LOGO_SIZE.h) / LOF_LOGO_SIZE.w;
   page.drawImage(logo, { x: R - lw, y: H - 60 - lh, width: lw, height: lh });
 
@@ -226,7 +229,7 @@ export function docHtml(d: BillingDoc, kind: 'invoice' | 'receipt', logo: string
     ? `<div style="font-size:20px;font-weight:700;margin:32px 0 14px">Payment history</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><th align="left" style="${th}">Payment method</th><th align="left" style="${th}">Date</th><th align="right" style="${th}">Amount paid</th><th align="right" style="${th}">Receipt number</th></tr>${d.history.map((h) => `<tr><td style="${td}">${esc(h.method || '—')}</td><td style="${td};white-space:nowrap;padding-left:8px">${esc(day(h.at))}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${esc(docMoney(h.amount, d.cur))}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${esc(h.receiptNo)}</td></tr>`).join('')}</table>`
     : '';
   return `<div style="max-width:720px;margin:0 auto;background:#fff;padding:32px;font-family:Inter,Arial,Helvetica,sans-serif;color:#0f1729">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="font-size:30px;font-weight:700;vertical-align:top">${kind === 'invoice' ? 'Invoice' : 'Receipt'}</td><td align="right" style="vertical-align:top"><img src="${esc(logo)}" alt="Lab of Future" width="190" style="display:block;width:190px;max-width:45vw;height:auto;border:0"></td></tr></table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="font-size:30px;font-weight:700;vertical-align:top">${kind === 'invoice' ? 'Invoice' : 'Receipt'}${d.cancelled ? ' – CANCELLED' : ''}</td><td align="right" style="vertical-align:top"><img src="${esc(logo)}" alt="Lab of Future" width="190" style="display:block;width:190px;max-width:45vw;height:auto;border:0"></td></tr></table>
 <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:22px">${meta}</table>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px"><tr><td width="50%" style="vertical-align:top;padding-right:12px">${block(d.from.name, '', d.from.lines)}</td><td width="50%" style="vertical-align:top">${block('Bill to', d.billTo.name, d.billTo.lines)}</td></tr></table>
 <div style="font-size:20px;font-weight:700;margin:30px 0 26px">${esc(headline)}</div>

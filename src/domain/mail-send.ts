@@ -194,7 +194,7 @@ export async function runMailAutomations(env: Env, now = Date.now(), opts: { for
   const L = await lookups(repo);
   const since = (k: Kind) => (A[k].since ? dayKey(A[k].since) : today);
 
-  const send = async (kind: Kind, key: string, target: MailTarget, tplName: string, extra: Record<string, string> = {}, docs?: MailDocs) => {
+  const send = async (kind: Kind, key: string, target: MailTarget, tplName: string, extra: Record<string, string> = {}, docs?: MailDocs, more?: () => Promise<Record<string, string>>) => {
     if (jobs.length >= MAX_PER_RUN) return;
     const claim = await env.DB.prepare('INSERT OR IGNORE INTO webhook_events (provider,event_id,result) VALUES (?,?,?)')
       .bind(PROVIDER, key, JSON.stringify({ at: nowIso(), kind, ref: target.id, status: 'Processing' })).run();
@@ -205,7 +205,7 @@ export async function runMailAutomations(env: Env, now = Date.now(), opts: { for
     if (r.skip) status = 'Skipped – ' + r.skip;
     else if (!t) status = `Skipped – template "${tplName}" is switched off`;
     else {
-      const m = renderEmailTemplate(t, { ...r.values, ...extra });
+      const m = renderEmailTemplate(t, { ...r.values, ...extra, ...(more ? await more() : {}) });
       jobs.push(await queueMail(repo, r, m.subject, m.body, t.n, 'Email automation', {}, docs));
       counts[kind] = (counts[kind] || 0) + 1;
     }
@@ -222,10 +222,20 @@ export async function runMailAutomations(env: Env, now = Date.now(), opts: { for
       for (const i of instStatus(e, term, today)) {
         const extra = { balance_due: amt(i.bal), amount: amt(i.amt), due_date: fmtDay(i.due), currency: e.cur || '', programme: nameOf(L.programs, e.prog) };
         const left = Math.round((Date.parse(i.due) - Date.parse(today)) / 864e5);
+        // Each reminder carries its own payment link for this instalment; it closes the previous reminder's link
+        const link = async () => {
+          try {
+            const { reminderLink } = await import('./workflows');
+            return { payment_link: (await reminderLink(env, repo, e.id, i.bal)).url };
+          } catch (err) {
+            console.error('reminder payment link', e.id, err);
+            return { payment_link: 'please contact the centre to pay' };
+          }
+        };
         if (['Upcoming', 'Due', 'Partly paid'].includes(i.st) && A.payRemind.days.includes(left)) {
-          await send('payRemind', `pay:${e.id}:${i.n}:${i.due}:${left}`, { type: 'student', id: e.stu }, A.payRemind.tpl, extra);
+          await send('payRemind', `pay:${e.id}:${i.n}:${i.due}:${left}`, { type: 'student', id: e.stu }, A.payRemind.tpl, extra, undefined, link);
         } else if (A.payRemind.overdue && i.st.startsWith('Overdue') && addDays(i.due, +(term?.grace || 0)) >= since('payRemind')) {
-          await send('payRemind', `ovd:${e.id}:${i.n}`, { type: 'student', id: e.stu }, A.payRemind.overdueTpl, extra);
+          await send('payRemind', `ovd:${e.id}:${i.n}`, { type: 'student', id: e.stu }, A.payRemind.overdueTpl, extra, undefined, link);
         }
       }
     }
@@ -258,7 +268,7 @@ export async function runMailAutomations(env: Env, now = Date.now(), opts: { for
   // invoice and receipt PDFs (Lab of Future layout, built when the e-mail is sent)
   if (A.receipt.on) {
     for (const p of await repo.many<any>('payment', 'at >= ?', [A.receipt.since])) {
-      if (p.test || !p.stu) continue;
+      if (p.test || !p.stu || p.status === 'Cancelled') continue;
       const e = p.enr ? await repo.get<any>('enrollment', p.enr) : null;
       await send('receipt', `rcpt:${p.id}`, { type: 'student', id: p.stu }, A.receipt.tpl, {
         amount: amt(p.amt), currency: p.cur || e?.cur || '', receipt_no: p.rc || p.id, payment_date: fmtDay(p.at), payment_method: p.method || '',

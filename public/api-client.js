@@ -481,7 +481,7 @@
           var pm = (S && S.cfg && S.cfg.pm) || ['Cash', 'Card', 'Bank Transfer', 'Online'];
           var rangeFilter = (typeof RF === 'function' && RF() ? RF().range : null) || 'all';
           var ps = (S && S.pay ? S.pay : []).filter(function (p) {
-            return p.branch === b && (typeof inRange === 'function' ? inRange(p.at, rangeFilter) : true);
+            return p.status !== 'Cancelled' && p.branch === b && (typeof inRange === 'function' ? inRange(p.at, rangeFilter) : true);
           });
           ps.forEach(function (p) {
             var k = (typeof dayKey === 'function') ? dayKey(p.at) : String(p.at).slice(0, 10);
@@ -922,7 +922,7 @@
           var bName = typeof branchName === 'function' ? branchName(p.branch) : p.branch;
           var amtStr = typeof money === 'function' ? money(p.amt, p.cur) : (p.cur + ' ' + p.amt);
           var dateStr = typeof fDT === 'function' ? fDT(p.at) : p.at;
-          return [p.id, dateStr, sName, bName, p.enr, amtStr, p.method, p.ref || '—', p.rc];
+          return [p.id, dateStr, sName, bName, p.enr, amtStr + (p.status === 'Cancelled' ? ' (CANCELLED)' : ''), p.method, p.ref || '—', p.rc];
         });
         var isRec = isReceptionStaff();
         var title = isRec ? ('Payment Records – ' + branchName(receptionBranch())) : 'Payment Records';
@@ -1507,218 +1507,134 @@
     loginScreen(msg);
   }
   var pendingPw = null; // kept in memory only between "sign in" and the forced password change
-  // ---------------- sign-in screens: full-page design with a dark and a light theme (sun/moon switch, top right).
-  // The chosen theme is stored as lof_theme, the same setting the CRM uses after sign-in.
-  var BRAND = { name: 'Learning Based', accent: 'CRM', tagline: 'Connect • Learn • Grow' };
-  var LBI = {
-    mail: '<svg class="lb-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="m4 7 8 6 8-6"/></svg>',
-    lock: '<svg class="lb-ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
-    eye: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
-    eyeOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 5.6A10 10 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3 3.7M6.6 6.6C3.9 8.3 2.5 12 2.5 12S6 18.5 12 18.5a9.7 9.7 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></svg>',
-    login: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>',
-    sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
-    moon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11Z"/></svg>',
-  };
-  function authTheme() {
-    var t = LS.get('lof_theme');
-    if (t === 'dark' || t === 'light') return t;
-    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  // ---------------- sign-in screens (design "LOF CRM Login"): the form on the left, a navy panel on the right with
+  // the branches, the enquiry-to-enrolment journey and three highlights. On phones: a navy header and the form on a
+  // white sheet. The same shell is used for sign-in, the two-step code, password reset and the forced password change.
+  var LB_PERSON = '<svg class="lb-note-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
+  function lbBrand(cls) {
+    return '<div class="' + cls + '"><img class="lb-logo" src="/lof-logo.png" alt="Lab of Future" width="160" height="45">' +
+      '<span class="lb-brand-sep" aria-hidden="true"></span><span class="lb-brand-sub">CRM &amp; Sales</span></div>';
   }
-  function lbLogo() {
-    return '<img class="lb-logo" src="/logo.png" alt="' + esc(BRAND.name + ' ' + BRAND.accent) + ' logo" width="48" height="48">';
+  function lbOrbits(w, cls) {
+    return '<svg class="' + cls + '" aria-hidden="true" focusable="false" width="' + w + '" height="' + w + '" viewBox="0 0 760 760" fill="none">' +
+      '<circle cx="380" cy="380" r="150" stroke="#223a5c" stroke-width="1.5"/><circle cx="380" cy="380" r="240" stroke="#223a5c" stroke-width="1.5"/>' +
+      '<circle cx="380" cy="380" r="330" stroke="#1d3150" stroke-width="1.5" stroke-dasharray="3 9"/>' +
+      '<circle cx="530" cy="380" r="6" fill="#7c9cc4"/><circle cx="210" cy="228" r="5" fill="#2d5b9a"/><circle cx="540" cy="565" r="4" fill="#b7c7dc"/></svg>';
   }
-  // Left panel: a launch trajectory across a blueprint grid. The four programmes are stops along it and a small
-  // rocket (from the logo) flies it once on load; after that everything holds still. Reduced motion: final state only.
-  var LB_STOPS = [['Space and Astronomy', 0.2, 1], ['Robotics', 0.4, 1], ['Artificial Intelligence', 0.59, -1], ['Aerospace', 0.77, -1]];
-  var LB_PATH = 'M96 812 C 380 812 560 772 650 612 S 742 262 812 128';
-  var LB_EASE = [0.22, 0.8, 0.3, 1], LB_DUR = 2.6, lbPlayed = false;
-  // Night sky behind the trajectory: stars (kept clear of the logo and headline), a crescent moon, a ringed planet
-  function lbSky() {
-    var seed = 11, rnd = function () { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; }, s = '';
-    for (var n = 0, made = 0; made < 95 && n < 800; n++) {
-      var x = rnd() * 900, y = rnd() * 900, r = rnd();
-      if ((x < 660 && y > 150 && y < 400) || (x < 430 && y < 115) || Math.hypot(x - 790, y - 800) < 235) continue;
-      made++;
-      s += r > 0.93
-        ? '<path class="sc-spark" data-x="' + x.toFixed(0) + '" data-y="' + y.toFixed(0) + '" d="M' + x.toFixed(0) + ' ' + (y - 7).toFixed(0) + 'q1 6 7 7q-6 1-7 7q-1-6-7-7q6-1 7-7Z"/>'
-        : '<circle class="sc-star" cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="' + (0.7 + r * 1.4).toFixed(2) + '" opacity="' + (0.3 + rnd() * 0.6).toFixed(2) + '"/>';
-    }
-    return '<defs><radialGradient id="lbPlanet" cx=".34" cy=".28" r=".8"><stop offset="0" class="sc-pl1"/><stop offset="1" class="sc-pl2"/></radialGradient></defs>' +
-      '<g class="sc-sky">' + s + '</g>' +
-      '<g class="sc-moon"><circle cx="520" cy="116" r="17"/><circle class="sc-moon-cut" cx="528" cy="109" r="15"/></g>' +
-      '<g class="sc-planet"><ellipse class="sc-ring" cx="790" cy="800" rx="205" ry="40" transform="rotate(-14 790 800)"/>' +
-      '<circle cx="790" cy="800" r="118" fill="url(#lbPlanet)"/>' +
-      '<path class="sc-ring" d="M585 800 A205 40 0 0 0 995 800" transform="rotate(-14 790 800)"/></g>';
-  }
-  function lbScene() {
-    return '<svg class="lb-scene" viewBox="0 0 900 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">' +
-      '<defs><mask id="lbReveal" maskUnits="userSpaceOnUse" x="0" y="0" width="1000" height="900">' +
-      '<path class="sc-reveal" pathLength="1" d="' + LB_PATH + '" fill="none" stroke="#fff" stroke-width="18"/></mask></defs>' +
-      lbSky() + '<g class="sc-pad"><circle cx="96" cy="812" r="6"/><circle cx="96" cy="812" r="22" fill="none"/><circle cx="96" cy="812" r="40" fill="none"/></g>' +
-      '<path id="lbPath" class="sc-path" d="' + LB_PATH + '" mask="url(#lbReveal)"/>' +
-      LB_STOPS.map(function (s, i) {
-        return '<g class="sc-stop" id="lbStop' + i + '"><circle class="sc-halo" r="16"/><circle class="sc-dot" r="6.5"/>' +
-          '<text x="' + (24 * s[2]) + '" y="5" text-anchor="' + (s[2] > 0 ? 'start' : 'end') + '">' + esc(s[0]) + '</text></g>';
-      }).join('') +
-      '<g id="lbRocket"><g class="sc-rocket" transform="scale(1.25)">' +
-      '<path class="sc-flame" d="M-19 0 L-36 -6 L-31 0 L-36 6 Z"/>' +
-      '<path class="sc-fin" d="M-13 -6 L-22 -15 L-6 -6 Z M-13 6 L-22 15 L-6 6 Z"/>' +
-      '<path class="sc-body" d="M-18 -6.5 H6 C14 -6.5 20 -3 25 0 C20 3 14 6.5 6 6.5 H-18 Z"/>' +
-      '<circle class="sc-window" cx="5" cy="0" r="3"/></g>' +
-      '<animateMotion id="lbFly" dur="' + LB_DUR + 's" begin="indefinite" fill="freeze" rotate="auto" calcMode="spline" keyTimes="0;1" keyPoints="0;1" keySplines="' + LB_EASE.join(' ') + '"><mpath href="#lbPath"/></animateMotion></g>' +
-      '</svg>';
-  }
-  // Time (0..1) at which the eased flight reaches a given share of the path – stops light up as the rocket passes
-  function lbTimeAt(share) {
-    var a = LB_EASE, bz = function (s, p1, p2) { var u = 1 - s; return 3 * u * u * s * p1 + 3 * u * s * s * p2 + s * s * s; };
-    for (var k = 0; k <= 200; k++) { var s = k / 200; if (bz(s, a[1], a[3]) >= share) return bz(s, a[0], a[2]); }
-    return 1;
-  }
-  function lbAnimate(root) {
-    var path = root.querySelector('#lbPath'), len = path.getTotalLength(), rocket = root.querySelector('#lbRocket');
-    var reduce = lbPlayed || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-    LB_STOPS.forEach(function (s, i) {
-      var p = path.getPointAtLength(len * s[1]), g = root.querySelector('#lbStop' + i);
-      g.setAttribute('transform', 'translate(' + p.x.toFixed(1) + ' ' + p.y.toFixed(1) + ')');
-      g.style.animationDelay = (lbTimeAt(s[1]) * LB_DUR).toFixed(2) + 's';
-    });
-    // keep the programme labels clear of stars
-    var boxes = LB_STOPS.map(function (s, i) { var g = root.querySelector('#lbStop' + i), t = g.querySelector('text').getBBox(), m = g.transform.baseVal.consolidate().matrix; return [m.e + t.x - 12, m.f + t.y - 10, m.e + t.x + t.width + 12, m.f + t.y + t.height + 10]; });
-    Array.prototype.forEach.call(root.querySelectorAll('.sc-star,.sc-spark'), function (st) {
-      var x = +(st.getAttribute('cx') || st.getAttribute('data-x')), y = +(st.getAttribute('cy') || st.getAttribute('data-y'));
-      if (boxes.some(function (b) { return x > b[0] && x < b[2] && y > b[1] && y < b[3]; })) st.parentNode.removeChild(st);
-    });
-    if (reduce) {
-      // final state, no motion: rocket at the end of its flight, trajectory and stops drawn
-      root.classList.add('lb-still');
-      var a = path.getPointAtLength(len), b = path.getPointAtLength(len * 0.99), ang = Math.atan2(a.y - b.y, a.x - b.x);
-      rocket.removeChild(rocket.querySelector('animateMotion'));
-      rocket.setAttribute('transform', 'translate(' + a.x.toFixed(1) + ' ' + a.y.toFixed(1) + ') rotate(' + (ang * 180 / Math.PI).toFixed(1) + ')');
-      return;
-    }
-    lbPlayed = true;
-    var fly = root.querySelector('#lbFly');
-    if (fly && fly.beginElement) fly.beginElement();
+  function lbContext() {
+    var ic = function (d) { return '<svg viewBox="0 0 24 24" aria-hidden="true">' + d + '</svg>'; };
+    var steps = ['Enquiry', 'First call', 'Counselling', 'Opportunity', 'Enrolled'];
+    var cards = [
+      [ic('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/>'), '60-minute first call', 'Every new lead starts an SLA clock, so nobody waits.'],
+      [ic('<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.8A8 8 0 1 1 21 12z"/>'), 'Calls and WhatsApp', 'Log every conversation on one lead timeline.'],
+      [ic('<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h4"/>'), 'Instalments and links', 'Collect fees by payment term or send a payment link.'],
+    ];
+    return '<section class="lb-ctx" aria-label="About LOF CRM">' + lbOrbits(760, 'lb-orbits') +
+      '<div class="lb-branches"><span>Al Karama</span><span aria-hidden="true">·</span><span>Sports City</span><span aria-hidden="true">·</span><span>Bengaluru</span><span aria-hidden="true">·</span><span>Hyderabad</span></div>' +
+      '<div class="lb-hero"><div class="lb-hero-text"><h2>Every enquiry, from first call to first class.</h2>' +
+      '<p>One place for counsellors, reception and admissions to follow each family from the first enquiry to enrolment.</p></div>' +
+      '<ol class="lb-journey">' + steps.map(function (s, i) { return '<li' + (i === steps.length - 1 ? ' class="last"' : '') + '><span class="lb-j-mark" aria-hidden="true"><i></i><b></b></span><span class="lb-j-label">' + s + '</span></li>'; }).join('') + '</ol></div>' +
+      '<div class="lb-cards">' + cards.map(function (c) { return '<div class="lb-c">' + c[0] + '<b>' + c[1] + '</b><span>' + c[2] + '</span></div>'; }).join('') + '</div>' +
+      '</section>';
   }
   function lbStyles() {
     if (document.getElementById('lbStyle')) return;
     var l = document.createElement('link');
-    l.rel = 'stylesheet'; l.href = 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&display=swap';
+    l.rel = 'stylesheet'; l.href = 'https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap';
     document.head.appendChild(l);
     var st = document.createElement('style'); st.id = 'lbStyle';
+    var F = '"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif';
     st.textContent = [
-      '.lb-shell{--lb-accent:#087BFF;min-height:100vh;min-height:100dvh;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(460px,1fr);font-family:"Bricolage Grotesque","IBM Plex Sans",system-ui,sans-serif;color:var(--lb-text);background:var(--lb-bg1)}',
-      '.lb-left{position:relative;overflow:hidden;isolation:isolate;min-height:100%}',
-      '.lb-right{position:relative;display:flex;flex-direction:column;background:var(--lb-bg2);border-left:1px solid var(--lb-border)}',
-      '.lb-right .lb-theme{position:absolute;top:28px;right:32px;z-index:1}',
-      '.lb-dark{--lb-bg1:#061A3A;--lb-bg2:#08152B;--lb-card:#071B36;--lb-accent2:#00C8F8;--lb-text:#FFFFFF;--lb-muted:#A9B9D2;--lb-border:#263E60;--lb-input:#0A2347;--lb-input-b:#2A4870;--lb-shadow:0 18px 40px rgba(0,6,20,.45);--lb-pill:#0B2447}',
-      '.lb-light{--lb-bg1:#F7F9FE;--lb-bg2:#EAF2FF;--lb-card:#FFFFFF;--lb-accent2:#123B82;--lb-text:#10264F;--lb-muted:#687B9F;--lb-border:#D8E2F2;--lb-input:#FFFFFF;--lb-input-b:#D3DEEF;--lb-shadow:0 18px 40px rgba(16,38,79,.10);--lb-pill:#FFFFFF}',
-      '.lb-scene{position:absolute;inset:0;width:100%;height:100%;z-index:-1}',
-      // blueprint grid (major every 120px, minor every 24px) – the launch pad the trajectory is plotted on
-      '.lb-left{background:radial-gradient(ellipse 70% 55% at 88% 100%,var(--lb-glow),transparent 70%),var(--lb-bg1)}',
-      '.lb-dark{--lb-glow:rgba(8,123,255,.20);--lb-path:#00C8F8;--lb-ember:#E8543A;--lb-flame:#FFB23E;--lb-rocket:#FFFFFF;--lb-rocket-line:#FFFFFF}',
-      '.lb-light{--lb-glow:rgba(8,123,255,.10);--lb-path:#087BFF;--lb-ember:#E2492E;--lb-flame:#F59E0B;--lb-rocket:#FFFFFF;--lb-rocket-line:#10264F}',
-      '.sc-path{fill:none;stroke:var(--lb-path);stroke-width:2.5;stroke-linecap:round;stroke-dasharray:1 11}',
-      '.sc-pad circle{stroke:var(--lb-path);stroke-opacity:.45;stroke-width:1.5}.sc-pad circle:first-child{fill:var(--lb-path);fill-opacity:.8;stroke:none}',
-      '.sc-reveal{stroke-dasharray:1;stroke-dashoffset:1;animation:lbDraw 2.6s cubic-bezier(.22,.8,.3,1) forwards}',
-      '.sc-stop{opacity:0;animation:lbStop .45s ease-out forwards}',
-      '.sc-star{fill:var(--lb-star)}.sc-spark{fill:var(--lb-spark)}.lb-light .sc-sky{opacity:.55}',
-      '.sc-moon circle{fill:var(--lb-moon)}.sc-moon .sc-moon-cut{fill:var(--lb-bg1)}',
-      '.sc-ring{fill:none;stroke:var(--lb-ring);stroke-width:3}',
-      '.lb-dark{--lb-star:#FFFFFF;--lb-spark:#CFE8FF;--lb-moon:#E8EEF8;--lb-ring:rgba(0,200,248,.5)}.lb-dark .sc-pl1{stop-color:#2D6DBA}.lb-dark .sc-pl2{stop-color:#0A2650}',
-      '.lb-light{--lb-star:#123B82;--lb-spark:#087BFF;--lb-moon:rgba(18,59,130,.35);--lb-ring:rgba(8,123,255,.4)}.lb-light .sc-pl1{stop-color:#EEF4FE}.lb-light .sc-pl2{stop-color:#9FBDEA}',
-      '.sc-dot{fill:var(--lb-ember)}.sc-halo{fill:var(--lb-ember);fill-opacity:.18}',
-      '.sc-stop text{fill:var(--lb-text);font-family:"Bricolage Grotesque",Inter,sans-serif;font-size:17px;font-weight:600;letter-spacing:-.01em}',
-      '.sc-body{fill:var(--lb-rocket);stroke:var(--lb-rocket-line);stroke-width:1.2}.sc-window{fill:#087BFF}.sc-fin{fill:var(--lb-ember)}.sc-flame{fill:var(--lb-flame)}',
-      '@keyframes lbDraw{to{stroke-dashoffset:0}}@keyframes lbStop{from{opacity:0;transform-box:fill-box}to{opacity:1}}',
-      '.lb-still .sc-reveal{animation:none;stroke-dashoffset:0}.lb-still .sc-stop{animation:none;opacity:1}',
-      '@media (prefers-reduced-motion:reduce){.sc-reveal{animation:none;stroke-dashoffset:0}.sc-stop{animation:none;opacity:1}}',
-      // headline: the brand's own words, set large over the grid
-      '.lb-hero{position:absolute;left:clamp(24px,4.4vw,64px);top:clamp(132px,21%,220px);max-width:min(560px,80%)}',
-      '.lb-big{margin:0;font-family:"Bricolage Grotesque",Inter,sans-serif;font-variation-settings:"opsz" 96;font-size:clamp(64px,7.6vw,132px);font-weight:800;line-height:.9;letter-spacing:-.05em;color:var(--lb-text)}',
-      '.lb-lede{margin:22px 0 0;max-width:34ch;font-size:17px;line-height:1.5;color:var(--lb-muted)}',
-      // header
-      '.lb-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;padding:28px 40px;gap:16px}',
-      '.lb-brand{display:flex;align-items:center;gap:14px}.lb-logo{width:52px;height:52px;flex:none;object-fit:contain}',
-      '.lb-dark .lb-logo{filter:drop-shadow(0 0 1px rgba(255,255,255,.35))}',
-      '.lb-name{font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1.1;color:var(--lb-text)}.lb-name b{color:var(--lb-accent);font-weight:800}',
-      '.lb-tag{font-size:13px;color:var(--lb-muted);margin-top:4px;letter-spacing:.04em}',
-      '.lb-theme{display:inline-flex;gap:2px;padding:3px;border-radius:999px;background:var(--lb-pill);border:1px solid var(--lb-border);box-shadow:0 2px 8px rgba(0,0,0,.08);cursor:pointer;font:inherit}',
-      '.lb-theme span{display:grid;place-items:center;width:34px;height:28px;border-radius:999px;color:var(--lb-muted)}',
-      '.lb-theme svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
-      '.lb-theme span.on{background:var(--lb-accent);color:#fff}',
-      '.lb-theme:focus-visible,.lb-btn:focus-visible,.lb-link:focus-visible,.lb-eye:focus-visible{outline:2px solid var(--lb-accent);outline-offset:2px}',
-      // card
-      '.lb-main{flex:1;display:flex;align-items:center;justify-content:center;padding:96px clamp(24px,5vw,72px) 40px;box-sizing:border-box}',
-      '.lb-card{width:min(100%,440px);box-sizing:border-box;background:var(--lb-card);border:1px solid var(--lb-border);border-radius:20px;box-shadow:var(--lb-shadow);padding:40px 40px 32px;display:flex;flex-direction:column;gap:16px}',
-      '.lb-dark .lb-card{border-color:#1E4A85}',
-      '.lb-h1{margin:0;font-size:29px;font-weight:800;letter-spacing:-.02em;color:var(--lb-text)}',
-      '.lb-sub{margin:-8px 0 0;font-size:15px;color:var(--lb-muted)}',
-      '.lb-rule{width:44px;height:3px;border-radius:3px;background:linear-gradient(90deg,var(--lb-accent),var(--lb-accent2));margin:0 0 8px}',
-      '.lb-field{position:relative;display:block}',
-      '.lb-field input,.lb-card .f input{width:100%;box-sizing:border-box;height:50px;border-radius:12px;border:1px solid var(--lb-input-b);background:var(--lb-input);color:var(--lb-text);font:inherit;font-size:15.5px;padding:0 16px;transition:border-color .15s,box-shadow .15s}',
-      '.lb-field input{padding:0 48px 0 46px}',
-      '.lb-field input::placeholder,.lb-card .f input::placeholder{color:var(--lb-muted);opacity:.85}',
-      '.lb-field input:focus,.lb-card .f input:focus{outline:none;border-color:var(--lb-accent);box-shadow:0 0 0 3px rgba(8,123,255,.22)}',
-      '.lb-field .lb-ic{position:absolute;left:15px;top:50%;transform:translateY(-50%);pointer-events:none}',
-      '.lb-ic{width:20px;height:20px;fill:none;stroke:var(--lb-muted);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
-      '.lb-eye{position:absolute;right:8px;top:50%;transform:translateY(-50%);width:36px;height:36px;border:0;border-radius:8px;background:transparent;cursor:pointer;display:grid;place-items:center;color:var(--lb-muted)}',
-      '.lb-eye:hover{color:var(--lb-text)}.lb-eye svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
-      '.lb-card .f{display:flex;flex-direction:column;gap:6px}.lb-card .f label{font-size:13.5px;font-weight:600;color:var(--lb-text)}.lb-card .help{color:var(--lb-muted)}',
-      '.lb-row{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:14px}',
-      '.lb-check{display:inline-flex;align-items:center;gap:8px;color:var(--lb-muted);cursor:pointer}.lb-check input{width:16px;height:16px;accent-color:var(--lb-accent);margin:0}',
-      '.lb-link{color:var(--lb-accent);font-weight:600;text-decoration:none;cursor:pointer;border-radius:4px}.lb-link:hover{text-decoration:underline}',
-      '.lb-dark .lb-link{color:#3D9BFF}',
-      '.lb-btn{display:flex;align-items:center;justify-content:center;gap:10px;height:50px;width:100%;border:0;border-radius:12px;cursor:pointer;color:#fff;font:inherit;font-size:16.5px;font-weight:600;background:linear-gradient(180deg,#1A86FF,#0870E8);box-shadow:0 6px 16px rgba(8,123,255,.28);transition:filter .15s,transform .05s,box-shadow .15s}',
-      '.lb-btn:hover{filter:brightness(1.07);box-shadow:0 8px 20px rgba(8,123,255,.36)}.lb-btn:active{transform:translateY(1px);filter:brightness(.95)}.lb-btn:disabled{opacity:.65;cursor:progress}',
-      '.lb-btn svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
-      '.lb-foot{margin:6px 0 0;text-align:center;font-size:13.5px;color:var(--lb-muted)}',
-      '.lb-msg{padding:10px 12px;border-radius:10px;font-size:13.5px;background:rgba(8,123,255,.1);border:1px solid rgba(8,123,255,.3);color:var(--lb-text)}',
-      '.lb-err{font-size:13.5px;color:#F04E5E;min-height:0}.lb-err:empty{display:none}.lb-light .lb-err{color:#C62839}',
-      '.lb-info{font-size:13px;color:var(--lb-muted);text-align:center}.lb-info:empty{display:none}',
+      '.lb-shell{display:flex;min-height:100vh;min-height:100dvh;font-family:' + F + ';color:#1b2633;background:#fff;color-scheme:light}',
+      '.lb-shell :focus-visible{outline:2px solid #2d5b9a;outline-offset:2px}',
+      // form side
+      '.lb-form-side{flex:1 1 520px;min-width:0;box-sizing:border-box;padding:40px 56px;display:flex;flex-direction:column;justify-content:space-between;gap:24px;background:#fff}',
+      '.lb-brand{display:flex;align-items:center;gap:14px}.lb-logo{height:44px;width:auto;display:block}',
+      '.lb-brand-sep{width:1px;height:28px;background:#e1e6ee}.lb-brand-sub{font-size:13px;color:#5d6a7a;white-space:nowrap}',
+      '.lb-mhead{display:none}',
+      '.lb-main{display:flex;justify-content:center}',
+      '.lb-card{width:100%;max-width:400px;display:flex;flex-direction:column;gap:22px;padding:24px 0;margin:0}',
+      '.lb-head{display:flex;flex-direction:column;gap:8px}',
+      '.lb-h1{margin:0;font-size:30px;line-height:1.15;font-weight:600;color:#13243b}',
+      '.lb-sub{margin:0;font-size:15px;line-height:1.5;color:#5d6a7a}',
+      '.lb-fields{display:flex;flex-direction:column;gap:16px}',
+      '.lb-f,.lb-card .f{display:flex;flex-direction:column;gap:6px}',
+      '.lb-f label,.lb-card .f label{font-size:13px;font-weight:500;color:#1b2633}',
+      '.lb-labrow{display:flex;justify-content:space-between;align-items:baseline;gap:12px}',
+      '.lb-in,.lb-card .f input{width:100%;box-sizing:border-box;height:46px;border:1px solid #c9d2df;border-radius:8px;padding:0 14px;font:15px ' + F + ';color:#1b2633;background:#fff}',
+      '.lb-in:hover,.lb-card .f input:hover{border-color:#8a9bb2}',
+      '.lb-in:focus,.lb-card .f input:focus{outline:none;border-color:#2d5b9a;box-shadow:0 0 0 3px rgba(45,91,154,.18)}',
+      '.lb-in::placeholder,.lb-card .f input::placeholder{color:#8a96a6}',
+      '.lb-card .f input[readonly]{background:#f3f5f9}',
+      '.lb-pw{position:relative}.lb-pw .lb-in{padding-right:76px}',
+      '.lb-eye{position:absolute;right:6px;top:6px;height:34px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:#2d5b9a;font:500 13px ' + F + ';cursor:pointer}',
+      '.lb-eye:hover{background:#f3f5f9}',
+      '.lb-check{display:flex;align-items:center;gap:10px;font-size:14px;color:#1b2633;cursor:pointer}.lb-check input{width:18px;height:18px;margin:0;accent-color:#2d5b9a}',
+      '.lb-btn{height:48px;width:100%;border:0;border-radius:8px;background:#2d5b9a;color:#fff;font:600 15px ' + F + ';cursor:pointer}',
+      '.lb-btn:hover{filter:brightness(.9)}.lb-btn:disabled{opacity:.65;cursor:progress}',
+      '.lb-link{color:#2d5b9a;text-decoration:none;font-weight:500;font-size:13px;cursor:pointer}.lb-link:hover{text-decoration:underline}',
+      '.lb-note,.lb-msg{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:8px;background:#e7eef8;color:#13243b;font-size:13px;line-height:1.5}',
+      '.lb-note-ic{flex:none;width:18px;height:18px;margin-top:1px;fill:none;stroke:#2d5b9a;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
+      '.lb-err{font-size:13.5px;line-height:1.45;color:#b42318}.lb-err:empty{display:none}',
+      '.lb-info{font-size:13px;color:#5d6a7a}.lb-info:empty{display:none}',
+      '.lb-foot{font-size:13px;color:#5d6a7a}.lb-foot a{color:#2d5b9a!important}',
+      '.lb-card .help{font-size:12.5px;color:#5d6a7a}.lb-card .banner{margin:0}',
+      '.lb-page-foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 24px;font-size:13px;color:#5d6a7a}',
       '.lb-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}',
-      '.lb-card .banner{margin:0}',
-      // phones / narrow windows: the left panel becomes a short banner above the card
-      '@media (max-width:900px){.lb-shell{grid-template-columns:1fr;grid-template-rows:auto 1fr}.lb-left{min-height:88px}.lb-right{border-left:0;border-top:1px solid var(--lb-border)}' +
-      '.lb-hero,.lb-scene{display:none}.lb-right .lb-theme{top:-68px;right:16px}.lb-main{align-items:flex-start;padding:28px 16px 32px}.lb-top{padding:20px 16px}.lb-name{font-size:21px}.lb-logo{width:40px;height:40px}.lb-card{padding:32px 24px 26px}}',
-      '@media (max-width:420px){.lb-tag{display:none}.lb-h1{font-size:25px}}',
-      '@media (prefers-reduced-motion:reduce){.lb-shell *{transition:none!important}}',
+      // context side
+      '.lb-ctx{flex:1.15 1 560px;min-width:0;box-sizing:border-box;position:relative;overflow:hidden;background:#13243b;color:#c7d2e1;padding:40px 64px;display:flex;flex-direction:column;justify-content:space-between;gap:40px}',
+      '.lb-ctx>*{position:relative}.lb-ctx>.lb-orbits{position:absolute;right:-220px;top:-160px;pointer-events:none}',
+      '.lb-branches{display:flex;flex-wrap:wrap;gap:8px;font:600 12px "IBM Plex Mono",ui-monospace,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;color:#8ea2bd}',
+      '.lb-hero{display:flex;flex-direction:column;gap:36px;max-width:640px}.lb-hero-text{display:flex;flex-direction:column;gap:16px}',
+      '.lb-hero h2{margin:0;font-size:clamp(34px,3.3vw,46px);line-height:1.08;font-weight:600;color:#fff;letter-spacing:-.01em;text-wrap:balance}',
+      '.lb-hero p{margin:0;font-size:17px;line-height:1.55;max-width:520px}',
+      '.lb-journey{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}',
+      '.lb-journey li{display:flex;flex-direction:column;gap:10px}',
+      '.lb-j-mark{height:12px;display:block;position:relative}',
+      '.lb-j-mark i{position:absolute;left:0;top:5px;right:0;height:2px;background:#2d5b9a}',
+      '.lb-j-mark b{position:absolute;left:0;top:0;width:12px;height:12px;border-radius:50%;background:#7c9cc4}',
+      '.lb-journey li.last i{display:none}.lb-journey li.last b{background:#fff}',
+      '.lb-j-label{font-size:13px;font-weight:500;color:#fff}.lb-journey li.last .lb-j-label{font-weight:600}',
+      '.lb-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}',
+      '.lb-c{padding:16px;border-radius:10px;background:#1a2f4b;border:1px solid #223a5c;display:flex;flex-direction:column;gap:8px}',
+      '.lb-c svg{width:22px;height:22px;fill:none;stroke:#b7c7dc;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
+      '.lb-c b{font-size:14px;font-weight:600;color:#fff}.lb-c span{font-size:13px;line-height:1.5}',
+      // phones and narrow windows: navy header, the form on a white sheet
+      '@media (max-width:900px){' +
+        '.lb-shell{display:block;background:#13243b}.lb-ctx{display:none}' +
+        '.lb-form-side{min-height:100vh;min-height:100dvh;padding:0;gap:0;justify-content:flex-start;background:#13243b;position:relative;overflow:hidden}' +
+        '.lb-form-side>.lb-brand{display:none}' +
+        '.lb-mhead{display:flex;flex-direction:column;gap:18px;padding:36px 24px 28px;position:relative}' +
+        '.lb-mhead .lb-orbits-m{position:absolute;right:-170px;top:-190px;pointer-events:none}' +
+        '.lb-mhead .lb-brand{position:relative;align-self:flex-start;background:#fff;border-radius:10px;padding:8px 12px}.lb-mhead .lb-logo{height:30px}' +
+        '.lb-mhead h2{position:relative;margin:0;font-size:27px;line-height:1.15;font-weight:600;color:#fff;letter-spacing:-.01em}' +
+        '.lb-main{flex:1;display:block;background:#fff;border-radius:20px 20px 0 0;padding:28px 24px 12px;position:relative}' +
+        '.lb-card{max-width:none;padding:0;gap:18px}.lb-h1{font-size:22px}.lb-sub{font-size:14px}.lb-head{gap:4px}' +
+        '.lb-in,.lb-card .f input{height:48px;font-size:16px}.lb-btn{height:52px;font-size:16px}' +
+        '.lb-page-foot{background:#fff;padding:12px 24px 20px;justify-content:center;text-align:center}' +
+      '}',
+      '@media (max-width:420px){.lb-mhead h2{font-size:24px}}',
     ].join('\n');
     document.head.appendChild(st);
   }
   function authShell(cardHtml) {
     lbStyles();
-    var t = authTheme();
-    document.documentElement.dataset.theme = t;
+    // the sign-in screens are always light; the CRM applies the user's own theme again after sign-in
+    document.documentElement.removeAttribute('data-theme');
     document.getElementById('app').innerHTML =
-      // Split screen: left = branding over the library scene, right = solid panel with the sign-in card
-      '<div class="lb-shell lb-' + t + '" id="lbRoot">' +
-      '<section class="lb-left">' + lbScene() +
-      '<header class="lb-top"><div class="lb-brand">' + lbLogo() +
-      '<div><div class="lb-name">' + esc(BRAND.name) + ' <b>' + esc(BRAND.accent) + '</b></div><div class="lb-tag">' + esc(BRAND.tagline) + '</div></div></div></header>' +
-      '<div class="lb-hero"><p class="lb-big">Be curious.</p>' +
-      '<p class="lb-lede">Enquiries, admissions, enrolments and payments for every centre, in one place.</p></div>' +
-      '</section>' +
-      '<section class="lb-right">' +
-      '<button type="button" class="lb-theme" id="lbTheme" role="switch" aria-checked="' + (t === 'dark') + '" aria-label="Dark theme">' +
-      '<span class="' + (t === 'light' ? 'on' : '') + '">' + LBI.sun + '</span><span class="' + (t === 'dark' ? 'on' : '') + '">' + LBI.moon + '</span></button>' +
-      '<main class="lb-main">' + cardHtml + '</main></section></div>';
-    lbAnimate(document.getElementById('lbRoot'));
-    document.getElementById('lbTheme').addEventListener('click', function () {
-      var root = document.getElementById('lbRoot'), dark = !root.classList.contains('lb-dark');
-      root.classList.toggle('lb-dark', dark); root.classList.toggle('lb-light', !dark);
-      var spans = this.querySelectorAll('span'); spans[0].classList.toggle('on', !dark); spans[1].classList.toggle('on', dark);
-      this.setAttribute('aria-checked', String(dark));
-      LS.set('lof_theme', dark ? 'dark' : 'light'); // the CRM opens in the same theme after sign-in
-      document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-    });
+      '<div class="lb-shell" id="lbRoot">' +
+      '<section class="lb-form-side">' + lbBrand('lb-brand') +
+      '<header class="lb-mhead">' + lbOrbits(420, 'lb-orbits-m') + lbBrand('lb-brand') + '<h2>Every enquiry, from first call to first class.</h2></header>' +
+      '<main class="lb-main">' + cardHtml + '</main>' +
+      '<footer class="lb-page-foot"><span>No access yet? Ask your Centre Administrator.</span></footer>' +
+      '</section>' + lbContext() + '</div>';
   }
   function authCard(sub, msg, inner, btn, foot) {
     authShell('<form id="lofAuth" class="lb-card" novalidate>' +
-      '<h1 class="lb-h1">' + esc(sub) + '</h1><div class="lb-rule"></div>' +
-      (msg ? '<div class="lb-msg" role="status">' + esc(msg) + '</div>' : '') + inner +
+      '<div class="lb-head"><h1 class="lb-h1">' + esc(sub) + '</h1></div>' +
+      (msg ? '<div class="lb-msg" role="status">' + esc(msg) + '</div>' : '') + '<div class="lb-fields">' + inner + '</div>' +
       '<div class="lb-err" id="lofErr" role="alert"></div>' +
-      '<button class="lb-btn" type="submit">' + LBI.login + '<span>' + esc(btn) + '</span></button>' +
+      '<button class="lb-btn" type="submit">' + esc(btn) + '</button>' +
       (foot ? '<div class="lb-foot">' + foot + '</div>' : '') +
       '</form>');
     var f = document.getElementById('lofAuth');
@@ -1750,37 +1666,32 @@
       // Remember Me keeps only the e-mail address on this device – never the password
       var saved = LS.get('lof_login_email') || '';
       authShell('<form id="lofAuth" class="lb-card" novalidate>' +
-        '<h1 class="lb-h1">Welcome Back!</h1><p class="lb-sub">Sign in to continue your learning journey</p><div class="lb-rule"></div>' +
+        '<div class="lb-head"><h1 class="lb-h1">Welcome back</h1><p class="lb-sub">Sign in to follow up leads, manage admissions and collect payments.</p></div>' +
         (msg ? '<div class="lb-msg" role="status">' + esc(msg) + '</div>' : '') +
-        '<div class="lb-field"><label for="le" class="lb-sr">Email Address</label>' + LBI.mail +
-        '<input id="le" name="email" type="email" autocomplete="username" placeholder="Email Address" required value="' + esc(saved) + '"></div>' +
-        '<div class="lb-field"><label for="lp" class="lb-sr">Password</label>' + LBI.lock +
-        '<input id="lp" name="password" type="password" autocomplete="current-password" placeholder="Password" required>' +
-        '<button type="button" class="lb-eye" id="lbEye" aria-label="Show password" aria-pressed="false">' + LBI.eye + '</button></div>' +
-        '<div class="lb-row"><label class="lb-check"><input type="checkbox" name="remember" id="lbRemember"' + (saved ? ' checked' : '') + '><span>Remember Me</span></label>' +
-        '<a href="#" class="lb-link" id="linkForgotPw">Forgot Password?</a></div>' +
+        '<div class="lb-fields">' +
+        '<div class="lb-f"><label for="le">Work email</label>' +
+        '<input class="lb-in" id="le" name="email" type="email" autocomplete="username" placeholder="name@laboffuture.com" required value="' + esc(saved) + '"></div>' +
+        '<div class="lb-f"><div class="lb-labrow"><label for="lp">Password</label><a href="#" class="lb-link" id="linkForgotPw">Forgot password?</a></div>' +
+        '<div class="lb-pw"><input class="lb-in" id="lp" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required>' +
+        '<button type="button" class="lb-eye" id="lbEye" aria-label="Show password" aria-pressed="false">Show</button></div></div>' +
+        '<label class="lb-check"><input type="checkbox" name="remember" id="lbRemember"' + (saved ? ' checked' : '') + '>Remember my e-mail on this device</label>' +
+        '</div>' +
         '<div class="lb-err" id="lofErr" role="alert"></div>' +
-        '<button class="lb-btn" type="submit">' + LBI.login + '<span>Sign In</span></button>' +
-        '<div class="lb-info" id="lbInfo" role="status" aria-live="polite"></div>' +
-        '<p class="lb-foot">Don’t have an account? <a href="#" class="lb-link" id="lbContact">Contact Administrator</a></p>' +
+        '<button class="lb-btn" type="submit">Sign in</button>' +
+        '<div class="lb-note">' + LB_PERSON + '<span>Your menu follows your role: Counsellor, Reception, Admissions Head, Centre Administrator or Management.</span></div>' +
         '</form>');
       f = document.getElementById('lofAuth');
       (saved ? document.getElementById('lp') : document.getElementById('le')).focus();
-      var info = document.getElementById('lbInfo');
       document.getElementById('lbEye').addEventListener('click', function () {
         var pw = document.getElementById('lp'), show = pw.type === 'password';
         pw.type = show ? 'text' : 'password';
-        this.innerHTML = show ? LBI.eyeOff : LBI.eye;
+        this.textContent = show ? 'Hide' : 'Show';
         this.setAttribute('aria-pressed', String(show));
         this.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
       });
       document.getElementById('linkForgotPw').addEventListener('click', function (e) {
         e.preventDefault();
         forgotPasswordScreen('', document.getElementById('le').value.trim());
-      });
-      document.getElementById('lbContact').addEventListener('click', function (e) {
-        e.preventDefault();
-        info.textContent = 'Accounts are created by your System Administrator (Settings → Staff & Users). Please contact them to get access.';
       });
     }
 
@@ -2048,13 +1959,131 @@
     var l = m.link;
     return {
       title: 'Payment link ' + l.id, size: 'sm2',
-      body: '<p class="sm">' + money(l.amount, l.currency) + ' via <b>' + (l.provider === 'telr' ? 'Telr' : 'Razorpay') + '</b>' + (l.mode === 'mock' ? ' <span class="sim">Mock</span>' : '') + '. The payment is recorded automatically when the parent pays.</p><div class="f"><label for="plurl">Link</label><input id="plurl" readonly value="' + esc(l.url) + '"></div>',
+      body: '<p class="sm">' + money(l.amount, l.currency) + ' via <b>' + (l.provider === 'telr' ? 'Telr' : 'Razorpay') + '</b>' + (l.mode === 'mock' ? ' <span class="sim">Mock</span>' : '') + '. ' + (l.opp ? 'When the parent pays, <b>' + esc(l.student || '') + '</b> is enrolled automatically and the payment is recorded with a receipt.' : 'The payment is recorded automatically when the parent pays.') + ' The link works for <b>24 hours</b>: after that the parent sees “Payment link expired”, and once paid it shows “Payment already done”.</p><div class="f"><label for="plurl">Link</label><input id="plurl" readonly value="' + esc(l.url) + '"></div>',
       foot: '<button class="btn" data-act="closeModal">Close</button><button class="btn" data-act="copy" data-v="' + esc(l.url) + '">Copy link</button><button class="btn" data-act="plSend" data-id="' + esc(l.id) + '" data-ch="Email">Send by e-mail</button><button class="btn primary" data-act="plSend" data-id="' + esc(l.id) + '" data-ch="WhatsApp">Send on WhatsApp</button>',
     };
   };
   ACT.plSend = function (d) {
     req('POST', '/payments/links/' + encodeURIComponent(d.id) + '/send', { channel: d.ch }).then(function () { closeModal(); toast('Payment link sent by ' + d.ch, 'ok'); }).catch(function (e) { toast(e.message, 'err'); });
   };
+  // ---------------- Payment link from an opportunity (Opportunity 30% / Admission Decision 70%)
+  // The counsellor fills in the enrolment form (student, programme, fee, payment term) and, instead of enrolling,
+  // creates a payment link. The server checks the form now and enrols the student automatically when the parent pays.
+  function canShareLink() { return can('enrollments', 'C') || can('opportunities', 'E') || can('payments', 'C'); }
+  var LINK_ST = {
+    created: ['Awaiting payment', 'warn'], paid: ['Paid – enrolled', 'ok'], replaced: ['Replaced by a newer link', ''],
+    expired: ['Expired', ''], cancelled: ['Cancelled', ''], failed: ['Failed', 'crit'],
+  };
+  function linkWhen(t) { return String(t || '').replace('T', ' ').slice(0, 16); }
+  function oppLinksCard(o) {
+    S.oppLinks = S.oppLinks || {};
+    var L = S.oppLinks[o.id];
+    if (L === undefined) {
+      S.oppLinks[o.id] = null;
+      req('GET', '/opps/' + encodeURIComponent(o.id) + '/payment-links').then(function (r) { S.oppLinks[o.id] = r.items || []; safeRender(); }).catch(function () { S.oppLinks[o.id] = []; });
+      return '';
+    }
+    if (!L || !L.length) return '';
+    var rows = L.map(function (l) {
+      var st = l.status === 'paid' && l.apply_error ? ['Paid – enrol by hand', 'crit'] : (LINK_ST[l.status] || [l.status, '']);
+      var act = l.status === 'created' && canShareLink()
+        ? '<button class="btn sm" data-act="copy" data-v="' + esc(l.url) + '">Copy</button> <button class="btn sm" data-act="plSend" data-id="' + esc(l.id) + '" data-ch="WhatsApp">WhatsApp</button> <button class="btn sm" data-act="plSend" data-id="' + esc(l.id) + '" data-ch="Email">E-mail</button>'
+        : l.status === 'paid' && !l.apply_error ? '<span class="mono xs">' + esc(l.enrollment_id) + '</span>' : '';
+      if (l.status === 'created' && l.expires_at) st = [st[0] + ' · until ' + new Date(l.expires_at).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }), st[1]];
+      return { l: l, st: st, act: act };
+    });
+    var cols = [
+      { h: 'Link', f: function (r) { return '<span class="mono">' + esc(r.l.id) + '</span>'; } },
+      { h: 'Amount', r: 1, f: function (r) { return money(r.l.amount, r.l.currency); } },
+      { h: 'Status', f: function (r) { return bdg(r.st[0], r.st[1]) + (r.l.apply_error ? '<div class="muted xs">' + esc(r.l.apply_error) + '</div>' : ''); } },
+      { h: 'Shared', f: function (r) { return esc(r.l.created_by || '') + '<div class="muted xs">' + esc(linkWhen(r.l.created_at)) + '</div>'; } },
+      { h: '', f: function (r) { return r.act; } },
+    ];
+    return '<div style="height:14px"></div>' + card('Payment links', table('oppLinks', cols, rows, { all: 1 }) + '<p class="muted xs" style="padding:0 14px 12px">When the parent pays, the student is enrolled with the details filled in when the link was shared, and the receipt follows automatically.</p>', { np: 1 });
+  }
+  var _oppPage = PAGES.opp;
+  PAGES.opp = function (rt) {
+    var h = _oppPage(rt);
+    var o = typeof oppById === 'function' ? oppById(rt.id) : null;
+    if (!o || !inScope(o.branch)) return h;
+    if (!['Enrolled', 'Lost'].includes(o.stage) && canShareLink()) {
+      var btn = '<button class="btn primary" data-act="oppPayLink" data-id="' + esc(o.id) + '">' + ic('link') + ' Share payment link</button>';
+      h = h.replace('<div class="row" style="margin-bottom:14px">', '<div class="row" style="margin-bottom:14px">' + btn);
+      h = h.replace('<button class="btn primary" data-act="enrollOpp"', '<button class="btn" data-act="enrollOpp"');
+    }
+    return h + oppLinksCard(o);
+  };
+  ACT.oppPayLink = function (d) {
+    S.pendingViaLink = true;
+    try { ACT.enrollOpp(d); } finally { S.pendingViaLink = false; }
+    if (S.wiz) { S.wiz.viaLink = true; render(); }
+  };
+  var _wizMode = ACT.wizMode;
+  ACT.wizMode = function (d) { var via = S.wiz && S.wiz.viaLink; _wizMode(d); if (via && S.wiz) { S.wiz.viaLink = true; render(); } };
+  var _wizCancel = ACT.wizCancel;
+  ACT.wizCancel = function () { var w = S.wiz; if (w && w.viaLink && w.opp) { S.wiz = null; S.wizQ = ''; go('opp', { id: w.opp }); return; } _wizCancel(); };
+  var _wizPage = PAGES.wizard;
+  PAGES.wizard = function (rt) {
+    var h = _wizPage(rt), w = S.wiz;
+    if (!w || !w.viaLink) return h;
+    h = h.replace('3. Payment &amp; confirm', '3. Payment link').replace('3. Payment & confirm', '3. Payment link');
+    var o = w.opp && oppById(w.opp);
+    h = h.replace('<div class="step">', '<div class="banner" style="margin-bottom:12px">' + ic('link') + '<span>Payment link for <b>' + esc(o ? o.student : '') + '</b>: fill in the enrolment details the parent would give at the counter. Nothing is enrolled yet – the student is enrolled automatically as soon as the parent pays through the link.</span></div><div class="step">');
+    if (w.step === 3 && w.fee) {
+      var c = calcFee(w.fee, w.disc, w.mode === 'new'), sch = buildSched(termById(w.term), c.total, TODAY), cur = w.fee.cur;
+      var plan = w.linkPlan || (sch.length > 1 ? 'first' : 'full');
+      var opt = function (v, label, sub) {
+        return '<label style="display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer;margin-bottom:8px"><input type="radio" name="plan" value="' + v + '" data-change="wizPlan"' + (plan === v ? ' checked' : '') + ' style="margin-top:3px"><span><b>' + label + '</b><br><span class="muted xs">' + sub + '</span></span></label>';
+      };
+      var form = '<form id="wf3" data-submit="wizLink"><div class="sec" style="margin-top:0">What the parent pays through the link</div>' +
+        (sch.length > 1 ? opt('first', 'First instalment – ' + money(sch[0].amt, cur), esc(termName(w.term)) + ': the remaining ' + (sch.length - 1) + ' instalment' + (sch.length > 2 ? 's follow' : ' follows') + ' the payment schedule below') : '') +
+        opt('full', 'Full fee – ' + money(c.total, cur), 'Everything in one payment') +
+        '<p class="muted xs">To switch between full payment and instalments, go Back and pick the payment term.</p></form>';
+      h = h.replace(/<form id="wf3" data-submit="wizFinish">[\s\S]*?<\/form>(<div class="banner" style="margin-top:12px">[\s\S]*?<\/div>)?/, function () {
+        return form + '<div class="banner" style="margin-top:12px">' + ic('check') + '<span>Send the link to the parent by WhatsApp or e-mail. When they pay, the student is enrolled, the LMS enrol call starts and the receipt is sent – no one needs to finish the enrolment by hand.</span></div>';
+      });
+      h = h.replace('>Complete enrolment</button>', '>' + ic('link') + ' Create payment link</button>');
+    }
+    return h;
+  };
+  CHG.wizPlan = function (el) { if (S.wiz) S.wiz.linkPlan = el.value; };
+  var _wizFinish = SUB.wizFinish;
+  SUB.wizLink = function (d, f) {
+    var w = S.wiz;
+    if (!w || !w.viaLink || !w.fee) return;
+    var oppId = w.opp;
+    var c = calcFee(w.fee, w.disc, w.mode === 'new'), sch = buildSched(termById(w.term), c.total, TODAY);
+    var plan = d.plan || w.linkPlan || (sch.length > 1 ? 'first' : 'full');
+    var amount = plan === 'full' ? c.total : sch[0].amt;
+    var btn = document.querySelector('[data-act="wizNext"]');
+    if (btn) btn.disabled = true;
+    flush().then(function () {
+      // Build the enrolment exactly as "Complete enrolment" would, take it as the link's form, then put the screen data back
+      var bak = {};
+      Object.keys(COLL).forEach(function (k) { bak[k] = JSON.stringify(S[k] || []); });
+      var keep = { go: window.go, runSync: window.runSync, toast: window.toast };
+      var changes = [];
+      try {
+        window.go = function () {}; window.runSync = function () {}; window.toast = function () {};
+        _wizFinish({ amt: '0', method: 'Cash', ref: '' }, f);
+        applyRemaps();
+        changes = diff(true).changes;
+      } finally {
+        window.go = keep.go; window.runSync = keep.runSync; window.toast = keep.toast;
+        Object.keys(COLL).forEach(function (k) { S[k] = JSON.parse(bak[k]); });
+        S.wiz = w;
+      }
+      if (!changes.some(function (x) { return x.coll === 'enr'; })) { if (btn) btn.disabled = false; toast('Check the enrolment details – the form is not complete', 'err'); return; }
+      return req('POST', '/opps/' + encodeURIComponent(oppId) + '/payment-link', { changes: changes, amount: amount }).then(function (r) {
+        if (r.oppDoc) mergeDocs([{ coll: 'opps', doc: r.oppDoc }]);
+        S.wiz = null; S.wizQ = '';
+        if (S.oppLinks) delete S.oppLinks[oppId];
+        go('opp', { id: oppId });
+        openModal('plink', { link: r });
+      });
+    }).catch(function (e) { if (btn) btn.disabled = false; toast(e.message, 'err'); });
+  };
+
   ACT.genReceipt = function (d) {
     var w = window.open('', '_blank');
     fetch(API + '/payments/' + encodeURIComponent(d.id) + '/receipt', { credentials: 'same-origin' }).then(function (r) { return r.text(); }).then(function (html) {
@@ -2081,8 +2110,457 @@
       '<button class="btn" data-act="payPdf" data-kind="receipt" data-id="' + esc(m.id) + '">' + ic('download') + ' Receipt PDF</button>' +
       '<button class="btn primary" data-act="genReceipt"');
     x.foot = x.foot.replace('Generate receipt (simulated)', 'Open printable receipt');
+    var rp = S.pay.find(function (y) { return y.id === m.id; });
+    if (rp && rp.status === 'Cancelled') x.body = '<div class="banner" style="background:var(--crit-bg,#fdecec);color:var(--crit,#b42318);display:block;margin-bottom:10px"><b>Cancelled</b> on ' + esc(fDT(rp.cancel.at)) + ' by ' + esc(rp.cancel.by) + ' · with the parent’s knowledge: ' + esc(rp.cancel.parentAware) + '<br>Reason: ' + esc(rp.cancel.reason) + '</div>' + x.body;
+    else if (rp && canCancelPay()) x.foot = '<button class="btn danger" data-act="payCancel" data-id="' + esc(m.id) + '" style="margin-right:auto">Cancel transaction</button>' + x.foot;
     x.body = x.body.replace('<span class="sim">Simulated</span>', '').replace('Prototype receipt – not a valid tax document. Finance linkage to ERPNext Accounts is pending integration.', 'Receipt numbers are issued by the server. Payments are posted to ERPNext Accounts as Payment Entries.');
     return x;
+  };
+
+  // ---------------- Communication remarks (lead → Communications)
+  // Every call, WhatsApp and e-mail with the family is listed with its date and time. Remarks can be written or
+  // changed until 24 hours after the communication (the server enforces the window). After a user's own call or
+  // message, the remarks window opens by itself.
+  var REMARK_HOURS = 24;
+  function canRemark() { return can('leads', 'E') || can('leads', 'C'); }
+  function remarkLeft(r) { return REMARK_HOURS * 36e5 - (Date.now() - Date.parse(r.at)); }
+  function timeLeft(ms) { var h = Math.floor(ms / 36e5), m = Math.floor((ms % 36e5) / 6e4); return h ? h + ' h ' + m + ' min' : m + ' min'; }
+  function commType(kind, r) {
+    if (kind === 'call') return ic('phone') + ' Call · ' + (r.dir === 'Incoming' ? 'incoming' : 'outgoing');
+    return ic(r.ch === 'WhatsApp' ? 'chat' : 'mail') + ' ' + (r.ch === 'Email' ? 'E-mail' : esc(r.ch)) + ' · ' + (r.inbound ? 'received' : 'sent');
+  }
+  function clip(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; }
+  function commDetail(kind, r, l) {
+    if (kind === 'call') {
+      return esc(r.status || '') + (r.outcome ? ' · ' + esc(r.outcome) : '') + ' · ' + (+r.dur || 0) + ' min' +
+        (r.notes ? '<div class="muted xs">' + esc(clip(r.notes, 200)) + '</div>' : '') + (r.rec ? '<div class="xs"><a href="' + esc(r.rec) + '" target="_blank" rel="noopener">Recording</a></div>' : '');
+    }
+    return ((r.subj || r.subject) ? '<b class="sm">' + esc(r.subj || r.subject) + '</b>' : '') + '<div title="' + esc(clip(r.text, 1500)) + '">' + esc(clip(r.text, 240)) + '</div>' +
+      (l && window.mailReplyBtn ? window.mailReplyBtn('lead', l.id, r) : '');
+  }
+  window.remarkCell = function (kind, r) {
+    var left = remarkLeft(r), open = left > 0, mine = canRemark();
+    var btn = function (label, primary) { return '<button class="btn sm' + (primary ? ' primary' : '') + '" data-act="remarkOpen" data-k="' + kind + '" data-id="' + esc(r.id) + '">' + label + '</button>'; };
+    if (r.remark) {
+      return '<div class="sm" style="white-space:pre-wrap;min-width:180px">' + esc(r.remark.text) + '</div><div class="muted xs">' + esc(r.remark.by) + ' · ' + fDT(r.remark.at) + (r.remark.edited ? ' · edited' : '') + '</div>' +
+        (open && mine ? '<div style="margin-top:4px">' + btn('Edit') + '</div>' : '');
+    }
+    if (open) return mine ? btn('Add remarks', true) + '<div class="muted xs" style="margin-top:3px">' + timeLeft(left) + ' left</div>' : '<span class="muted xs">Awaiting remarks</span>';
+    return '<span class="faint xs">No remarks – 24-hour window closed</span>';
+  };
+  function leadCommRows(l) {
+    return (S.calls || []).filter(function (c) { return c.lead === l.id; }).map(function (c) { return { kind: 'call', r: c }; })
+      .concat((S.comms || []).filter(function (c) { return c.lead === l.id; }).map(function (c) { return { kind: 'comm', r: c }; }))
+      .sort(function (a, b) { return new Date(b.r.at) - new Date(a.r.at); });
+  }
+  window.commTable = function (l) {
+    var rows = leadCommRows(l);
+    var due = rows.filter(function (x) { return !x.r.remark && remarkLeft(x.r) > 0; }).length;
+    var by = function (x) {
+      if (x.kind === 'call') return esc(staffName(x.r.by) || x.r.by || '—');
+      return bdg(x.r.status, String(x.r.status).indexOf('Blocked') === 0 ? 'crit' : x.r.inbound ? 'ok' : 'info') + '<div class="muted xs">' + esc(x.r.by || '') + '</div>';
+    };
+    return (due && canRemark() ? '<div class="banner" style="margin:12px 14px 0">' + ic('alert') + '<span><b>' + due + '</b> communication' + (due === 1 ? '' : 's') + ' still need' + (due === 1 ? 's' : '') + ' remarks. Remarks can be written up to 24 hours after each call or message.</span></div>' : '') +
+      table('lcommAll', [
+        { h: 'Date & time', f: function (x) { return fDT(x.r.at) + '<div class="muted xs">' + rel(x.r.at) + '</div>'; } },
+        { h: 'Type', f: function (x) { return '<span style="white-space:nowrap">' + commType(x.kind, x.r) + '</span>'; } },
+        { h: 'Details', f: function (x) { return commDetail(x.kind, x.r, l); } },
+        { h: 'Status / by', f: by },
+        { h: 'Remarks', f: function (x) { return window.remarkCell(x.kind, x.r); } },
+      ], rows, { all: 1, et: 'No communication yet', ed: 'Calls, WhatsApp messages and e-mails with this family appear here.' });
+  };
+  function findRec(k, id) { return ((k === 'call' ? S.calls : S.comms) || []).find(function (x) { return x.id === id; }); }
+  ACT.remarkOpen = function (d) { openModal('remark', { k: d.k, id: d.id }); };
+  MODALS.remark = function (m) {
+    var r = findRec(m.k, m.id);
+    if (!r) return { title: 'Communication not found', body: '' };
+    var l = leadById(r.lead), left = remarkLeft(r), until = new Date(Date.parse(r.at) + REMARK_HOURS * 36e5).toISOString();
+    return {
+      title: (r.remark ? 'Edit remarks' : 'Add remarks') + (l ? ' – ' + l.student : ''), form: 'remark', size: 'sm2',
+      body: '<input type="hidden" name="k" value="' + esc(m.k) + '"><input type="hidden" name="id" value="' + esc(m.id) + '">' +
+        (m.auto ? '<p class="sm" style="margin-top:0">Add your remarks on this ' + (m.k === 'call' ? 'call' : 'message') + ' while it is fresh.</p>' : '') +
+        '<div class="card" style="margin-bottom:12px"><div class="bd">' + dl([['Communication', commType(m.k, r)], ['When', fDT(r.at)], ['With', l ? esc(l.parent) + ' · <span class="mono">' + esc(l.phone) + '</span>' : '—'], ['Details', commDetail(m.k, r, null)]]) + '</div></div>' +
+        (left <= 0 ? '<div class="banner" style="background:var(--crit-bg);color:var(--crit)">The 24-hour window for remarks on this communication has closed.</div>' :
+          '<div class="f"><label for="rmText">Remarks *</label><textarea id="rmText" name="text" rows="5" maxlength="1000" placeholder="What was discussed, what the parent said, the next step…">' + esc(r.remark ? r.remark.text : '') + '</textarea></div>' +
+          '<p class="muted xs">Remarks can be written or changed until <b>' + fDT(until) + '</b> (24 hours after the communication).</p>'),
+      foot: '<button class="btn" data-act="closeModal">' + (m.auto ? 'Later' : 'Cancel') + '</button>' + (left > 0 ? '<button class="btn primary" type="submit" form="mform">Save remarks</button>' : ''),
+    };
+  };
+  SUB.remark = function (d) {
+    var r = findRec(d.k, d.id);
+    if (!r) return;
+    var text = String(d.text || '').trim();
+    if (text.length < 3) { toast('Write the remarks first (at least 3 characters)', 'err'); return; }
+    var btn = document.querySelector('.modal button[type=submit]');
+    if (btn) btn.disabled = true;
+    flush().then(function () { return req('POST', '/leads/' + encodeURIComponent(r.lead) + '/remarks', { kind: d.k, rec: d.id, text: text }); })
+      .then(function (res) {
+        mergeDocs([{ coll: d.k === 'call' ? 'calls' : 'comms', doc: res.rec }, { coll: 'leads', doc: res.lead }]);
+        closeModal();
+        toast('Remarks saved', 'ok');
+        render();
+      })
+      .catch(function (e) { if (btn) btn.disabled = false; toast(e.message, 'err'); });
+  };
+  // After the user's own call or message, open the remarks window (once per record). Calls through Exotel arrive with
+  // the next refresh; a bulk e-mail is not a conversation, so its copies are not prompted one by one.
+  var RM_SINCE = Date.now() - 2 * 60 * 1000, rmSeen = {};
+  try { JSON.parse(LS.get('lof_rm_prompted') || '[]').forEach(function (k) { rmSeen[k] = 1; }); } catch (e) { /* ignore */ }
+  function rmMark(k) { rmSeen[k] = 1; try { LS.set('lof_rm_prompted', JSON.stringify(Object.keys(rmSeen).slice(-300))); } catch (e) { /* ignore */ } }
+  function remarkPrompt() {
+    if (!S || !S.user || S.modal || userIsTyping() || !canRemark() || document.visibilityState !== 'visible') return;
+    var u = me();
+    if (!u) return;
+    var fresh = function (r) { return !r.remark && Date.parse(r.at) >= RM_SINCE && remarkLeft(r) > 0; };
+    var cands = [];
+    (S.calls || []).forEach(function (c) { if (c.by === u.id && fresh(c) && !rmSeen['call:' + c.id]) cands.push({ k: 'call', r: c }); });
+    var groups = {};
+    (S.comms || []).forEach(function (c) {
+      if (c.inbound || c.by !== u.name || !fresh(c) || rmSeen['comm:' + c.id]) return;
+      var g = c.ch + '|' + (c.subj || '') + '|' + String(c.at).slice(0, 16);
+      (groups[g] = groups[g] || []).push(c);
+    });
+    Object.keys(groups).forEach(function (g) {
+      if (groups[g].length > 1) groups[g].forEach(function (c) { rmMark('comm:' + c.id); });
+      else cands.push({ k: 'comm', r: groups[g][0] });
+    });
+    if (!cands.length) return;
+    cands.sort(function (a, b) { return new Date(a.r.at) - new Date(b.r.at); });
+    var x = cands[0];
+    rmMark(x.k + ':' + x.r.id);
+    openModal('remark', { k: x.k, id: x.r.id, auto: true });
+  }
+  setInterval(function () { try { remarkPrompt(); } catch (e) { /* never block the screens */ } }, 2500);
+
+  // ---------------- Bulk lead import (Leads → Import leads)
+  // Excel (.xlsx) or CSV, one lead per row. The file is read here (no library: .xlsx is a zip of XML), every row is
+  // checked on the server first, and only then created – with the normal routing, duplicate check and first-call task.
+  var IMP_COLS = [
+    ['student', 'Student name *', ['studentname', 'student', 'childname', 'child', 'name', 'studentfullname']],
+    ['parent', 'Parent name *', ['parentname', 'parent', 'guardianname', 'guardian', 'fathername', 'mothername', 'parentguardian', 'parentguardianname']],
+    ['phone', 'Mobile *', ['mobile', 'phone', 'mobilenumber', 'phonenumber', 'contact', 'contactnumber', 'parentmobile', 'mobileno', 'phoneno', 'whatsappnumber', 'parentphone']],
+    ['email', 'E-mail', ['email', 'emailaddress', 'parentemail', 'mail', 'emailid']],
+    ['branch', 'Branch', ['branch', 'centre', 'center', 'location']],
+    ['prog', 'Programme', ['programme', 'program', 'course', 'interestedprogramme', 'interestedin']],
+    ['cat', 'Category', ['category', 'leadcategory']],
+    ['dob', 'Date of birth', ['dateofbirth', 'dob', 'birthdate', 'birthday']],
+    ['age', 'Age', ['age']],
+    ['school', 'School', ['school', 'schoolname']],
+    ['grade', 'Grade', ['grade', 'class', 'year', 'standard']],
+    ['curr', 'Curriculum', ['curriculum', 'board', 'syllabus']],
+    ['src', 'Source', ['source', 'leadsource']],
+    ['camp', 'Campaign', ['campaign', 'event']],
+    ['cslr', 'Counsellor', ['counsellor', 'counselor', 'assignedto', 'owner']],
+    ['notes', 'Notes', ['notes', 'remarks', 'comments', 'note']],
+    ['wa', 'WhatsApp consent', ['whatsappconsent', 'waconsent', 'whatsappoptin']],
+    ['em', 'E-mail consent', ['emailconsent', 'emailoptin']],
+  ];
+  var hdrKey = function (h) { return String(h == null ? '' : h).toLowerCase().replace(/[^a-z]/g, ''); };
+  function xmlEsc(v) { return String(v).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function saveBlob(blob, name) {
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+
+  // --- .xlsx reader (first sheet)
+  function readXlsx(buf) {
+    var dv = new DataView(buf), u8 = new Uint8Array(buf), td = new TextDecoder();
+    var eocd = buf.byteLength - 22;
+    while (eocd >= 0 && dv.getUint32(eocd, true) !== 0x06054b50) eocd--;
+    if (eocd < 0) return Promise.reject(new Error('This is not an Excel .xlsx file – save it as .xlsx or CSV'));
+    var n = dv.getUint16(eocd + 10, true), p = dv.getUint32(eocd + 16, true), files = {};
+    for (var i = 0; i < n; i++) {
+      if (dv.getUint32(p, true) !== 0x02014b50) break;
+      var nl = dv.getUint16(p + 28, true), el = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true);
+      files[td.decode(u8.subarray(p + 46, p + 46 + nl))] = { method: dv.getUint16(p + 10, true), size: dv.getUint32(p + 20, true), at: dv.getUint32(p + 42, true) };
+      p += 46 + nl + el + cl;
+    }
+    function text(name) {
+      var f = files[name];
+      if (!f) return Promise.resolve(null);
+      var start = f.at + 30 + dv.getUint16(f.at + 26, true) + dv.getUint16(f.at + 28, true), data = u8.slice(start, start + f.size);
+      if (f.method === 0) return Promise.resolve(td.decode(data));
+      if (f.method !== 8 || typeof DecompressionStream === 'undefined') return Promise.reject(new Error('This browser cannot read the file – save it as CSV and upload that'));
+      return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+    }
+    var parse = function (s) { return new DOMParser().parseFromString(s, 'application/xml'); };
+    var all = function (node, tag) { return Array.prototype.slice.call(node.getElementsByTagNameNS('*', tag)); };
+    return Promise.all([text('xl/workbook.xml'), text('xl/_rels/workbook.xml.rels'), text('xl/sharedStrings.xml')]).then(function (x) {
+      if (!x[0]) throw new Error('This is not an Excel .xlsx file – save it as .xlsx or CSV');
+      var sheet = all(parse(x[0]), 'sheet')[0];
+      var rid = sheet && (sheet.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id') || sheet.getAttribute('r:id'));
+      var rel = x[1] && all(parse(x[1]), 'Relationship').filter(function (r) { return r.getAttribute('Id') === rid; })[0];
+      var target = rel ? rel.getAttribute('Target').replace(/^\/?(xl\/)?/, '') : 'worksheets/sheet1.xml';
+      var shared = x[2] ? all(parse(x[2]), 'si').map(function (si) { return all(si, 't').map(function (t) { return t.textContent; }).join(''); }) : [];
+      return text('xl/' + target).then(function (s) {
+        if (!s) throw new Error('The first sheet of the workbook is empty');
+        var out = [];
+        all(parse(s), 'row').forEach(function (r) {
+          var rn = +r.getAttribute('r') || out.length + 1, cells = [];
+          all(r, 'c').forEach(function (c, k) {
+            var ref = c.getAttribute('r') || '', col = 0, m = ref.match(/^[A-Z]+/);
+            if (m) { for (var j = 0; j < m[0].length; j++) col = col * 26 + (m[0].charCodeAt(j) - 64); } else col = k + 1;
+            var t = c.getAttribute('t'), v = all(c, 'v')[0], val = '';
+            if (t === 's') val = shared[+(v ? v.textContent : -1)] || '';
+            else if (t === 'inlineStr') val = all(c, 't').map(function (x2) { return x2.textContent; }).join('');
+            else if (t === 'b') val = v && v.textContent === '1' ? 'Yes' : 'No';
+            else val = v ? v.textContent : '';
+            cells[col - 1] = val;
+          });
+          out.push({ n: rn, cells: cells });
+        });
+        return out;
+      });
+    });
+  }
+  // --- CSV reader (comma, semicolon or tab; quoted fields)
+  function readCsv(s) {
+    s = s.replace(/^﻿/, '');
+    var first = s.split(/\r?\n/)[0] || '', d = [',', ';', '\t'].sort(function (a, b) { return first.split(b).length - first.split(a).length; })[0];
+    var rows = [], row = [], f = '', q = false;
+    for (var i = 0; i < s.length; i++) {
+      var ch = s[i];
+      if (q) { if (ch === '"') { if (s[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += ch; }
+      else if (ch === '"') q = true;
+      else if (ch === d) { row.push(f); f = ''; }
+      else if (ch === '\n' || ch === '\r') { if (ch === '\r' && s[i + 1] === '\n') i++; row.push(f); rows.push(row); row = []; f = ''; }
+      else f += ch;
+    }
+    if (f || row.length) { row.push(f); rows.push(row); }
+    return rows.map(function (cells, k) { return { n: k + 1, cells: cells }; });
+  }
+  /** Sheet rows → lead rows (by header names), with Excel date numbers turned into dates. */
+  function sheetToLeads(rows) {
+    rows = rows.filter(function (r) { return r.cells.some(function (c) { return String(c == null ? '' : c).trim(); }); });
+    if (!rows.length) throw new Error('The sheet is empty');
+    var head = rows[0].cells.map(hdrKey), map = {}, unknown = [];
+    head.forEach(function (h, i) {
+      if (!h) return;
+      var col = IMP_COLS.filter(function (c) { return c[2].indexOf(h) >= 0; })[0];
+      if (col && map[col[0]] === undefined) map[col[0]] = i; else unknown.push(rows[0].cells[i]);
+    });
+    var missing = ['student', 'parent', 'phone'].filter(function (k) { return map[k] === undefined; });
+    if (missing.length) throw new Error('The first row must have the column names. Missing: ' + missing.map(function (k) { return IMP_COLS.filter(function (c) { return c[0] === k; })[0][1].replace(' *', ''); }).join(', ') + ' – download the template to see them');
+    var leads = rows.slice(1).map(function (r) {
+      var o = { row: r.n };
+      Object.keys(map).forEach(function (k) { var v = r.cells[map[k]]; o[k] = v == null ? '' : String(v).trim(); });
+      if (/^\d{4,6}(\.\d+)?$/.test(o.dob || '')) o.dob = new Date(Date.UTC(1899, 11, 30) + Math.floor(+o.dob) * 864e5).toISOString().slice(0, 10);
+      return o;
+    });
+    return { leads: leads, unknown: unknown };
+  }
+
+  // --- .xlsx template (stored zip, no compression)
+  function crc32(u8) {
+    var t = crc32.t || (crc32.t = (function () { var t2 = new Uint32Array(256); for (var n2 = 0; n2 < 256; n2++) { var c = n2; for (var k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t2[n2] = c >>> 0; } return t2; })());
+    var c2 = 0xffffffff;
+    for (var i = 0; i < u8.length; i++) c2 = t[(c2 ^ u8[i]) & 255] ^ (c2 >>> 8);
+    return (c2 ^ 0xffffffff) >>> 0;
+  }
+  function zipStore(files) {
+    var enc = new TextEncoder(), parts = [], cd = [], off = 0;
+    files.forEach(function (f) {
+      var nm = enc.encode(f.name), d = enc.encode(f.text), crc = crc32(d);
+      var lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(12, 0x21, true);
+      lh.setUint32(14, crc, true); lh.setUint32(18, d.length, true); lh.setUint32(22, d.length, true); lh.setUint16(26, nm.length, true);
+      parts.push(new Uint8Array(lh.buffer), nm, d);
+      var ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(14, 0x21, true);
+      ch.setUint32(16, crc, true); ch.setUint32(20, d.length, true); ch.setUint32(24, d.length, true); ch.setUint16(28, nm.length, true); ch.setUint32(42, off, true);
+      cd.push(new Uint8Array(ch.buffer), nm);
+      off += 30 + nm.length + d.length;
+    });
+    var size = cd.reduce(function (a, b) { return a + b.length; }, 0), e = new DataView(new ArrayBuffer(22));
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true); e.setUint32(12, size, true); e.setUint32(16, off, true);
+    return new Blob(parts.concat(cd, [new Uint8Array(e.buffer)]), { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+  function sheetXml(rows, widths) {
+    var L = function (i) { var s = ''; i++; while (i) { var m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>' +
+      widths.map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join('') + '</cols><sheetData>' +
+      rows.map(function (r, ri) { return '<row r="' + (ri + 1) + '">' + r.map(function (v, ci) { return v === '' || v == null ? '' : '<c r="' + L(ci) + (ri + 1) + '" t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(v) + '</t></is></c>'; }).join('') + '</row>'; }).join('') +
+      '</sheetData></worksheet>';
+  }
+  /** Workbook parts for the template (also used by the test of the reader). */
+  window.lofLeadTemplate = function () {
+    var brs = optBranches(), progs = (S.programs || []).filter(function (p) { return p.active !== false; });
+    var srcs = ((S.cfg && S.cfg.sources) || []).filter(function (s) { return s.en; }).map(function (s) { return s.n; });
+    var cs = (S.staff || []).filter(function (s) { return s.role === 'Counsellor' && s.status !== 'Inactive' && brs.some(function (b) { return b[0] === s.branch; }); });
+    var cats = ['Hot', 'Warm', 'Cold'], yn = ['Yes', 'No'];
+    var lists = [['Branch', 'Programme', 'Category', 'Source', 'Counsellor (branch)', 'Consent']];
+    for (var i = 0; i < Math.max(brs.length, progs.length, cats.length, srcs.length, cs.length, 2); i++) {
+      lists.push([brs[i] ? brs[i][1] : '', progs[i] ? progs[i].name : '', cats[i] || '', srcs[i] || '', cs[i] ? cs[i].name + ' (' + branchName(cs[i].branch) + ')' : '', yn[i] || '']);
+    }
+    var notes = [['How to fill in the Leads sheet'], ['One lead per row. Keep the first row (column names) as it is.'],
+      ['Required: Student name, Parent name, Mobile (with country code, e.g. +971 50 123 4567).'],
+      ['Branch, Programme, Source and Category can be left empty – the values chosen in the import window are used.'],
+      ['Date of birth as 31/05/2014. Consent columns: Yes or No (empty = Yes).'],
+      ['Counsellor is optional – leads without one are assigned by the routing rules. Write the name only, e.g. Priya Nair.'],
+      ['Valid names are on the "Valid values" sheet. At most 500 rows per file.']];
+    var M = 'http://schemas.openxmlformats.org/', ws = M + 'officeDocument/2006/relationships/worksheet', sh = 'application/vnd.openxmlformats-officedocument.spreadsheetml.';
+    return zipStore([
+      { name: '[Content_Types].xml', text: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="' + M + 'package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="' + sh + 'sheet.main+xml"/>' + [1, 2, 3].map(function (k) { return '<Override PartName="/xl/worksheets/sheet' + k + '.xml" ContentType="' + sh + 'worksheet+xml"/>'; }).join('') + '</Types>' },
+      { name: '_rels/.rels', text: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="' + M + 'package/2006/relationships"><Relationship Id="rId1" Type="' + M + 'officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+      { name: 'xl/workbook.xml', text: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="' + M + 'spreadsheetml/2006/main" xmlns:r="' + M + 'officeDocument/2006/relationships"><sheets><sheet name="Leads" sheetId="1" r:id="rId1"/><sheet name="Valid values" sheetId="2" r:id="rId2"/><sheet name="How to fill" sheetId="3" r:id="rId3"/></sheets></workbook>' },
+      { name: 'xl/_rels/workbook.xml.rels', text: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="' + M + 'package/2006/relationships">' + [1, 2, 3].map(function (k) { return '<Relationship Id="rId' + k + '" Type="' + ws + '" Target="worksheets/sheet' + k + '.xml"/>'; }).join('') + '</Relationships>' },
+      { name: 'xl/worksheets/sheet1.xml', text: sheetXml([IMP_COLS.map(function (c) { return c[1]; })], IMP_COLS.map(function (c) { return Math.max(14, c[1].length + 4); })) },
+      { name: 'xl/worksheets/sheet2.xml', text: sheetXml(lists, [22, 28, 12, 14, 34, 10]) },
+      { name: 'xl/worksheets/sheet3.xml', text: sheetXml(notes, [110]) },
+    ]);
+  };
+  window.lofReadSheet = function (buf, isCsv) { return (isCsv ? Promise.resolve(readCsv(new TextDecoder().decode(buf))) : readXlsx(buf)).then(sheetToLeads); };
+  ACT.impTemplate = function () { saveBlob(window.lofLeadTemplate(), 'lead-import-template.xlsx'); };
+
+  // --- the import window: choose file → check every row → import
+  function impState() {
+    if (!S.imp) {
+      var brs = optBranches();
+      S.imp = { opts: { branch: brs.length === 1 ? brs[0][0] : '', prog: '', src: 'Manual', cat: 'Warm', send: false, dups: false } };
+    }
+    return S.imp;
+  }
+  ACT.openLeadImport = function () { S.imp = null; impState(); openModal('leadImport', { step: 'pick' }); };
+  MODALS.leadImport = function (m) {
+    var st = impState(), o = st.opts;
+    var sel = function (k, label, v, opts, blank) {
+      return '<div class="f"><label for="imp_' + k + '">' + label + '</label><select id="imp_' + k + '" data-change="impOpt" data-k="' + k + '">' + (blank ? '<option value="">' + esc(blank) + '</option>' : '') +
+        opts.map(function (x) { return '<option value="' + esc(x[0]) + '"' + (x[0] === v ? ' selected' : '') + '>' + esc(x[1]) + '</option>'; }).join('') + '</select></div>';
+    };
+    if (m.step === 'check' || m.step === 'done') {
+      var res = st.res || { results: [], summary: {} }, s = res.summary, done = m.step === 'done';
+      // problem rows first, so a few errors are not buried under hundreds of ready rows
+      var ord = { error: 0, duplicate: 1, ready: 2, created: 3 };
+      var show = (done ? res.results.filter(function (r) { return r.status !== 'created'; }) : res.results.slice()).sort(function (a, b) { return (ord[a.status] - ord[b.status]) || (a.row - b.row); });
+      var badge = function (r) {
+        var k = { ready: ['Ready', 'ok'], created: ['Created', 'ok'], duplicate: [o.dups && !done ? 'Duplicate – will import' : 'Duplicate – skipped', 'warn'], error: ['Error', 'crit'] }[r.status] || [r.status, ''];
+        return bdg(k[0], k[1]) + ' <span class="muted xs">' + esc(r.message) + '</span>';
+      };
+      var tbl = show.length ? '<div style="max-height:52vh;overflow:auto;border:1px solid var(--line);border-radius:8px"><table class="tbl"><thead><tr><th>Row</th><th>Student</th><th>Parent</th><th>Mobile</th><th>Branch</th><th>Programme</th><th>Check</th></tr></thead><tbody>' +
+        show.map(function (r) { return '<tr><td class="mono">' + r.row + '</td><td>' + esc(r.student) + '</td><td>' + esc(r.parent) + '</td><td class="mono xs">' + esc(r.phone) + '</td><td>' + esc(r.branch) + '</td><td>' + esc(r.prog) + '</td><td>' + badge(r) + '</td></tr>'; }).join('') + '</tbody></table></div>' : '';
+      var head = done
+        ? '<div class="banner" style="background:var(--ok-bg);color:var(--ok);display:block;margin-bottom:12px"><b>' + s.created + ' lead' + (s.created === 1 ? '' : 's') + ' created</b> from ' + esc(st.file) + '.' + (show.length ? ' The rows below were not imported – fix them in the sheet and import just those rows again.' : '') + '</div>'
+        : '<p class="sm" style="margin-top:0"><b>' + esc(st.file) + '</b>: ' + s.total + ' row' + (s.total === 1 ? '' : 's') + ' – <b>' + s.ready + ' ready</b>' + (s.duplicates ? ', ' + s.duplicates + ' already in the CRM (' + (o.dups ? 'imported anyway' : 'skipped') + ')' : '') + (s.errors ? ', <b style="color:var(--crit)">' + s.errors + ' with errors</b> (skipped)' : '') + '. Nothing has been created yet.</p>' +
+          (st.unknown && st.unknown.length ? '<p class="muted xs">Columns not used: ' + esc(st.unknown.join(', ')) + '</p>' : '');
+      return {
+        title: done ? 'Import finished' : 'Check the leads before importing', size: 'lg', body: head + tbl,
+        foot: done
+          ? (show.length ? '<button class="btn" data-act="impErrCsv">' + ic('download') + ' Rows not imported (CSV)</button>' : '') + '<button class="btn primary" data-act="impClose">Close</button>'
+          : '<button class="btn" data-act="impBack">Back</button><button class="btn primary" data-act="impGo"' + (s.ready ? '' : ' disabled') + '>Import ' + s.ready + ' lead' + (s.ready === 1 ? '' : 's') + '</button>',
+      };
+    }
+    var srcs = ((S.cfg && S.cfg.sources) || []).filter(function (x) { return x.en; }).map(function (x) { return [x.n, x.n]; });
+    var progs = (S.programs || []).filter(function (p) { return p.active !== false; }).map(function (p) { return [p.id, p.name]; });
+    return {
+      title: 'Import leads from Excel', size: 'lg',
+      body: '<p class="sm" style="margin-top:0">Upload an Excel (<b>.xlsx</b>) or <b>CSV</b> file with one lead per row – up to 500 at a time. <b>Student name</b>, <b>Parent name</b> and <b>Mobile</b> are required. Every row is checked first; nothing is created until you confirm.</p>' +
+        '<p><button class="btn" data-act="impTemplate">' + ic('download') + ' Download Excel template</button></p>' +
+        '<div class="sec">When a row leaves these empty, use</div><div class="fgrid">' +
+        sel('branch', 'Branch', o.branch, optBranches(), 'Must be in the sheet') + sel('prog', 'Programme', o.prog, progs, 'Must be in the sheet') +
+        sel('src', 'Source', o.src, srcs) + sel('cat', 'Category', o.cat, [['Hot', 'Hot'], ['Warm', 'Warm'], ['Cold', 'Cold']]) + '</div>' +
+        '<div class="f" style="margin-top:10px"><label style="display:flex;gap:8px;align-items:center;font-weight:400"><input type="checkbox" data-change="impOpt" data-k="send"' + (o.send ? ' checked' : '') + '> Send the automatic welcome WhatsApp / e-mail to these parents</label>' +
+        '<label style="display:flex;gap:8px;align-items:center;font-weight:400;margin-top:6px"><input type="checkbox" data-change="impOpt" data-k="dups"' + (o.dups ? ' checked' : '') + '> Also import rows whose mobile or e-mail is already in the CRM</label></div>' +
+        '<div class="f" style="margin-top:12px"><label for="impFile">Excel or CSV file</label><input type="file" id="impFile" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" data-change="impFile"></div>' +
+        (st.leads ? '<p class="muted xs">' + esc(st.file) + ' is loaded (' + st.leads.length + ' rows). <a href="#" data-act="impCheck">Check it again</a> with these settings, or choose another file.</p>' : ''),
+      foot: '<button class="btn" data-act="closeModal">Close</button>',
+    };
+  };
+  CHG.impOpt = function (el) {
+    var o = impState().opts, k = el.getAttribute('data-k');
+    o[k] = el.type === 'checkbox' ? el.checked : el.value;
+  };
+  CHG.impFile = function (el) {
+    var f = el.files && el.files[0], st = impState();
+    if (!f) return;
+    var isCsv = /\.csv$/i.test(f.name) || f.type === 'text/csv';
+    if (!isCsv && !/\.xlsx$/i.test(f.name)) { toast('Use an .xlsx or .csv file (older .xls files: open in Excel and save as .xlsx)', 'err'); el.value = ''; return; }
+    f.arrayBuffer().then(function (buf) { return window.lofReadSheet(buf, isCsv); }).then(function (x) {
+      if (!x.leads.length) throw new Error('The sheet has column names but no leads below them');
+      if (x.leads.length > 500) throw new Error('The sheet has ' + x.leads.length + ' rows – at most 500 per file, split it');
+      st.leads = x.leads; st.unknown = x.unknown; st.file = f.name;
+      ACT.impCheck();
+    }).catch(function (e) { el.value = ''; toast(e.message || 'The file could not be read', 'err'); });
+  };
+  function impBody(dry) {
+    var st = impState(), o = st.opts;
+    return { rows: st.leads, defaults: { branch: o.branch, prog: o.prog, src: o.src, cat: o.cat }, sendMessages: !!o.send, allowDuplicates: !!o.dups, dryRun: dry };
+  }
+  ACT.impCheck = function () {
+    var st = impState();
+    if (!st.leads) return;
+    req('POST', '/leads/import', impBody(true)).then(function (r) { st.res = r; openModal('leadImport', { step: 'check' }); }).catch(function (e) { toast(e.message, 'err'); });
+  };
+  ACT.impBack = function () { openModal('leadImport', { step: 'pick' }); };
+  ACT.impGo = function () {
+    var st = impState(), btn = document.querySelector('[data-act="impGo"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+    req('POST', '/leads/import', impBody(false)).then(function (r) {
+      st.res = r;
+      return reload(true).then(function () { openModal('leadImport', { step: 'done' }); });
+    }).catch(function (e) { if (btn) btn.disabled = false; toast(e.message, 'err'); });
+  };
+  ACT.impClose = function () { S.imp = null; closeModal(); go('leads'); };
+  ACT.impErrCsv = function () {
+    var st = impState(), q = function (v) { v = String(v == null ? '' : v); return /[",\n;]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var bad = st.res.results.filter(function (r) { return r.status !== 'created'; }), byRow = {};
+    st.leads.forEach(function (l) { byRow[l.row] = l; });
+    var lines = [IMP_COLS.map(function (c) { return c[1].replace(' *', ''); }).concat(['Problem'])].concat(bad.map(function (r) { var l = byRow[r.row] || {}; return IMP_COLS.map(function (c) { return l[c[0]] || ''; }).concat([r.message]); }));
+    saveBlob(new Blob(['﻿' + lines.map(function (l) { return l.map(q).join(','); }).join('\r\n')], { type: 'text/csv' }), 'leads-not-imported.csv');
+  };
+  var _leadsImp = PAGES.leads;
+  PAGES.leads = function (rt) {
+    var h = _leadsImp(rt);
+    return can('leads', 'C') ? h.replace('<button class="btn primary" data-act="openNewLead">', '<button class="btn" data-act="openLeadImport">' + ic('list') + ' Import leads</button><button class="btn primary" data-act="openNewLead">') : h;
+  };
+
+  // ---------------- Transaction cancellation
+  // A payment taken by mistake is cancelled, never deleted: two questions (parent's knowledge, reason), then a final
+  // "cannot be undone" confirmation. The receipt number stays, marked Cancelled; the amount leaves every total.
+  function canCancelPay() { return can('payments', 'C') || can('payments', 'E'); }
+  window.payCancelBtn = function (p) {
+    return p && p.status !== 'Cancelled' && canCancelPay() ? '<button class="btn sm danger" data-act="payCancel" data-id="' + esc(p.id) + '">Cancel payment</button>' : '';
+  };
+  ACT.payCancel = function (d) { closeModal(); openModal('payCancel', { id: d.id, step: 1 }); };
+  MODALS.payCancel = function (m) {
+    var p = S.pay.find(function (x) { return x.id === m.id; });
+    if (!p) return { title: 'Payment not found', body: '' };
+    var s = stuById(p.stu), who = s ? s.first + ' ' + s.last : p.stu;
+    var summary = '<div class="card" style="margin-bottom:12px"><div class="bd">' + dl([['Receipt', '<span class="mono">' + esc(p.rc) + '</span>'], ['Student', esc(who)], ['Amount', '<b>' + money(p.amt, p.cur) + '</b>'], ['Paid', esc(fDT(p.at)) + ' · ' + esc(p.method) + (p.ref && p.ref !== '—' ? ' · ' + esc(p.ref) : '')], ['Enrolment', '<span class="mono">' + esc(p.enr) + '</span>']]) + '</div></div>';
+    if (m.step === 2) {
+      return {
+        title: 'Cancel this transaction?', size: 'sm2',
+        body: summary + '<div class="banner" style="background:var(--crit-bg,#fdecec);color:var(--crit,#b42318);display:block"><b>This cannot be undone.</b> Once cancelled, the transaction cannot be restored. Receipt <span class="mono">' + esc(p.rc) + '</span> stays in the records marked Cancelled, and ' + money(p.amt, p.cur) + ' is removed from the paid amount and from all totals.</div>' +
+          '<p class="sm" style="margin-top:10px">With the parent’s knowledge: <b>' + esc(m.aware) + '</b><br>Reason: ' + esc(m.reason) + '</p>',
+        foot: '<button class="btn" data-act="closeModal">Don’t cancel</button><button class="btn danger" data-act="payCancelGo">OK, cancel the transaction</button>',
+      };
+    }
+    var radio = function (v) { return '<label style="display:inline-flex;gap:6px;align-items:center;margin-right:18px"><input type="radio" name="aware" value="' + v + '"' + (m.aware === v ? ' checked' : '') + '> ' + v + '</label>'; };
+    return {
+      title: 'Cancel transaction ' + p.rc, form: 'payCancel', ok: 'Continue', danger: 1, size: 'sm2',
+      foot: '<button class="btn" data-act="closeModal">Keep the transaction</button><button class="btn danger" type="submit" form="mform">Continue</button>',
+      body: summary + '<input type="hidden" name="id" value="' + esc(p.id) + '">' +
+        '<div class="f"><label>1. Is this transaction being cancelled with the parent’s knowledge? *</label><div style="padding:6px 0">' + radio('Yes') + radio('No') + '</div></div>' +
+        '<div class="f"><label for="pcReason">2. Reason for the cancellation *</label><textarea id="pcReason" name="reason" rows="4" maxlength="500" placeholder="e.g. Wrong course selected – parent wanted Robotics, not AI">' + esc(m.reason || '') + '</textarea></div>' +
+        '<p class="muted xs">Refunds are handled separately.</p>',
+    };
+  };
+  SUB.payCancel = function (d) {
+    var reason = String(d.reason || '').replace(/\s+/g, ' ').trim();
+    if (d.aware !== 'Yes' && d.aware !== 'No') { toast('Answer question 1: is the parent aware of the cancellation?', 'err'); return; }
+    if (reason.length < 10) { toast('Describe the reason for the cancellation (at least 10 characters)', 'err'); return; }
+    openModal('payCancel', { id: d.id, step: 2, aware: d.aware, reason: reason });
+  };
+  ACT.payCancelGo = function () {
+    var m = S.modal || {};
+    var btn = document.querySelector('[data-act="payCancelGo"]');
+    if (btn) btn.disabled = true;
+    req('POST', '/payments/' + encodeURIComponent(m.id) + '/cancel', { parentAware: m.aware, reason: m.reason, confirm: true }).then(function (r) {
+      mergeDocs([{ coll: 'pay', doc: r.payment }].concat(r.enrollment ? [{ coll: 'enr', doc: r.enrollment }] : []));
+      closeModal();
+      toast('Transaction ' + r.payment.rc + ' cancelled', 'ok');
+      render();
+    }).catch(function (e) { if (btn) btn.disabled = false; toast(e.message, 'err'); });
   };
 
   // LMS monitor + integration settings

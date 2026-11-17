@@ -67,7 +67,8 @@ const HISTORY_KEYS = ['events', 'assign', 'hist', 'comm', 'testimonials', 'docs'
 const QUIET_KEYS = ['last', 'nextFU', 'events', 'assign', 'hist', 'comm'];
 const WRITE_ORDER = ['branch', 'program', 'fee', 'discount', 'staff', 'lead', 'opp', 'approval', 'student', 'enrollment', 'payment', 'moodle_sync', 'refund', 'task', 'call', 'comm', 'notification', 'audit'];
 
-export async function applySync(env: Env, repo: Repo, user: User, perms: any, changes: Change[], settings: SettingChange[] = []) {
+/** opts.dryRun: run every check and return the records that would be written, without saving anything. */
+export async function applySync(env: Env, repo: Repo, user: User, perms: any, changes: Change[], settings: SettingChange[] = [], opts: { dryRun?: boolean } = {}) {
   const P = (res: string, cap: string) => can(perms, user, res, cap);
   const inScope = (b: unknown) => typeof b === 'string' && user.scope.includes(b);
   const rejected: Rejection[] = [];
@@ -558,7 +559,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         if (!P('payments', 'C') && !atEnrolment) { reject(c, `${user.role} cannot record payments`); break; }
         if (!e || !inScope(e.branch) || e.status === 'Withdrawn') { reject(c, 'Enrolment not found, withdrawn or outside your branch access'); break; }
         const amt = r2(num(d.amt));
-        const dbPaid = isNew('enr', d.enr) ? 0 : (await repo.many<any>('payment', 'ref1=?', [d.enr])).reduce((a, p) => a + p.amt, 0);
+        const dbPaid = isNew('enr', d.enr) ? 0 : (await repo.many<any>('payment', 'ref1=?', [d.enr])).filter((p) => p.status !== 'Cancelled').reduce((a, p) => a + p.amt, 0);
         const batchPaid = receiptFor.filter((p) => p.enr === d.enr).reduce((a, p) => a + p.amt, 0);
         const outstanding = r2((isNew('enr', d.enr) ? effDoc('enr', d.enr)?.total : e.total) - dbPaid - batchPaid);
         if (!(amt > 0) || amt > outstanding + 0.005) { reject(c, `Amount must be between 0 and the outstanding ${money(outstanding, e.cur)}`); break; }
@@ -714,6 +715,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   }
 
   if (rejected.length) return { ok: false as const, rejected };
+  if (opts.dryRun) return { ok: true as const, dryRun: true as const, docs: writes.map((w) => ({ coll: w.coll, doc: w.doc })), notices: [], jobs: [] as Job[], settings: [] as string[] };
 
   if (repo.isTest) for (const w of writes) if (!w.doc.__delete) w.doc.test = true; // Testing console records
   for (const p of receiptFor) p.rc = p.test ? `RC-TEST-${p.id}` : `RC-${p.branch}-26-${String(await repo.next('rc_' + p.branch)).padStart(4, '0')}`;

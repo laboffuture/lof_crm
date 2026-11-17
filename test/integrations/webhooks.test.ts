@@ -148,7 +148,8 @@ describe('payment gateways', () => {
       return { json: { order: { ref: 'TELRREF1', status: { code: 3, text: 'Paid' }, amount: '1260.00', currency: 'AED', transaction: { ref: 'TXN9' } } } };
     }]]);
     const l = await link('EN-26-0002');
-    expect(l.url).toContain('secure.telr.com');
+    expect(l.url).toContain(`/webhooks/pay/l/${l.id}`); // parents get the CRM's link page, which forwards to Telr
+    expect((await t.sql<any>('SELECT url FROM payment_links WHERE id=?', l.id))[0].url).toContain('secure.telr.com');
     await t.call('POST', '/webhooks/telr', { raw: `tran_cartid=${l.id}&tran_status=A&tran_ref=forged`, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
     expect(checks).toBe(1);
     const pays = (await t.sql<any>("SELECT data FROM docs WHERE type='payment' AND ref1='EN-26-0002'")).map((x) => JSON.parse(x.data));

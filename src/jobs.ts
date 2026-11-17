@@ -114,14 +114,21 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
   const pays = await repo.many<any>('payment', "json_extract(data,'$.erp.error') IS NOT NULL");
   for (const p of pays) if ((p.erp.attempts || 0) < 5) jobs.push({ kind: 'erp_payment', id: p.id });
 
-  // Telr reconciliation (Telr's transaction advice is optional, so poll open orders)
-  const links = await env.DB.prepare("SELECT * FROM payment_links WHERE status='created' AND provider='telr' AND created_at > ?")
+  // Links past their 24 hours stop working (reminder links have no time limit – the next reminder replaces them)
+  await env.DB.prepare("UPDATE payment_links SET status='expired' WHERE status='created' AND expires_at IS NOT NULL AND expires_at < ?").bind(nowIso()).run();
+
+  // Telr reconciliation (Telr's transaction advice is optional, so poll open orders – and ones closed on our side
+  // in the last days, in case the parent paid at Telr just before the link expired or was replaced)
+  const links = await env.DB.prepare("SELECT * FROM payment_links WHERE status IN ('created','expired','replaced') AND provider='telr' AND created_at > ?")
     .bind(new Date(now - 3 * 864e5).toISOString()).all<any>();
   for (const link of links.results || []) {
     try {
       const st = await telrCheck({ env, mode: modeFor(env, cfg, 'telr') }, link.provider_ref);
-      if (st.paid) await settleLink(env, repo, link.id, { amount: st.amount, txnRef: st.txnRef, method: 'Card' });
-      else if (st.final) await env.DB.prepare('UPDATE payment_links SET status=? WHERE id=?').bind(st.status, link.id).run();
+      if (st.paid) {
+        const r: any = await settleLink(env, repo, link.id, { amount: st.amount, txnRef: st.txnRef, method: 'Card' });
+        jobs.push(...(r.jobs || []), ...(r.paymentId ? [{ kind: 'erp_payment' as const, id: r.paymentId }] : []));
+      }
+      else if (st.final && link.status === 'created') await env.DB.prepare("UPDATE payment_links SET status=? WHERE id=? AND status='created'").bind(st.status, link.id).run();
     } catch (e) { console.error('telr reconcile', link.id, e); }
   }
 

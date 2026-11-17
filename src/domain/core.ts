@@ -135,7 +135,8 @@ export interface NewLeadInput {
   wa?: boolean; em?: boolean; notes?: string; cslr?: string; enq?: string; external?: Record<string, unknown>;
 }
 
-export async function createLead(repo: Repo, input: NewLeadInput, by = 'System') {
+/** opts.quiet: no per-lead notification (bulk import sends one summary); opts.noAutoMessages: no automatic welcome WhatsApp / e-mail. */
+export async function createLead(repo: Repo, input: NewLeadInput, by = 'System', opts: { quiet?: boolean; noAutoMessages?: boolean } = {}) {
   const cfg = await repo.setting<any>('cfg');
   const branch = await repo.get<any>('branch', input.branch);
   if (!branch) throw new Error(`Unknown branch ${input.branch}`);
@@ -181,7 +182,7 @@ export async function createLead(repo: Repo, input: NewLeadInput, by = 'System')
   const queuedComms: string[] = [];
   for (const [tid, key] of [['T1', 'wa'], ['T2', 'wa'], ['T3', 'em']] as const) {
     const t = (cfg.comms || []).find((x: any) => x.id === tid);
-    if (!t || !t.auto) continue;
+    if (!t || !t.auto || opts.noAutoMessages) continue;
     const blocked = cfg.consentReq?.[key] && !l[key];
     const cid = await repo.newId('cm');
     await repo.create('comm', {
@@ -200,9 +201,9 @@ export async function createLead(repo: Repo, input: NewLeadInput, by = 'System')
       const tid = await repo.newId('task');
       await repo.create('task', { id: tid, lead: id, cslr: l.cslr, due: new Date(Date.now() + cfg.sla.mins * 6e4).toISOString(), type: 'First call', status: 'Pending', remarks: 'First-call SLA task', outcome: '', next: '', test: repo.isTest || undefined });
     }
-    await notify(repo, { type: 'new', sev: 'info', text: `New lead created: ${l.student} (${l.src}) – assigned to ${cslrName}`, route: { page: 'lead', id }, roles: ['Counsellor', 'Centre Administrator'], branch: l.branch, cslr: l.cslr });
+    if (!opts.quiet) await notify(repo, { type: 'new', sev: 'info', text: `New lead created: ${l.student} (${l.src}) – assigned to ${cslrName}`, route: { page: 'lead', id }, roles: ['Counsellor', 'Centre Administrator'], branch: l.branch, cslr: l.cslr });
   } else {
-    await notify(repo, { type: 'none', sev: 'crit', text: `No counsellor available: ${l.student} (${branch.name} · ${progName}) – lead in Unassigned queue`, route: { page: 'leads', preset: 'unassigned' }, roles: ['Admissions Head', 'Centre Administrator', 'System Administrator'], branch: l.branch });
+    if (!opts.quiet) await notify(repo, { type: 'none', sev: 'crit', text: `No counsellor available: ${l.student} (${branch.name} · ${progName}) – lead in Unassigned queue`, route: { page: 'leads', preset: 'unassigned' }, roles: ['Admissions Head', 'Centre Administrator', 'System Administrator'], branch: l.branch });
   }
   await repo.put('lead', l);
   await addAudit(repo, 'Lead created', id, `Source ${l.src}; assigned to ${cslrName === 'our team' ? 'Unassigned' : cslrName}`, by);
@@ -235,7 +236,8 @@ export async function recordPayment(
 export async function recalcEnrollment(repo: Repo, enrId: string) {
   const e = await repo.get<any>('enrollment', enrId);
   if (!e) return null;
-  const pays = await repo.many<any>('payment', 'ref1=?', [enrId]);
+  // Cancelled payments keep their receipt number but no longer count towards what was paid
+  const pays = (await repo.many<any>('payment', 'ref1=?', [enrId])).filter((p) => p.status !== 'Cancelled');
   e.paid = r2(pays.reduce((a, p) => a + Number(p.amt || 0), 0));
   e.payStatus = e.paid >= e.total - 0.005 ? 'Paid' : e.paid > 0 ? 'Partially paid' : 'Unpaid';
   await repo.put('enrollment', e);
