@@ -46,7 +46,7 @@ export async function resolveTarget(repo: Repo, cfg: any, L: Lookups, t: MailTar
       // quotation figures: fee master for the programme, branch and package, with any approved discount
       values.package = o.pkg || '';
       const fee = feeFor(L.fees, o.prog, o.branch, o.pkg, today);
-      if (fee) { values.amount = amt(calcFee(fee, o.discount || null, !o.stu).total); values.currency = fee.cur; }
+      if (fee) { values.amount = amt(calcFee(fee, o.discount || null, !o.stu, L.branches.find((b: any) => b.id === o.branch)).total); values.currency = fee.cur; }
       values.valid_until = fmtDay(addDays(today, 14));
     }
     const to = String(l.email || '').trim();

@@ -1507,34 +1507,50 @@
     loginScreen(msg);
   }
   var pendingPw = null; // kept in memory only between "sign in" and the forced password change
-  // ---------------- sign-in screens (design "LOF CRM Login"): the form on the left, a navy panel on the right with
-  // the branches, the enquiry-to-enrolment journey and three highlights. On phones: a navy header and the form on a
-  // white sheet. The same shell is used for sign-in, the two-step code, password reset and the forced password change.
+  // ---------------- sign-in screens (design "LOF CRM Login" v2): one dark navy page – the header with the logo and
+  // "Need help?", the form in a frosted card on the left, and on the right the dotted map with the animated route of
+  // our centres (Jaipur → Dubai → Chennai → Coimbatore → Mumbai), the headline and the enquiry-to-enrolment journey.
+  // On phones: the header, a smaller map, then the form. The same shell is used for sign-in, the two-step code,
+  // password reset and the forced password change.
   var LB_PERSON = '<svg class="lb-note-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
-  function lbBrand(cls) {
-    return '<div class="' + cls + '"><img class="lb-logo" src="/lof-logo.png" alt="Lab of Future" width="160" height="45">' +
-      '<span class="lb-brand-sep" aria-hidden="true"></span><span class="lb-brand-sub">CRM &amp; Sales</span></div>';
+  function lbBrand() {
+    return '<div class="lb-brand"><span class="lb-logo-tile"><img class="lb-logo" src="/lof-logo.png" alt="Lab of Future" width="160" height="45"></span>' +
+      '<span class="lb-brand-sub">CRM &amp; Sales</span></div>';
   }
-  function lbOrbits(w, cls) {
-    return '<svg class="' + cls + '" aria-hidden="true" focusable="false" width="' + w + '" height="' + w + '" viewBox="0 0 760 760" fill="none">' +
-      '<circle cx="380" cy="380" r="150" stroke="#223a5c" stroke-width="1.5"/><circle cx="380" cy="380" r="240" stroke="#223a5c" stroke-width="1.5"/>' +
-      '<circle cx="380" cy="380" r="330" stroke="#1d3150" stroke-width="1.5" stroke-dasharray="3 9"/>' +
-      '<circle cx="530" cy="380" r="6" fill="#7c9cc4"/><circle cx="210" cy="228" r="5" fill="#2d5b9a"/><circle cx="540" cy="565" r="4" fill="#b7c7dc"/></svg>';
+  function lbOrbits() {
+    return '<svg class="lb-orbits" aria-hidden="true" focusable="false" width="1200" height="1200" viewBox="0 0 1200 1200" fill="none">' +
+      '<circle cx="600" cy="600" r="230" stroke="#1f3655" stroke-width="1.5"/><circle cx="600" cy="600" r="390" stroke="#1f3655" stroke-width="1.5"/>' +
+      '<circle cx="600" cy="600" r="560" stroke="#1b3050" stroke-width="1.5" stroke-dasharray="3 9"/>' +
+      '<circle cx="990" cy="600" r="6" fill="#7c9cc4"/><circle cx="324" cy="204" r="5" fill="#2d5b9a"/><circle cx="1080" cy="890" r="4" fill="#b7c7dc"/></svg>';
+  }
+  // the route over the dotted map (both 620 × 380): four legs drawn one after another, a comet on each leg and a ping
+  // on each city when the route reaches it
+  var LB_LEGS = [['M466.9 42.2 Q284 -18 100.6 76.2', 379], ['M100.6 76.2 Q340 60 546.9 305.8', 523], ['M546.9 305.8 Q540 350 487.8 343.7', 81], ['M487.8 343.7 Q405 290 415 194.2', 177]];
+  var LB_CITIES = [['jaipur', 'Jaipur', 466.9, 42.2, 16, -10, 'start'], ['dubai', 'Dubai', 100.6, 76.2, 16, -12, 'start'], ['mumbai', 'Mumbai', 415, 194.2, -16, 5, 'end'],
+    ['chennai', 'Chennai', 546.9, 305.8, 16, 5, 'start'], ['coimbatore', 'Coimbatore', 487.8, 343.7, -16, 5, 'end']];
+  function lbMap() {
+    var legs = LB_LEGS.map(function (l, i) {
+      var n = i + 1;
+      return '<path d="' + l[0] + '" stroke="#2b4a73" stroke-width="1.2" stroke-dasharray="3 5"/>' +
+        '<path class="lof-trail' + n + '" d="' + l[0] + '" stroke="#7c9cc4" stroke-width="1.6"/>' +
+        '<path class="lof-comet' + n + '" d="' + l[0] + '" stroke="#9cc0ff" stroke-width="9" stroke-linecap="round" opacity="0" stroke-opacity=".3"/>' +
+        '<path class="lof-comet' + n + '" d="' + l[0] + '" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity="0"/>';
+    }).join('');
+    var cities = LB_CITIES.map(function (c) {
+      return '<circle class="lof-ping-' + c[0] + '" cx="' + c[2] + '" cy="' + c[3] + '" r="10" stroke="#9cc0ff" stroke-width="2" opacity="0"/>' +
+        '<g class="lof-on-' + c[0] + '"><circle cx="' + c[2] + '" cy="' + c[3] + '" r="13" fill="#2d5b9a" opacity=".28"/><circle cx="' + c[2] + '" cy="' + c[3] + '" r="6" fill="#fff"/>' +
+        '<circle cx="' + c[2] + '" cy="' + c[3] + '" r="2.5" fill="#2d5b9a"/><text x="' + (c[2] + c[4]) + '" y="' + (c[3] + c[5]) + '" text-anchor="' + c[6] + '" fill="#fff" font-size="14" font-weight="600">' + c[1] + '</text></g>';
+    }).join('');
+    return '<figure class="lb-map"><div class="lb-map-in"><img src="/login-map.svg" alt="" width="620" height="380">' +
+      '<svg class="lof-route" role="img" aria-label="Lab of Future\'s growth: started in Jaipur, then Dubai, Chennai, Coimbatore and now Mumbai" viewBox="0 0 620 380" fill="none">' +
+      legs + cities + '</svg></div></figure>';
   }
   function lbContext() {
-    var ic = function (d) { return '<svg viewBox="0 0 24 24" aria-hidden="true">' + d + '</svg>'; };
     var steps = ['Enquiry', 'First call', 'Counselling', 'Opportunity', 'Enrolled'];
-    var cards = [
-      [ic('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/>'), '60-minute first call', 'Every new lead starts an SLA clock, so nobody waits.'],
-      [ic('<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.8A8 8 0 1 1 21 12z"/>'), 'Calls and WhatsApp', 'Log every conversation on one lead timeline.'],
-      [ic('<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h4"/>'), 'Instalments and links', 'Collect fees by payment term or send a payment link.'],
-    ];
-    return '<section class="lb-ctx" aria-label="About LOF CRM">' + lbOrbits(760, 'lb-orbits') +
-      '<div class="lb-branches"><span>Al Karama</span><span aria-hidden="true">·</span><span>Sports City</span><span aria-hidden="true">·</span><span>Bengaluru</span><span aria-hidden="true">·</span><span>Hyderabad</span></div>' +
-      '<div class="lb-hero"><div class="lb-hero-text"><h2>Every enquiry, from first call to first class.</h2>' +
+    return '<section class="lb-ctx" aria-label="About LOF CRM">' + lbMap() +
+      '<div class="lb-hero-text"><h2>Every enquiry, from first call to first class.</h2>' +
       '<p>One place for counsellors, reception and admissions to follow each family from the first enquiry to enrolment.</p></div>' +
-      '<ol class="lb-journey">' + steps.map(function (s, i) { return '<li' + (i === steps.length - 1 ? ' class="last"' : '') + '><span class="lb-j-mark" aria-hidden="true"><i></i><b></b></span><span class="lb-j-label">' + s + '</span></li>'; }).join('') + '</ol></div>' +
-      '<div class="lb-cards">' + cards.map(function (c) { return '<div class="lb-c">' + c[0] + '<b>' + c[1] + '</b><span>' + c[2] + '</span></div>'; }).join('') + '</div>' +
+      '<ol class="lb-journey">' + steps.map(function (s, i) { return '<li' + (i === steps.length - 1 ? ' class="last"' : '') + '><span class="lb-j-mark" aria-hidden="true"><i></i><b></b></span><span class="lb-j-label">' + s + '</span></li>'; }).join('') + '</ol>' +
       '</section>';
   }
   function lbStyles() {
@@ -1544,16 +1560,44 @@
     document.head.appendChild(l);
     var st = document.createElement('style'); st.id = 'lbStyle';
     var F = '"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif';
+    var keys = [];
+    // route animation: leg n is drawn between from% and to% of the 12-second loop; a city lights up when reached
+    [[379, 2, 20], [523, 26, 46], [81, 52, 58], [177, 64, 74]].forEach(function (k, i) {
+      var n = i + 1, len = k[0], a = k[1], b = k[2];
+      keys.push('@keyframes lof-trail' + n + '{0%,' + a + '%{stroke-dashoffset:' + len + ';opacity:1}' + b + '%,94%{stroke-dashoffset:0;opacity:1}99%{stroke-dashoffset:0;opacity:0}100%{stroke-dashoffset:' + len + ';opacity:0}}',
+        '@keyframes lof-comet' + n + '{0%,' + (a - .2) + '%{stroke-dashoffset:26;opacity:0}' + a + '%{stroke-dashoffset:26;opacity:1}' + b + '%{stroke-dashoffset:-' + len + ';opacity:1}' + (b + .3) + '%,100%{stroke-dashoffset:-' + len + ';opacity:0}}',
+        '.lof-trail' + n + '{stroke-dasharray:' + len + ' ' + len + ';animation:lof-trail' + n + ' var(--lof-t) linear infinite}',
+        '.lof-comet' + n + '{stroke-dasharray:26 ' + (len + 52) + ';animation:lof-comet' + n + ' var(--lof-t) ease-in-out infinite}');
+    });
+    keys.push('@keyframes lof-on-jaipur{0%,94%{opacity:1}99%,100%{opacity:.75}}',
+      '@keyframes lof-ping-jaipur{0%{transform:scale(.6);opacity:0}0.1%{transform:scale(.6);opacity:.9}7%,100%{transform:scale(2.6);opacity:0}}');
+    [['dubai', 20], ['chennai', 46], ['coimbatore', 58], ['mumbai', 74]].forEach(function (c) {
+      var t = c[1];
+      keys.push('@keyframes lof-on-' + c[0] + '{0%,' + (t - .5) + '%{opacity:.4}' + t + '%,94%{opacity:1}99%,100%{opacity:.4}}',
+        '@keyframes lof-ping-' + c[0] + '{0%,' + (t - .1) + '%{transform:scale(.6);opacity:0}' + (t + .1) + '%{transform:scale(.6);opacity:.9}' + (t + 7) + '%,100%{transform:scale(2.6);opacity:0}}');
+    });
+    LB_CITIES.forEach(function (c) {
+      keys.push('.lof-on-' + c[0] + '{animation:lof-on-' + c[0] + ' var(--lof-t) linear infinite}' +
+        '.lof-ping-' + c[0] + '{transform-box:fill-box;transform-origin:center;animation:lof-ping-' + c[0] + ' var(--lof-t) ease-out infinite}');
+    });
     st.textContent = [
-      '.lb-shell{display:flex;min-height:100vh;min-height:100dvh;font-family:' + F + ';color:#1b2633;background:#fff;color-scheme:light}',
-      '.lb-shell :focus-visible{outline:2px solid #2d5b9a;outline-offset:2px}',
-      // form side
-      '.lb-form-side{flex:1 1 520px;min-width:0;box-sizing:border-box;padding:40px 56px;display:flex;flex-direction:column;justify-content:space-between;gap:24px;background:#fff}',
-      '.lb-brand{display:flex;align-items:center;gap:14px}.lb-logo{height:44px;width:auto;display:block}',
-      '.lb-brand-sep{width:1px;height:28px;background:#e1e6ee}.lb-brand-sub{font-size:13px;color:#5d6a7a;white-space:nowrap}',
-      '.lb-mhead{display:none}',
-      '.lb-main{display:flex;justify-content:center}',
-      '.lb-card{width:100%;max-width:400px;display:flex;flex-direction:column;gap:22px;padding:24px 0;margin:0}',
+      '.lb-shell{position:relative;min-height:100vh;min-height:100dvh;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;font-family:' + F + ';color:#c7d2e1;color-scheme:light;' +
+        'background:#13243b radial-gradient(1000px 760px at 21% 56%,#2a4a76 0%,#1f3a5f 30%,#172c48 55%,#13243b 80%)}',
+      '.lb-shell :focus-visible{outline:2px solid #7c9cc4;outline-offset:2px}.lb-card :focus-visible{outline-color:#2d5b9a}',
+      '.lb-orbits{position:absolute;left:-40px;top:-170px;pointer-events:none}',
+      '.lb-top,.lb-main,.lb-page-foot{position:relative}',
+      // header
+      '.lb-top{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:28px 80px}',
+      '.lb-brand{display:flex;align-items:center;gap:12px}',
+      '.lb-logo-tile{display:flex;align-items:center;background:#fff;border-radius:9px;padding:6px 10px}.lb-logo{height:30px;width:auto;display:block}',
+      '.lb-brand-sub{font-size:13px;color:#8ea2bd;white-space:nowrap}',
+      '.lb-help{font:14px ' + F + ';color:#c7d2e1;background:transparent;padding:10px 16px;border:1px solid #2b4a73;border-radius:8px;cursor:pointer}',
+      '.lb-help:hover{color:#fff;border-color:#7c9cc4}',
+      // main: the form on the left, the map and the journey on the right
+      '.lb-main{flex:1;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:56px 96px;padding:8px 80px 40px}',
+      '.lb-left{flex:0 1 440px;min-width:0;display:flex;flex-direction:column;gap:18px}',
+      '.lb-frost{padding:10px;border-radius:26px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);box-shadow:0 30px 80px rgba(8,20,40,.35)}',
+      '.lb-card{margin:0;background:linear-gradient(180deg,#fff 0%,#f4f7fc 100%);border-radius:18px;padding:40px;box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 8px 24px rgba(19,36,59,.18);display:flex;flex-direction:column;gap:22px;color:#1b2633}',
       '.lb-head{display:flex;flex-direction:column;gap:8px}',
       '.lb-h1{margin:0;font-size:30px;line-height:1.15;font-weight:600;color:#13243b}',
       '.lb-sub{margin:0;font-size:15px;line-height:1.5;color:#5d6a7a}',
@@ -1579,55 +1623,69 @@
       '.lb-info{font-size:13px;color:#5d6a7a}.lb-info:empty{display:none}',
       '.lb-foot{font-size:13px;color:#5d6a7a}.lb-foot a{color:#2d5b9a!important}',
       '.lb-card .help{font-size:12.5px;color:#5d6a7a}.lb-card .banner{margin:0}',
-      '.lb-page-foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 24px;font-size:13px;color:#5d6a7a}',
+      '.lb-access{margin:0;padding:0 14px;font-size:13px;color:#8ea2bd}.lb-sub-m{display:none}',
+      '.lb-helpbox{margin:0;padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);font-size:13px;line-height:1.5;color:#dbe4ef}.lb-helpbox[hidden]{display:none}',
       '.lb-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}',
-      // context side
-      '.lb-ctx{flex:1.15 1 560px;min-width:0;box-sizing:border-box;position:relative;overflow:hidden;background:#13243b;color:#c7d2e1;padding:40px 64px;display:flex;flex-direction:column;justify-content:space-between;gap:40px}',
-      '.lb-ctx>*{position:relative}.lb-ctx>.lb-orbits{position:absolute;right:-220px;top:-160px;pointer-events:none}',
-      '.lb-branches{display:flex;flex-wrap:wrap;gap:8px;font:600 12px "IBM Plex Mono",ui-monospace,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;color:#8ea2bd}',
-      '.lb-hero{display:flex;flex-direction:column;gap:36px;max-width:640px}.lb-hero-text{display:flex;flex-direction:column;gap:16px}',
-      '.lb-hero h2{margin:0;font-size:clamp(34px,3.3vw,46px);line-height:1.08;font-weight:600;color:#fff;letter-spacing:-.01em;text-wrap:balance}',
-      '.lb-hero p{margin:0;font-size:17px;line-height:1.55;max-width:520px}',
-      '.lb-journey{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}',
+      // right side
+      '.lb-ctx{flex:1 1 520px;min-width:0;max-width:720px;display:flex;flex-direction:column;gap:28px}',
+      '.lb-map{margin:0}.lb-map-in{position:relative;width:100%;max-width:560px}.lb-map-in img{width:100%;height:auto;display:block}',
+      '.lof-route{position:absolute;inset:0;width:100%;height:100%;overflow:visible;font-family:' + F + ';--lof-t:12s}',
+      '.lb-hero-text{display:flex;flex-direction:column;gap:14px}',
+      '.lb-hero-text h2{margin:0;font-size:clamp(34px,3.1vw,44px);line-height:1.08;font-weight:600;color:#fff;letter-spacing:-.01em;text-wrap:balance}',
+      '.lb-hero-text p{margin:0;font-size:17px;line-height:1.55;max-width:540px}',
+      '.lb-journey{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));max-width:620px}',
       '.lb-journey li{display:flex;flex-direction:column;gap:10px}',
       '.lb-j-mark{height:12px;display:block;position:relative}',
       '.lb-j-mark i{position:absolute;left:0;top:5px;right:0;height:2px;background:#2d5b9a}',
       '.lb-j-mark b{position:absolute;left:0;top:0;width:12px;height:12px;border-radius:50%;background:#7c9cc4}',
       '.lb-journey li.last i{display:none}.lb-journey li.last b{background:#fff}',
       '.lb-j-label{font-size:13px;font-weight:500;color:#fff}.lb-journey li.last .lb-j-label{font-weight:600}',
-      '.lb-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}',
-      '.lb-c{padding:16px;border-radius:10px;background:#1a2f4b;border:1px solid #223a5c;display:flex;flex-direction:column;gap:8px}',
-      '.lb-c svg{width:22px;height:22px;fill:none;stroke:#b7c7dc;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
-      '.lb-c b{font-size:14px;font-weight:600;color:#fff}.lb-c span{font-size:13px;line-height:1.5}',
-      // phones and narrow windows: navy header, the form on a white sheet
-      '@media (max-width:900px){' +
-        '.lb-shell{display:block;background:#13243b}.lb-ctx{display:none}' +
-        '.lb-form-side{min-height:100vh;min-height:100dvh;padding:0;gap:0;justify-content:flex-start;background:#13243b;position:relative;overflow:hidden}' +
-        '.lb-form-side>.lb-brand{display:none}' +
-        '.lb-mhead{display:flex;flex-direction:column;gap:18px;padding:36px 24px 28px;position:relative}' +
-        '.lb-mhead .lb-orbits-m{position:absolute;right:-170px;top:-190px;pointer-events:none}' +
-        '.lb-mhead .lb-brand{position:relative;align-self:flex-start;background:#fff;border-radius:10px;padding:8px 12px}.lb-mhead .lb-logo{height:30px}' +
-        '.lb-mhead h2{position:relative;margin:0;font-size:27px;line-height:1.15;font-weight:600;color:#fff;letter-spacing:-.01em}' +
-        '.lb-main{flex:1;display:block;background:#fff;border-radius:20px 20px 0 0;padding:28px 24px 12px;position:relative}' +
-        '.lb-card{max-width:none;padding:0;gap:18px}.lb-h1{font-size:22px}.lb-sub{font-size:14px}.lb-head{gap:4px}' +
-        '.lb-in,.lb-card .f input{height:48px;font-size:16px}.lb-btn{height:52px;font-size:16px}' +
-        '.lb-page-foot{background:#fff;padding:12px 24px 20px;justify-content:center;text-align:center}' +
+      // footer
+      '.lb-page-foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 24px;padding:20px 80px;border-top:1px solid #1f3655;font-size:13px;color:#8ea2bd}',
+    ].concat(keys, [
+      '@media (prefers-reduced-motion:reduce){.lof-route *{animation:none!important}.lof-route [class^=lof-comet],.lof-route [class^=lof-ping]{opacity:0!important}.lof-route [class^=lof-trail]{stroke-dashoffset:0!important}}',
+      // narrower windows: smaller side padding, the right side wraps below the form
+      '@media (max-width:1100px){.lb-top,.lb-page-foot{padding-left:40px;padding-right:40px}.lb-main{padding:8px 40px 40px}}',
+      // phones: header, a smaller map, then the form; the headline and the journey are left out
+      '@media (max-width:700px){' +
+        '.lb-shell{background:#13243b radial-gradient(520px 560px at 50% 68%,#2a4a76 0%,#1f3a5f 35%,#172c48 60%,#13243b 85%)}' +
+        '.lb-orbits{width:640px;height:640px;left:-125px;top:120px}' +
+        '.lb-top{padding:20px 20px 0}.lb-logo{height:26px}.lb-logo-tile{padding:5px 8px}.lb-brand{gap:10px}.lb-brand-sub{font-size:12px}' +
+        '.lb-help{min-height:44px;padding:0 12px}' +
+        '.lb-main{flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:16px;padding:16px 16px 24px}' +
+        '.lb-ctx{display:contents}.lb-hero-text,.lb-journey{display:none}' +
+        '.lb-map{order:-1;display:flex;justify-content:center}.lb-map-in{width:300px;max-width:100%}' +
+        '.lb-left{flex:none;gap:14px}.lb-frost{padding:6px;border-radius:22px;box-shadow:0 24px 60px rgba(8,20,40,.35)}' +
+        '.lb-card{padding:22px;border-radius:16px;gap:18px}.lb-h1{font-size:24px}.lb-sub{font-size:14px}.lb-head{gap:4px}' +
+        '.lb-in,.lb-card .f input{height:48px;font-size:16px}.lb-eye{top:2px;right:4px;height:44px;padding:0 12px;font-size:14px}' +
+        '.lb-btn{height:52px;font-size:16px}.lb-check input{width:20px;height:20px}' +
+        '.lb-sub-d,.lb-card>.lb-note{display:none}.lb-sub-m{display:inline}' +
+        '.lb-access{text-align:center}.lb-page-foot{padding:14px 16px 20px;justify-content:center;text-align:center}' +
       '}',
-      '@media (max-width:420px){.lb-mhead h2{font-size:24px}}',
-    ].join('\n');
+    ]).join('\n');
     document.head.appendChild(st);
   }
   function authShell(cardHtml) {
     lbStyles();
-    // the sign-in screens are always light; the CRM applies the user's own theme again after sign-in
+    // the sign-in screens keep their own colours; the CRM applies the user's own theme again after sign-in
     document.documentElement.removeAttribute('data-theme');
     document.getElementById('app').innerHTML =
-      '<div class="lb-shell" id="lbRoot">' +
-      '<section class="lb-form-side">' + lbBrand('lb-brand') +
-      '<header class="lb-mhead">' + lbOrbits(420, 'lb-orbits-m') + lbBrand('lb-brand') + '<h2>Every enquiry, from first call to first class.</h2></header>' +
-      '<main class="lb-main">' + cardHtml + '</main>' +
-      '<footer class="lb-page-foot"><span>No access yet? Ask your Centre Administrator.</span></footer>' +
-      '</section>' + lbContext() + '</div>';
+      '<div class="lb-shell" id="lbRoot">' + lbOrbits() +
+      '<header class="lb-top">' + lbBrand() +
+      '<button type="button" class="lb-help" id="lbHelp" aria-expanded="false" aria-controls="lbHelpBox"><span class="lb-help-l">Need help?</span></button></header>' +
+      '<main class="lb-main"><div class="lb-left"><div class="lb-frost">' + cardHtml + '</div>' +
+      '<p class="lb-helpbox" id="lbHelpBox" hidden>Forgot your password? Use <b>Forgot password?</b> on the sign-in form to get a 6-digit reset code. ' +
+      'For a new account, a locked account or a lost authenticator, ask your Centre Administrator.</p>' +
+      '<p class="lb-access">No access yet? Ask your Centre Administrator.</p></div>' +
+      lbContext() + '</main>' +
+      '<footer class="lb-page-foot"><span>© ' + new Date().getFullYear() + ' Lab of Future · Top Rock Global Pvt Ltd</span></footer></div>';
+    var hb = document.getElementById('lbHelp');
+    if (window.matchMedia && window.matchMedia('(max-width:700px)').matches) hb.querySelector('.lb-help-l').textContent = 'Help';
+    hb.addEventListener('click', function () {
+      var box = document.getElementById('lbHelpBox'), open = box.hidden;
+      box.hidden = !open;
+      hb.setAttribute('aria-expanded', String(open));
+    });
   }
   function authCard(sub, msg, inner, btn, foot) {
     authShell('<form id="lofAuth" class="lb-card" novalidate>' +
@@ -1666,7 +1724,7 @@
       // Remember Me keeps only the e-mail address on this device – never the password
       var saved = LS.get('lof_login_email') || '';
       authShell('<form id="lofAuth" class="lb-card" novalidate>' +
-        '<div class="lb-head"><h1 class="lb-h1">Welcome back</h1><p class="lb-sub">Sign in to follow up leads, manage admissions and collect payments.</p></div>' +
+        '<div class="lb-head"><h1 class="lb-h1">Welcome back</h1><p class="lb-sub"><span class="lb-sub-d">Sign in to follow up leads, manage admissions and collect payments.</span><span class="lb-sub-m">Your menu follows your role.</span></p></div>' +
         (msg ? '<div class="lb-msg" role="status">' + esc(msg) + '</div>' : '') +
         '<div class="lb-fields">' +
         '<div class="lb-f"><label for="le">Work email</label>' +
@@ -2115,6 +2173,165 @@
     else if (rp && canCancelPay()) x.foot = '<button class="btn danger" data-act="payCancel" data-id="' + esc(m.id) + '" style="margin-right:auto">Cancel transaction</button>' + x.foot;
     x.body = x.body.replace('<span class="sim">Simulated</span>', '').replace('Prototype receipt – not a valid tax document. Finance linkage to ERPNext Accounts is pending integration.', 'Receipt numbers are issued by the server. Payments are posted to ERPNext Accounts as Payment Entries.');
     return x;
+  };
+
+  // ---------------- Branch GST (Configuration → Branches) – GSTIN, PAN, CGST %, SGST % for the tax invoice
+  // Only those who can edit configuration (System Administrator by default) can change a branch. When CGST and
+  // SGST are set, new fees for that branch are charged at CGST + SGST (calcFee) and the invoice shows both lines.
+  function branchGst(b) {
+    var has = function (v) { return v !== undefined && v !== null && v !== '' && isFinite(Number(v)); };
+    if (!b || !has(b.cgst) || !has(b.sgst) || Number(b.cgst) + Number(b.sgst) <= 0) return null;
+    return { cgst: Number(b.cgst), sgst: Number(b.sgst) };
+  }
+  var brOf = function (f) { return f && (S.branches || []).find(function (b) { return b.id === f.branch; }); };
+  window.feeTaxPct = function (f) { var g = branchGst(brOf(f)); return g ? Math.round((g.cgst + g.sgst) * 100) / 100 : Number(f.tax) || 0; };
+  window.feeTaxLabel = function (f) {
+    var g = branchGst(brOf(f));
+    return g ? 'GST ' + window.feeTaxPct(f) + '% (CGST ' + g.cgst + '% + SGST ' + g.sgst + '%)' : 'Tax (' + f.tax + '%)';
+  };
+  function gstProblemUi(d) {
+    var gstin = String(d.gstin || '').trim().toUpperCase(), pan = String(d.pan || '').trim().toUpperCase();
+    if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(gstin)) return ['gstin', 'GSTIN must be 15 characters, e.g. 29ABCDE1234F1Z5'];
+    if (pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) return ['pan', 'PAN must be 10 characters, e.g. ABCDE1234F'];
+    if (gstin && pan && gstin.slice(2, 12) !== pan) return ['pan', 'Does not match the PAN inside the GSTIN (characters 3–12)'];
+    var c = String(d.cgst == null ? '' : d.cgst).trim(), s = String(d.sgst == null ? '' : d.sgst).trim();
+    if ((c === '') !== (s === '')) return [c === '' ? 'cgst' : 'sgst', 'Enter both CGST and SGST, or neither'];
+    if (c !== '' && !(+c >= 0 && +c <= 50)) return ['cgst', 'A percentage from 0 to 50'];
+    if (s !== '' && !(+s >= 0 && +s <= 50)) return ['sgst', 'A percentage from 0 to 50'];
+    return null;
+  }
+  var _brModal = MODALS.branch;
+  MODALS.branch = function (m) {
+    var x = _brModal(m), b = m.id ? (S.branches || []).find(function (y) { return y.id === m.id; }) || {} : {};
+    var num = function (v) { return v === undefined || v === null ? '' : v; };
+    var gst = '<div class="sec">GST – printed on the tax invoice (India)</div>' +
+      F('GSTIN', 'gstin', { v: b.gstin || '', ph: '29ABCDE1234F1Z5', help: '15-character GST number' }) +
+      F('PAN', 'pan', { v: b.pan || '', ph: 'ABCDE1234F', help: '10-character PAN' }) + '<div></div>' +
+      F('Central GST – CGST %', 'cgst', { t: 'number', min: 0, max: 50, step: '0.01', v: num(b.cgst), help: 'e.g. 9' }) +
+      F('State GST – SGST %', 'sgst', { t: 'number', min: 0, max: 50, step: '0.01', v: num(b.sgst), help: 'e.g. 9' }) + '<div></div>' +
+      '<div class="f full"><p class="muted xs" style="margin:0">When CGST and SGST are set, new fees at this branch are charged at CGST + SGST and the invoice shows both lines with the GSTIN and PAN. Enrolments already made keep the tax they were charged. Leave empty for branches without GST (UAE VAT keeps using the fee\'s tax %).</p></div>';
+    x.body = x.body.replace('<div class="sec">Programmes offered</div>', gst + '<div class="sec">Programmes offered</div>');
+    return x;
+  };
+  var _brSub = SUB.branch;
+  SUB.branch = function (d, f) {
+    var bad = gstProblemUi(d);
+    if (bad) { clearErrs(f); setErr(f, bad[0], bad[1]); return; }
+    var id = String(d.oid || d.id || '').toUpperCase();
+    _brSub(d, f);
+    var b = (S.branches || []).find(function (y) { return y.id === id; });
+    if (!b || S.modal) return; // the form is still open: the branch was not saved
+    var n = function (v) { v = String(v == null ? '' : v).trim(); return v === '' ? null : Math.round(Number(v) * 100) / 100; };
+    b.gstin = String(d.gstin || '').trim().toUpperCase();
+    b.pan = String(d.pan || '').trim().toUpperCase();
+    b.cgst = n(d.cgst);
+    b.sgst = n(d.sgst);
+    render();
+  };
+
+  // ---------------- Payments → Payment links / Cancelled
+  // Every payment link: who it went to, who created and sent it (how, when) and whether the parent paid.
+  // Counsellors see only the links they shared (the server filters). Cancelled transactions have their own section.
+  function canSeeLinks() { return can('payments', 'V') || can('payments', 'C') || can('enrollments', 'C') || can('opportunities', 'E'); }
+  window.canSeeLinks = canSeeLinks;
+  (function () {
+    var g = GROUPS.find(function (x) { return x.id === 'pay'; });
+    if (!g) return;
+    var at = g.tabs.findIndex(function (t) { return t[0] === 'payRecords'; }) + 1;
+    g.tabs.splice(at, 0, ['payCancelled', 'Cancelled', 'x', 'payments'], ['payLinks', 'Payment links', 'link', '*plinks']);
+  })();
+  var PL = { items: null, own: false, loading: false, at: 0 };
+  function loadPL() {
+    if (PL.loading) return;
+    PL.loading = true;
+    req('GET', '/payments/link-list').then(function (r) { PL.items = r.items || []; PL.own = !!r.own; PL.at = Date.now(); })
+      .catch(function (e) { PL.items = PL.items || []; PL.at = Date.now(); toast(e.message, 'err'); })
+      .then(function () { PL.loading = false; safeRender(); });
+  }
+  var PL_KIND = { opp: 'Opportunity – enrols on payment', collect: 'Payment collection', reminder: 'Instalment reminder' };
+  function plStatus(x) {
+    if (x.status === 'paid') return x.applyError ? ['Paid – enrol by hand', 'crit'] : x.paymentStatus === 'Cancelled' ? ['Paid – payment cancelled later', 'warn'] : ['Paid', 'ok'];
+    return ({ created: ['Awaiting payment', 'warn'], expired: ['Not paid – expired', 'crit'], replaced: ['Not paid – replaced', ''], cancelled: ['Not paid – cancelled', ''], failed: ['Payment failed', 'crit'] })[x.status] || [x.status, ''];
+  }
+  CHG.plF = function (el) { S.plF = el.value; render(); };
+  INP.plQ = function (el) { S.plQ = el.value; render(); };
+  ACT.plRefresh = function () { loadPL(); };
+  var _plSend2 = ACT.plSend;
+  ACT.plSend = function (d) { _plSend2(d); setTimeout(loadPL, 1500); };
+  PAGES.payLinks = function () {
+    if (!canSeeLinks()) return ph('Payment links', '') + emptyBox('No access', 'Your role cannot see payment links.');
+    if (!PL.loading && (!PL.items || Date.now() - PL.at > 60000)) loadPL();
+    var all = PL.items || [], f = S.plF || '', q = String(S.plQ || '').toLowerCase().trim();
+    var group = function (x) { return x.status === 'paid' ? 'paid' : x.status === 'created' ? 'open' : 'unpaid'; };
+    var rows = all.filter(function (x) {
+      if (f && group(x) !== f) return false;
+      if (!q) return true;
+      return [x.id, x.student, x.parent, x.phone, x.email, x.createdBy, x.sentBy, x.opp, x.enrollment, x.receipt].some(function (v) { return String(v || '').toLowerCase().indexOf(q) >= 0; });
+    });
+    // collected = paid through a link and not cancelled afterwards
+    var paid = all.filter(function (x) { return x.status === 'paid' && x.paymentStatus !== 'Cancelled'; });
+    var sum = paid.reduce(function (a, x) { return a + toAED(x.amount, x.currency); }, 0);
+    var cols = [
+      { h: 'Shared', s: function (x) { return x.createdAt; }, f: function (x) { return fDT(x.createdAt) + '<div class="muted xs">by ' + esc(x.createdBy || '—') + '</div>'; } },
+      { h: 'To (parent)', f: function (x) { return '<b>' + esc(x.parent || '—') + '</b><div class="muted xs">' + esc([x.phone, x.email].filter(Boolean).join(' · ')) + '</div>'; } },
+      { h: 'Student / for', f: function (x) {
+        return (x.studentId ? '<a ' + sgo(x.studentId) + '>' + esc(x.student) + '</a>' : esc(x.student || '—')) +
+          '<div class="muted xs">' + esc(x.prog) + ' · ' + esc(branchName(x.branch)) + '</div><div class="muted xs">' + esc(PL_KIND[x.kind] || x.kind) + ' · <span class="mono">' + esc(x.kind === 'opp' ? (x.opp || '') : (x.enrollment || x.opp || '')) + '</span></div>';
+      } },
+      { h: 'Amount', r: 1, s: function (x) { return toAED(x.amount, x.currency); }, f: function (x) { return money(x.amount, x.currency); } },
+      { h: 'Sent', f: function (x) {
+        return x.sentAt ? esc(x.sentVia || '') + ' · ' + fDT(x.sentAt) + '<div class="muted xs">by ' + esc(x.sentBy || '—') + (x.sentTo ? ' to ' + esc(x.sentTo) : '') + (x.sends > 1 ? ' · sent ' + x.sends + ' times' : '') + '</div>'
+          : '<span class="muted xs">Not sent from the CRM (link copied, or not sent yet)</span>';
+      } },
+      { h: 'Paid?', f: function (x) {
+        var st = plStatus(x);
+        var more = x.status === 'paid' ? (x.paidAt ? fDT(x.paidAt) : '') + (x.receipt ? ' · <span class="mono">' + esc(x.receipt) + '</span>' : '')
+          : x.status === 'created' ? (x.expiresAt ? 'Valid until ' + fDT(x.expiresAt) : 'Open until the next reminder') : '';
+        return bdg(st[0], st[1]) + (more ? '<div class="muted xs">' + more + '</div>' : '') + (x.applyError ? '<div class="muted xs">' + esc(x.applyError) + '</div>' : '');
+      } },
+      { h: '', f: function (x) {
+        return x.status === 'created' ? '<button class="btn sm" data-act="copy" data-v="' + esc(x.url) + '">Copy</button> <button class="btn sm" data-act="plSend" data-id="' + esc(x.id) + '" data-ch="WhatsApp">WhatsApp</button> <button class="btn sm" data-act="plSend" data-id="' + esc(x.id) + '" data-ch="Email">E-mail</button>' : '';
+      } },
+    ];
+    var tools = '<input id="plQ" data-input="plQ" value="' + esc(S.plQ || '') + '" placeholder="Search parent, student, mobile, link…" aria-label="Search payment links" style="min-width:240px">' +
+      '<select data-change="plF" aria-label="Status"><option value="">All links</option><option value="open"' + (f === 'open' ? ' selected' : '') + '>Awaiting payment</option><option value="paid"' + (f === 'paid' ? ' selected' : '') + '>Paid</option><option value="unpaid"' + (f === 'unpaid' ? ' selected' : '') + '>Not paid (expired / replaced)</option></select>' +
+      '<button class="btn" data-act="plRefresh">' + ic('refresh') + ' Refresh</button>';
+    return ph('Payment links', PL.own ? 'The payment links you shared – whether each parent paid' : 'Every payment link shared with parents – who sent it and whether it was paid', tools) +
+      '<div class="sum"><div class="it"><small>Links</small><b>' + all.length + '</b></div><div class="it"><small>Paid</small><b>' + paid.length + '</b></div><div class="it"><small>Collected through links (AED equivalent)</small><b>' + Math.round(sum).toLocaleString('en-US') + '</b></div><div class="it"><small>Awaiting payment</small><b>' + all.filter(function (x) { return x.status === 'created'; }).length + '</b></div><div class="it"><small>Not paid</small><b>' + all.filter(function (x) { return group(x) === 'unpaid'; }).length + '</b></div></div>' +
+      (PL.own ? '<div class="banner" style="margin-bottom:12px">' + ic('link') + '<span>You see the payment links you created or sent. Centre Administrators, Reception and Management see all links of their branches.</span></div>' : '') +
+      card('', PL.items ? table('plinks', cols, rows, { ps: 15, et: all.length ? 'No links match' : 'No payment links yet', ed: all.length ? 'Change the search or the status filter.' : 'Links shared from an opportunity, from Payments → Collect or with instalment reminders appear here.' }) : '<p class="muted" style="padding:16px">Loading payment links…</p>', { np: 1 });
+  };
+
+  // Cancelled transactions: their own section; Payment Records lists only active payments
+  ACT.payCancelCsv = function () {
+    var ps = S.pay.filter(function (p) { return p.status === 'Cancelled' && inScope(p.branch); });
+    openModal('csv', { name: 'cancelled-transactions', head: ['Payment', 'Receipt', 'Paid on', 'Student', 'Branch', 'Enrolment', 'Amount', 'Currency', 'Method', 'Reference', 'Cancelled on', 'Cancelled by', "Parent's knowledge", 'Reason'],
+      rows: ps.map(function (p) { var s = stuById(p.stu), c = p.cancel || {}; return [p.id, p.rc, fDT(p.at), s ? s.first + ' ' + s.last : p.stu, branchName(p.branch), p.enr, p.amt, p.cur, p.method, p.ref, c.at ? fDT(c.at) : '', c.by || '', c.parentAware || '', c.reason || '']; }) });
+  };
+  PAGES.payCancelled = function () {
+    if (!can('payments', 'V')) return ph('Cancelled transactions', '') + emptyBox('No access', 'Your role cannot see payments.');
+    var when = function (p) { return (p.cancel && p.cancel.at) || p.at; };
+    var ps = S.pay.filter(function (p) { return p.status === 'Cancelled' && inScope(p.branch); }).sort(function (a, b) { return new Date(when(b)) - new Date(when(a)); });
+    var tot = ps.reduce(function (a, p) { return a + toAED(p.amt, p.cur); }, 0);
+    var cols = [
+      { h: 'Cancelled', s: when, f: function (p) { return fDT(when(p)) + '<div class="muted xs">by ' + esc((p.cancel || {}).by || '—') + '</div>'; } },
+      { h: 'Receipt', f: function (p) { return '<a data-act="receipt" data-id="' + esc(p.id) + '" class="mono">' + esc(p.rc) + '</a><div class="mono muted xs">' + esc(p.id) + '</div>'; } },
+      { h: 'Student', f: function (p) { var s = stuById(p.stu); return s ? '<a ' + sgo(s.id) + '>' + esc(s.first + ' ' + s.last) + '</a>' : esc(p.stu); } },
+      { h: 'Branch / enrolment', f: function (p) { return esc(branchName(p.branch)) + '<div class="mono muted xs">' + esc(p.enr) + '</div>'; } },
+      { h: 'Amount', r: 1, s: function (p) { return toAED(p.amt, p.cur); }, f: function (p) { return money(p.amt, p.cur); } },
+      { h: 'Originally paid', f: function (p) { return fDT(p.at) + '<div class="muted xs">' + esc(p.method) + (p.ref && p.ref !== '—' ? ' · ' + esc(p.ref) : '') + '</div>'; } },
+      { h: "Parent's knowledge", f: function (p) { var a = (p.cancel || {}).parentAware; return a ? bdg(a, a === 'Yes' ? 'ok' : 'warn') : '—'; } },
+      { h: 'Reason', f: function (p) { return '<div style="min-width:200px">' + esc((p.cancel || {}).reason || '') + '</div>'; } },
+    ];
+    return ph('Cancelled transactions', 'Payments cancelled instead of deleted – receipt numbers are kept, the amounts are left out of every total', '<button class="btn" data-act="payCancelCsv">' + ic('download') + ' Export CSV</button>') +
+      '<div class="sum"><div class="it"><small>Cancelled transactions</small><b>' + ps.length + '</b></div><div class="it"><small>Amount cancelled (AED equivalent)</small><b>' + Math.round(tot).toLocaleString('en-US') + '</b></div><div class="it muted xs">Not counted in Total collected, reports, dashboards or the enrolment balance</div></div>' +
+      card('', table('pcan', cols, ps, { ps: 15, et: 'No cancelled transactions', ed: 'Use Cancel payment on Payments → Records when a payment was taken by mistake.' }), { np: 1 });
+  };
+  var _payRecCan = PAGES.payRecords;
+  PAGES.payRecords = function (rt) {
+    var h = _payRecCan(rt);
+    var n = S.pay.filter(function (p) { return p.status === 'Cancelled' && inScope(p.branch); }).length;
+    return n ? h.replace('<div class="it muted xs">INR converted at', '<div class="it"><small>Cancelled</small><b><a data-act="go" data-page="payCancelled" tabindex="0">' + n + '</a></b></div><div class="it muted xs">INR converted at') : h;
   };
 
   // ---------------- Communication remarks (lead → Communications)

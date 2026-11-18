@@ -20,7 +20,7 @@ import { COLLECTIONS, SETTINGS_KEYS } from '../lib/indexing';
 import { can, ALL_ROLES } from '../lib/auth';
 import type { Env, Job, User } from '../types';
 import { HttpError } from '../types';
-import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify } from '../domain/core';
+import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify, gstProblem } from '../domain/core';
 import { hashPassword } from '../lib/crypto';
 import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, lmsProblem } from '../domain/terms';
 import { checkEmailTemplates } from '../domain/email-templates';
@@ -236,6 +236,14 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           } else if (String(o.email).toLowerCase() !== email) staffAuth.push({ id: d.id, email });
         }
         if (c.coll === 'branches' && !/^[A-Z0-9]{2,5}$/.test(d.id)) { reject(c, 'Branch short ID must be 2–5 capital letters or digits'); break; }
+        if (c.coll === 'branches') {
+          // GST details for the tax invoice (India): GSTIN, PAN, CGST %, SGST %
+          const gp = gstProblem(d);
+          if (gp) { reject(c, `${d.name || d.id}: ${gp}`); break; }
+          d.gstin = String(d.gstin ?? '').trim().toUpperCase();
+          d.pan = String(d.pan ?? '').trim().toUpperCase();
+          for (const k of ['cgst', 'sgst']) d[k] = d[k] === undefined || d[k] === null || d[k] === '' ? null : r2(Number(d[k]));
+        }
         if (c.coll === 'staff' && !!d.archived !== !!o?.archived) {
           // Archive (= "Delete" of a user who has records) and restore
           if (!o) { reject(c, 'A new user cannot be archived'); break; }
@@ -526,13 +534,13 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             } else { reject(c, 'Unknown discount kind'); break; }
           }
           const newStu = isNew('students', d.stu);
-          const calc = calcFee(fee, disc, newStu);
+          const calc = calcFee(fee, disc, newStu, branches.find((b) => b.id === d.branch));
           if (Math.abs(calc.total - num(d.total)) > 0.01) { reject(c, `Fee mismatch: server total ${money(calc.total, fee.cur)} vs ${money(d.total, d.cur)}`); break; }
           const terms = Array.isArray(cfg.payTerms) ? cfg.payTerms : [];
           const term = terms.find((t: any) => t.id === d.term && t.active) || (d.term ? null : terms.find((t: any) => t.id === cfg.payTermDefault) || null);
           if (d.term && !term) { reject(c, 'Payment term is not active'); break; }
           const linkedOpp = d.opp ? await getDoc('opps', 'opp', d.opp) : null;
-          Object.assign(d, { cur: fee.cur, fee: calc.base, reg: calc.extra, disc: calc.disc, discInfo: disc, tax: calc.tax, total: calc.total, taxPct: fee.tax, paid: 0, payStatus: 'Unpaid', feeId: fee.id, pkg: fee.pkg, sessions: fee.sessions, credits: program.credits, course, newStu, status: 'Active',
+          Object.assign(d, { cur: fee.cur, fee: calc.base, reg: calc.extra, disc: calc.disc, discInfo: disc, tax: calc.tax, total: calc.total, taxPct: calc.taxPct, paid: 0, payStatus: 'Unpaid', feeId: fee.id, pkg: fee.pkg, sessions: fee.sessions, credits: program.credits, course, newStu, status: 'Active',
             term: term?.id || null, sched: buildSched(term, calc.total, d.date), cslr: linkedOpp?.cslr || null });
           writes.push({ type, doc: d, coll: c.coll });
           break;

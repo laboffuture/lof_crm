@@ -33,7 +33,9 @@ describe('crypto', () => {
 describe('fees', () => {
   const fee = { amt: 2400, tax: 5, extra: { amt: 100 }, active: true, prog: 'ROB', branch: 'KRM', pkg: 'Term', from: '2026-09-01', to: '' };
   it('adds registration for new students and VAT on the net', () => {
-    expect(calcFee(fee, null, true)).toEqual({ base: 2400, extra: 100, disc: 0, net: 2500, tax: 125, total: 2625 });
+    expect(calcFee(fee, null, true)).toEqual({ base: 2400, extra: 100, disc: 0, net: 2500, tax: 125, total: 2625, taxPct: 5 });
+    // a branch with CGST + SGST replaces the fee's own tax %
+    expect(calcFee(fee, null, true, { cgst: 9, sgst: 9 })).toMatchObject({ taxPct: 18, tax: 450, total: 2950 });
     expect(calcFee(fee, null, false).total).toBe(2520);
   });
   it('applies percentage and capped flat discounts to the programme fee only', () => {

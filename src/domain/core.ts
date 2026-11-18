@@ -14,12 +14,36 @@ export const fmtDT = (iso: string) =>
 export function feeFor(fees: any[], prog: string, branch: string, pkg?: string, today = dayKey(new Date())) {
   return fees.find((f) => f.active && f.prog === prog && f.branch === branch && (!pkg || f.pkg === pkg) && f.from <= today && (!f.to || f.to >= today));
 }
-export function calcFee(fee: any, disc: any, isNew: boolean) {
+/** GST set on a branch (India): CGST and SGST percentages. Null when the branch has none. */
+export function branchGst(b: any): { cgst: number; sgst: number } | null {
+  const has = (v: unknown) => v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v));
+  if (!b || !has(b.cgst) || !has(b.sgst) || Number(b.cgst) + Number(b.sgst) <= 0) return null;
+  return { cgst: Number(b.cgst), sgst: Number(b.sgst) };
+}
+/** Tax % for a fee: the branch's CGST + SGST when set, otherwise the fee's own tax %. */
+export const taxPct = (fee: any, branch?: any) => { const g = branchGst(branch); return g ? r2(g.cgst + g.sgst) : Number(fee.tax) || 0; };
+/** Why a branch's GST details are not valid ('' when they are). */
+export function gstProblem(b: any): string {
+  const gstin = String(b?.gstin ?? '').trim().toUpperCase(), pan = String(b?.pan ?? '').trim().toUpperCase();
+  if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(gstin)) return 'GSTIN must be 15 characters, e.g. 29ABCDE1234F1Z5';
+  if (pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) return 'PAN must be 10 characters, e.g. ABCDE1234F';
+  if (gstin && pan && gstin.slice(2, 12) !== pan) return 'The PAN does not match the PAN inside the GSTIN (characters 3–12)';
+  for (const k of ['cgst', 'sgst']) {
+    const v = b?.[k];
+    if (v !== undefined && v !== null && v !== '' && !(Number(v) >= 0 && Number(v) <= 50)) return `${k.toUpperCase()} must be a percentage from 0 to 50`;
+  }
+  const one = [b?.cgst, b?.sgst].filter((v) => v !== undefined && v !== null && v !== '').length;
+  if (one === 1) return 'Enter both CGST and SGST, or neither';
+  return '';
+}
+
+export function calcFee(fee: any, disc: any, isNew: boolean, branch?: any) {
   const base = fee.amt, extra = isNew ? fee.extra.amt : 0;
   let d = 0;
   if (disc) d = disc.type === '%' ? r2((base * disc.value) / 100) : Math.min(Number(disc.value), base);
-  const net = base - d + extra, tax = r2((net * fee.tax) / 100);
-  return { base, extra, disc: d, net, tax, total: r2(net + tax) };
+  const pct = taxPct(fee, branch);
+  const net = base - d + extra, tax = r2((net * pct) / 100);
+  return { base, extra, disc: d, net, tax, total: r2(net + tax), taxPct: pct };
 }
 
 // ---------------- audit & notifications ----------------

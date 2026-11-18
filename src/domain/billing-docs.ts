@@ -3,7 +3,7 @@
 // the receipt confirms one payment with the payment history up to it. Both carry the Lab of Future logo.
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import type { Repo } from '../lib/db';
-import { r2 } from './core';
+import { r2, branchGst } from './core';
 import { instStatus } from './terms';
 import { LOF_LOGO_PNG_B64, LOF_LOGO_SIZE } from '../assets/lof-logo';
 
@@ -11,6 +11,8 @@ export interface DocLine { desc: string; sub?: string; qty: number; unit: number
 export interface BillingDoc {
   invoiceNo: string; receiptNo: string; issued: string; paidAt: string; due: string | null;
   cur: string; lines: DocLine[]; subtotal: number; taxLabel: string; tax: number; total: number;
+  /** Tax lines on the invoice: one line (VAT / GST), or CGST and SGST when the branch has GST set. */
+  taxes: { label: string; amount: number }[];
   amountPaid: number; paidToDate: number; amountDue: number;
   from: { name: string; lines: string[] }; billTo: { name: string; lines: string[] };
   history: { method: string; at: string; amount: number; receiptNo: string }[];
@@ -53,6 +55,20 @@ export async function loadBillingDoc(repo: Repo, paymentId: string): Promise<Bil
   const country = String(b?.country || '').toLowerCase();
   const rate = subtotal > 0 && tax > 0 ? Math.round((tax / subtotal) * 1000) / 10 : 0;
   const taxLabel = `${country.startsWith('ind') || cur === 'INR' ? 'GST' : 'VAT'}${rate ? ' ' + rate + '%' : ''}`;
+  // Branch GST: the tax is shown as CGST and SGST (split by the branch's rates; an older enrolment charged at a
+  // different total rate is split in the same proportion, with the rates it was actually charged at)
+  let taxes = tax > 0 ? [{ label: taxLabel, amount: tax }] : [];
+  const g = branchGst(b);
+  if (g && tax > 0) {
+    const sum = g.cgst + g.sgst, eff = subtotal > 0 ? (tax / subtotal) * 100 : sum;
+    const same = Math.abs(eff - sum) < 0.05;
+    const pct = (x: number) => String(Number(x.toFixed(2)));
+    const cg = r2((tax * g.cgst) / sum);
+    taxes = [
+      { label: `CGST ${pct(same ? g.cgst : (eff * g.cgst) / sum)}%`, amount: cg },
+      { label: `SGST ${pct(same ? g.sgst : (eff * g.sgst) / sum)}%`, amount: r2(tax - cg) },
+    ];
+  }
 
   // Payments on this enrolment up to and including this one
   const all = (e ? await repo.many<any>('payment', 'ref1=?', [e.id]) : [p]).filter((x) => x.id === p.id || x.status !== 'Cancelled');
@@ -74,9 +90,9 @@ export async function loadBillingDoc(repo: Repo, paymentId: string): Promise<Bil
   const cityLine = [real(b?.city), real(b?.country)].filter(Boolean).join(', ');
   return {
     invoiceNo: e?.id ? 'INV-' + String(e.id).replace(/^EN-/, '') : 'INV-' + p.id, receiptNo: p.rc || p.id,
-    issued: e?.date || p.at, paidAt: p.at, due, cur, lines, subtotal, taxLabel, tax, total,
+    issued: e?.date || p.at, paidAt: p.at, due, cur, lines, subtotal, taxLabel, tax, total, taxes,
     amountPaid: r2(+p.amt || 0), paidToDate, amountDue,
-    from: { name: 'Lab of Future', lines: [real(b?.name) ? clean(b.name) + ' branch' : '', real(b?.address), cityLine !== real(b?.address) ? cityLine : '', real(b?.phone), real(b?.email)].filter(Boolean) },
+    from: { name: 'Lab of Future', lines: [real(b?.name) ? clean(b.name) + ' branch' : '', real(b?.address), cityLine !== real(b?.address) ? cityLine : '', real(b?.phone), real(b?.email), real(b?.gstin) ? 'GSTIN: ' + clean(b.gstin) : '', real(b?.pan) ? 'PAN: ' + clean(b.pan) : ''].filter(Boolean) },
     billTo: { name: real(parent.name) || studentName || 'Parent / guardian', lines: [real(parent.email), real(parent.mobile), studentName ? `Student: ${studentName} (${s.id})` : ''].filter(Boolean) },
     history: upto.map((x) => ({ method: clean(x.method) + (real(x.ref) && !/^(cash)$/i.test(clean(x.method)) ? ' · ' + clean(x.ref) : ''), at: x.at, amount: r2(+x.amt || 0), receiptNo: x.rc || x.id })),
     student: studentName, studentId: s?.id || p.stu || '', enrolmentId: e?.id || '', paymentId: p.id,
@@ -91,7 +107,7 @@ const W = 595.28, H = 841.89, L = 48, R = W - 48;
 /** Draws one invoice or receipt page in the agreed layout. */
 async function renderPdf(d: BillingDoc, kind: 'invoice' | 'receipt'): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
-  pdf.setTitle(`${kind === 'invoice' ? 'Invoice ' + d.invoiceNo : 'Receipt ' + d.receiptNo} – Lab of Future`);
+  pdf.setTitle(`${kind === 'invoice' ? 'Tax Invoice ' + d.invoiceNo : 'Receipt ' + d.receiptNo} – Lab of Future`);
   pdf.setAuthor('Lab of Future'); pdf.setCreator('Lab of Future CRM'); pdf.setProducer('Lab of Future CRM');
   const page = pdf.addPage([W, H]);
   const reg = await pdf.embedFont(StandardFonts.Helvetica), bold = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -111,16 +127,24 @@ async function renderPdf(d: BillingDoc, kind: 'invoice' | 'receipt'): Promise<Ui
   };
   const rule = (y: number, x1 = L, x2 = R, t = 0.6, color = RULE) => page.drawLine({ start: { x: x1, y }, end: { x: x2, y }, thickness: t, color });
 
-  // Title and logo
-  text(page, (kind === 'invoice' ? 'Invoice' : 'Receipt') + (d.cancelled ? ' – CANCELLED' : ''), L, H - 78, { f: bold, size: 24 });
+  // Logo top right. The invoice is a "Tax Invoice": its title is centred on its own line under the logo, with
+  // "CANCELLED" under it when the payment was cancelled. The receipt keeps its title on the left, beside the logo.
   const lw = 170, lh = (lw * LOF_LOGO_SIZE.h) / LOF_LOGO_SIZE.w;
   page.drawImage(logo, { x: R - lw, y: H - 60 - lh, width: lw, height: lh });
+  let y = H - 112;
+  if (kind === 'invoice') {
+    const title = 'Tax Invoice', ty = H - 60 - lh - 38;
+    page.drawText(title, { x: (W - bold.widthOfTextAtSize(title, 24)) / 2, y: ty, size: 24, font: bold, color: INK });
+    if (d.cancelled) page.drawText('CANCELLED', { x: (W - bold.widthOfTextAtSize('CANCELLED', 12)) / 2, y: ty - 20, size: 12, font: bold, color: rgb(0.71, 0.14, 0.09) });
+    y = ty - (d.cancelled ? 50 : 36);
+  } else {
+    text(page, 'Receipt' + (d.cancelled ? ' – CANCELLED' : ''), L, H - 78, { f: bold, size: 24 });
+  }
 
   // Number and date block
   const meta: [string, string][] = kind === 'invoice'
     ? [['Invoice number', d.invoiceNo], ['Date of issue', day(d.issued)], ['Date due', d.amountDue > 0.005 && d.due ? day(d.due) : 'Paid in full']]
     : [['Invoice number', d.invoiceNo], ['Receipt number', d.receiptNo], ['Date paid', day(d.paidAt)]];
-  let y = H - 112;
   for (const [k, v] of meta) { text(page, k, L, y, { f: bold, size: 9.5 }); text(page, v, L + 92, y, { f: bold, size: 9.5 }); y -= 15; }
 
   // From / Bill to
@@ -156,7 +180,7 @@ async function renderPdf(d: BillingDoc, kind: 'invoice' | 'receipt'): Promise<Ui
   // Totals
   y -= 6;
   const tot: [string, string, boolean][] = [['Subtotal', docMoney(d.subtotal, d.cur), false]];
-  if (d.tax > 0) tot.push([d.taxLabel, docMoney(d.tax, d.cur), false]);
+  for (const x of d.taxes || (d.tax > 0 ? [{ label: d.taxLabel, amount: d.tax }] : [])) tot.push([x.label, docMoney(x.amount, d.cur), false]);
   tot.push(['Total', docMoney(d.total, d.cur), false]);
   if (kind === 'invoice') { tot.push(['Amount paid', docMoney(d.paidToDate, d.cur), false]); tot.push(['Amount due', docMoney(d.amountDue, d.cur), true]); }
   else tot.push(['Amount paid', docMoney(d.amountPaid, d.cur), true]);
@@ -197,7 +221,7 @@ export const receiptPdf = (d: BillingDoc) => renderPdf(d, 'receipt');
 
 /** File names for the two attachments. */
 export const docFileNames = (d: BillingDoc) => ({
-  invoice: `Invoice-${d.invoiceNo}.pdf`.replace(/[^\w.-]+/g, '-'),
+  invoice: `Tax-Invoice-${d.invoiceNo}.pdf`.replace(/[^\w.-]+/g, '-'),
   receipt: `Receipt-${d.receiptNo}.pdf`.replace(/[^\w.-]+/g, '-'),
 });
 
@@ -220,7 +244,7 @@ export function docHtml(d: BillingDoc, kind: 'invoice' | 'receipt', logo: string
     : `${docMoney(d.amountPaid, d.cur)} paid on ${day(d.paidAt)}`;
   const items = d.lines.map((l) => `<tr><td style="${td}">${esc(l.desc)}${l.sub ? `<div style="color:#5f6b7a;font-size:13px">${esc(l.sub)}</div>` : ''}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${l.qty}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${esc(docMoney(l.unit, d.cur))}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${esc(docMoney(l.amount, d.cur))}</td></tr>`).join('');
   const tot: [string, string, boolean][] = [['Subtotal', docMoney(d.subtotal, d.cur), false]];
-  if (d.tax > 0) tot.push([d.taxLabel, docMoney(d.tax, d.cur), false]);
+  for (const x of d.taxes || (d.tax > 0 ? [{ label: d.taxLabel, amount: d.tax }] : [])) tot.push([x.label, docMoney(x.amount, d.cur), false]);
   tot.push(['Total', docMoney(d.total, d.cur), false]);
   if (kind === 'invoice') { tot.push(['Amount paid', docMoney(d.paidToDate, d.cur), false]); tot.push(['Amount due', docMoney(d.amountDue, d.cur), true]); }
   else tot.push(['Amount paid', docMoney(d.amountPaid, d.cur), true]);
@@ -229,7 +253,10 @@ export function docHtml(d: BillingDoc, kind: 'invoice' | 'receipt', logo: string
     ? `<div style="font-size:20px;font-weight:700;margin:32px 0 14px">Payment history</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><th align="left" style="${th}">Payment method</th><th align="left" style="${th}">Date</th><th align="right" style="${th}">Amount paid</th><th align="right" style="${th}">Receipt number</th></tr>${d.history.map((h) => `<tr><td style="${td}">${esc(h.method || '—')}</td><td style="${td};white-space:nowrap;padding-left:8px">${esc(day(h.at))}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${esc(docMoney(h.amount, d.cur))}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${esc(h.receiptNo)}</td></tr>`).join('')}</table>`
     : '';
   return `<div style="max-width:720px;margin:0 auto;background:#fff;padding:32px;font-family:Inter,Arial,Helvetica,sans-serif;color:#0f1729">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="font-size:30px;font-weight:700;vertical-align:top">${kind === 'invoice' ? 'Invoice' : 'Receipt'}${d.cancelled ? ' – CANCELLED' : ''}</td><td align="right" style="vertical-align:top"><img src="${esc(logo)}" alt="Lab of Future" width="190" style="display:block;width:190px;max-width:45vw;height:auto;border:0"></td></tr></table>
+${kind === 'invoice'
+    // Tax invoice: title centred across the page (an empty cell as wide as the logo balances it), "CANCELLED" under it
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="right" style="vertical-align:top"><img src="${esc(logo)}" alt="Lab of Future" width="190" style="display:block;width:190px;max-width:45vw;height:auto;border:0;margin-left:auto"></td></tr><tr><td align="center" style="padding-top:18px;font-size:30px;font-weight:700;text-align:center">Tax Invoice${d.cancelled ? '<div style="font-size:15px;color:#b42318;margin-top:4px">CANCELLED</div>' : ''}</td></tr></table>`
+    : `<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="font-size:30px;font-weight:700;vertical-align:top">Receipt${d.cancelled ? ' – CANCELLED' : ''}</td><td align="right" style="vertical-align:top"><img src="${esc(logo)}" alt="Lab of Future" width="190" style="display:block;width:190px;max-width:45vw;height:auto;border:0"></td></tr></table>`}
 <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:22px">${meta}</table>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:28px"><tr><td width="50%" style="vertical-align:top;padding-right:12px">${block(d.from.name, '', d.from.lines)}</td><td width="50%" style="vertical-align:top">${block('Bill to', d.billTo.name, d.billTo.lines)}</td></tr></table>
 <div style="font-size:20px;font-weight:700;margin:30px 0 26px">${esc(headline)}</div>

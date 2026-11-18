@@ -236,7 +236,7 @@ export const payLinkUrl = (env: Env, id: string) => `${env.APP_BASE_URL.replace(
 /** True when a link that is still open has run past its validity. */
 export const linkExpired = (link: any, now = nowIso()) => link.status === 'created' && !!link.expires_at && link.expires_at < now;
 
-export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amount: number | undefined, createdBy: string, opts: { kind?: 'collect' | 'reminder' } = {}) {
+export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amount: number | undefined, createdBy: string, opts: { kind?: 'collect' | 'reminder'; createdById?: string } = {}) {
   const e = await repo.get<any>('enrollment', enrId);
   if (!e) throw new Error('Enrollment not found');
   if (e.status === 'Withdrawn') throw new Error('Enrollment is withdrawn');
@@ -247,7 +247,7 @@ export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amo
   const parent = (s?.parents || [])[0] || {};
   const programs = await repo.many<any>('program');
   return makeLink(env, repo, {
-    amount: amt, currency: e.cur, enrollmentId: e.id, isTest: repo.isTest || !!e.test, createdBy, kind: opts.kind || 'collect',
+    amount: amt, currency: e.cur, enrollmentId: e.id, isTest: repo.isTest || !!e.test, createdBy, createdById: opts.createdById, kind: opts.kind || 'collect',
     description: `Lab of Future – ${(programs.find((p) => p.id === e.prog) || { name: e.prog }).name} – ${s?.first} ${s?.last} (${e.id})`,
     customer: { name: parent.name || `${s?.first} ${s?.last}`, email: parent.email, phone: parent.mobile },
   });
@@ -255,7 +255,7 @@ export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amo
 
 /** Creates the hosted link at the gateway and stores it. */
 async function makeLink(env: Env, repo: Repo, a: {
-  amount: number; currency: string; enrollmentId: string; isTest: boolean; createdBy: string; description: string;
+  amount: number; currency: string; enrollmentId: string; isTest: boolean; createdBy: string; createdById?: string; description: string;
   customer: LinkInput['customer']; oppId?: string; draft?: string; draftBy?: string; kind: 'collect' | 'opp' | 'reminder';
 }) {
   const cfg = await repo.setting<any>('cfg');
@@ -277,8 +277,8 @@ async function makeLink(env: Env, repo: Repo, a: {
   };
   const ctx = { env, mode, isTest: a.isTest };
   const r = provider === 'telr' ? await telrCreate(ctx, input) : await razorpayCreate(ctx, input);
-  await env.DB.prepare('INSERT INTO payment_links (id,provider,provider_ref,enrollment_id,amount,currency,url,status,created_by,is_test,opp_id,draft,draft_by,expires_at,kind) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .bind(linkId, mode === 'mock' ? `${provider}-mock` : provider, r.providerRef, a.enrollmentId, a.amount, a.currency, r.url, 'created', a.createdBy, a.isTest ? 1 : 0, a.oppId ?? null, a.draft ?? null, a.draftBy ?? null, expiresAt, a.kind).run();
+  await env.DB.prepare('INSERT INTO payment_links (id,provider,provider_ref,enrollment_id,amount,currency,url,status,created_by,is_test,opp_id,draft,draft_by,expires_at,kind,created_by_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(linkId, mode === 'mock' ? `${provider}-mock` : provider, r.providerRef, a.enrollmentId, a.amount, a.currency, r.url, 'created', a.createdBy, a.isTest ? 1 : 0, a.oppId ?? null, a.draft ?? null, a.draftBy ?? null, expiresAt, a.kind, a.createdById ?? null).run();
   await addAudit(repo, 'Payment link created', linkId, `${money(a.amount, a.currency)} via ${provider}${mode === 'mock' ? ' (mock)' : ''} for ${a.oppId ? `${a.oppId} (enrols ${a.enrollmentId} on payment)` : a.enrollmentId}`, a.createdBy);
   return { id: linkId, provider, mode, url: payLinkUrl(env, linkId), providerRef: r.providerRef, amount: a.amount, currency: a.currency, expiresAt };
 }
@@ -295,7 +295,18 @@ export async function reminderLink(env: Env, repo: Repo, enrId: string, amount: 
     if (!String(l.provider).startsWith('razorpay')) continue;
     try { await razorpayCancel({ env, mode: l.provider.endsWith('-mock') ? 'mock' : modeFor(env, cfg, 'razorpay', !!l.is_test), isTest: !!l.is_test }, l.provider_ref); } catch (e) { console.error('razorpay cancel', l.id, e); }
   }
-  return createPaymentLink(env, repo, enrId, amount, 'Email automation', { kind: 'reminder' });
+  const link = await createPaymentLink(env, repo, enrId, amount, 'Email automation', { kind: 'reminder' });
+  // the reminder e-mail is what sends this link
+  const e = await repo.get<any>('enrollment', enrId);
+  const to = ((e ? (await repo.get<any>('student', e.stu))?.parents : null) || [])[0]?.email || '';
+  await markLinkSent(env, link.id, { by: 'Payment reminder', via: 'Email', to });
+  return link;
+}
+
+/** Remembers who sent a link to the parent, how and when (Payments → Payment links). */
+export async function markLinkSent(env: Env, linkId: string, s: { by: string; byId?: string; via: string; to?: string }) {
+  await env.DB.prepare('UPDATE payment_links SET sent_by=?, sent_by_id=?, sent_via=?, sent_to=?, sent_at=?, sends=COALESCE(sends,0)+1 WHERE id=?')
+    .bind(s.by, s.byId ?? null, s.via, s.to || null, nowIso(), linkId).run();
 }
 
 // ---------------- Payment links shared from an opportunity ----------------
@@ -336,7 +347,7 @@ export async function createOppPaymentLink(env: Env, repo: Repo, user: User, per
   // One open link per opportunity: a new one replaces the previous (a payment on an older link still enrols only once)
   await env.DB.prepare("UPDATE payment_links SET status='replaced' WHERE opp_id=? AND status='created' AND draft IS NOT NULL").bind(oppId).run();
   const link = await makeLink(env, repo, {
-    amount: amt, currency: e.cur, enrollmentId: e.id, isTest: repo.isTest || !!opp.test, createdBy: user.name, oppId, draft: JSON.stringify(draft), draftBy: user.id, kind: 'opp',
+    amount: amt, currency: e.cur, enrollmentId: e.id, isTest: repo.isTest || !!opp.test, createdBy: user.name, createdById: user.id, oppId, draft: JSON.stringify(draft), draftBy: user.id, kind: 'opp',
     description: `Lab of Future – ${(programs.find((p) => p.id === e.prog) || { name: e.prog }).name} – ${stu ? `${stu.first} ${stu.last}` : opp.student} (${oppId})`,
     customer: { name: parent.name || lead?.parent || opp.parent || opp.student, email: parent.email || lead?.email, phone: parent.mobile || lead?.phone },
   });

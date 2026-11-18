@@ -78,7 +78,7 @@ describe('email automation', () => {
     expect(last.text).toContain('invoice and receipt are attached');
     // sent with the receipt layout and both PDFs (the log keeps names and sizes only)
     expect(last).toMatchObject({ docs: { payment: 'PY-26-9001' }, status: 'Sent (mock)' });
-    expect(last.attached).toEqual([expect.stringMatching(/^Invoice-INV-26-\d{4}\.pdf$/), 'Receipt-RC-KRM-26-9001.pdf']);
+    expect(last.attached).toEqual([expect.stringMatching(/^Tax-Invoice-INV-26-\d{4}\.pdf$/), 'Receipt-RC-KRM-26-9001.pdf']);
     const log = JSON.parse((await t.sql<any>("SELECT request FROM integration_logs WHERE integration='email' ORDER BY id DESC LIMIT 1"))[0].request);
     expect(log.attachments.map((a: any) => a.contentType)).toEqual(['application/pdf', 'application/pdf']);
     expect(log.attachments.every((a: any) => a.bytes > 1000 && !('content' in a))).toBe(true);

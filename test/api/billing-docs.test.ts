@@ -62,7 +62,7 @@ describe('invoice and receipt', () => {
       const r = await get(file);
       expect(r.status).toBe(200);
       expect(r.headers.get('content-type')).toBe('application/pdf');
-      expect(r.headers.get('content-disposition')).toMatch(file === 'invoice.pdf' ? /filename="Invoice-INV-26-\d{4}\.pdf"/ : new RegExp(`filename="Receipt-${p.rc}\\.pdf"`));
+      expect(r.headers.get('content-disposition')).toMatch(file === 'invoice.pdf' ? /filename="Tax-Invoice-INV-26-\d{4}\.pdf"/ : new RegExp(`filename="Receipt-${p.rc}\\.pdf"`));
     }
     expect((await get('other.pdf')).status).toBe(404);
     const page = await get('receipt');

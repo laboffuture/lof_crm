@@ -63,6 +63,12 @@ const patches = [
   // Communications tab: the full list across the page, availability and consent cards below it
   ["if (tab === 'comms') { const av = l.avail; return `<div class=\"grid g2\"><div>", "if (tab === 'comms') { const av = l.avail; return `<div class=\"grid\"><div>"],
   ["</div><div class=\"grid\">${card('Parent call availability'", "</div><div class=\"grid g2\">${card('Parent call availability'"],
+  // Payments → Payment links: also visible to counsellors (their own links); Records lists active payments, cancelled ones have their own section
+  ["if (r === '*appr') return anyApprove();", "if (r === '*plinks') return !!(window.canSeeLinks && window.canSeeLinks()); if (r === '*appr') return anyApprove();"],
+  ["const ps = S.pay.filter(p => inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at)), f = S.payF", "const ps = S.pay.filter(p => p.status !== 'Cancelled' && inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at)), f = S.payF"],
+  // Branch GST: fees at a branch with CGST + SGST are charged at that rate (api-client.js → feeTaxPct)
+  ["tax = r2(net * fee.tax / 100)", "tax = r2(net * (window.feeTaxPct ? window.feeTaxPct(fee) : fee.tax) / 100)"],
+  ["<dt>Tax (${f.tax}%)</dt>", "<dt>${window.feeTaxLabel ? esc(window.feeTaxLabel(f)) : 'Tax (' + f.tax + '%)'}</dt>"],
   // Cancelled transactions keep their receipt numbers in every list but drop out of all totals
   ["S.pay.filter(p => p.branch === b[0] && dayKey(p.at)", "S.pay.filter(p => p.status !== 'Cancelled' && p.branch === b[0] && dayKey(p.at)"],
   ["S.pay.filter(p => p.branch === b.id && dayKey(p.at)", "S.pay.filter(p => p.status !== 'Cancelled' && p.branch === b.id && dayKey(p.at)"],

@@ -8,7 +8,7 @@ import { bootstrap } from '../sync/bootstrap';
 import { applySync } from '../sync/sync';
 import { createLead, findDup, addAudit, addEv, money, r2, dayKey, notify, recalcEnrollment } from '../domain/core';
 import { instStatus, refundCalc, daysBetween, lmsEnrolPayload, lmsMissing } from '../domain/terms';
-import { createPaymentLink, createOppPaymentLink, canShareOppLink, processSync, payLinkUrl, linkExpired } from '../domain/workflows';
+import { createPaymentLink, createOppPaymentLink, canShareOppLink, processSync, payLinkUrl, linkExpired, markLinkSent } from '../domain/workflows';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
 import { clickToCall } from '../integrations/exotel';
@@ -350,7 +350,7 @@ api.post('/payments/links', async (c) => {
   if (!e) throw new HttpError(404, 'Enrollment not found');
   needScope(c, e.branch);
   try {
-    return c.json(await createPaymentLink(c.env, repo, enrollmentId, amount, c.get('user').name), 201);
+    return c.json(await createPaymentLink(c.env, repo, enrollmentId, amount, c.get('user').name, { createdById: c.get('user').id }), 201);
   } catch (err: any) {
     throw new HttpError(422, err.message);
   }
@@ -419,6 +419,7 @@ api.post('/payments/links/:id/send', async (c) => {
     const id = await repo.newId('cm');
     await repo.put('comm', { id, lead: lead.id, ch: channel, tpl: 'Payment link', text, at: nowIso(), status: 'Queued', by: c.get('user').name });
     await dispatch(c.env, wait(c), [{ kind: 'send_comm', id }]);
+    await markLinkSent(c.env, link.id, { by: c.get('user').name, byId: c.get('user').id, via: channel, to: channel === 'WhatsApp' ? lead.phone : lead.email });
     return c.json({ ok: true, commId: id });
   }
   need(c, 'payments', 'C');
@@ -433,11 +434,59 @@ api.post('/payments/links/:id/send', async (c) => {
     const id = await repo.newId('cm');
     await repo.put('comm', { id, lead: lead.id, ch: channel, tpl: 'Payment link', text, at: nowIso(), status: 'Queued', by: c.get('user').name });
     await dispatch(c.env, wait(c), [{ kind: 'send_comm', id }]);
+    await markLinkSent(c.env, link.id, { by: c.get('user').name, byId: c.get('user').id, via: channel, to: channel === 'WhatsApp' ? lead.phone : lead.email });
     return c.json({ ok: true, commId: id });
   }
   // Walk-in / existing students: send to the parent on the student record (transactional message about their own enrolment)
   const r = await sendToParent(c.env, repo, s, channel, text);
+  if (r.ok) await markLinkSent(c.env, link.id, { by: c.get('user').name, byId: c.get('user').id, via: channel, to: channel === 'WhatsApp' ? parent.mobile : parent.email });
   return c.json({ ok: r.ok, status: r.status }, r.ok ? 200 : 502);
+});
+
+/**
+ * Payments → Payment links: every link with who it went to, who created and sent it, and whether the parent paid.
+ * Counsellors (and anyone without payment access) see only the links they created or sent.
+ */
+api.get('/payments/link-list', async (c) => {
+  const u = c.get('user'), perms = c.get('perms');
+  const canPay = can(perms, u, 'payments', 'V');
+  if (!canPay && !canShareOppLink(perms, u)) throw new HttpError(403, `${u.role} cannot view payment links`);
+  const own = u.role === 'Counsellor' || !canPay;
+  const repo = c.get('repo');
+  const rows = (await c.env.DB.prepare(`SELECT * FROM payment_links WHERE is_test=? ${own ? 'AND (created_by_id=? OR sent_by_id=? OR (created_by_id IS NULL AND created_by=?))' : ''} ORDER BY created_at DESC LIMIT 500`)
+    .bind(repo.isTest ? 1 : 0, ...(own ? [u.id, u.id, u.name] : [])).all<any>()).results || [];
+  const cache = new Map<string, any>();
+  const get = async (type: string, id: unknown) => {
+    if (!id) return null;
+    const k = type + ':' + id;
+    if (!cache.has(k)) cache.set(k, await repo.get<any>(type, String(id)));
+    return cache.get(k);
+  };
+  const progs = await repo.many<any>('program');
+  const pname = (id: string) => (progs.find((p) => p.id === id) || { name: id || '' }).name;
+  const now = nowIso();
+  const items: any[] = [];
+  for (const l of rows) {
+    const e = await get('enrollment', l.enrollment_id);
+    const opp = l.opp_id ? await get('opp', l.opp_id) : e?.opp ? await get('opp', e.opp) : null;
+    const s = e ? await get('student', e.stu) : null;
+    const lead = opp ? await get('lead', opp.lead) : null;
+    const branch = e?.branch || opp?.branch;
+    if (!branch || !u.scope.includes(branch)) continue;
+    const parent = (s?.parents || [])[0] || {};
+    const pay = l.payment_id ? await get('payment', l.payment_id) : null;
+    items.push({
+      id: l.id, url: payLinkUrl(c.env, l.id), kind: l.kind || (l.opp_id ? 'opp' : 'collect'), amount: l.amount, currency: l.currency,
+      status: linkExpired(l, now) ? 'expired' : l.status, applyError: l.apply_error || null,
+      student: s ? `${s.first} ${s.last}` : opp?.student || '', studentId: s?.id || null,
+      parent: lead?.parent || parent.name || opp?.parent || '', phone: lead?.phone || parent.mobile || '', email: lead?.email || parent.email || '',
+      branch, prog: pname(e?.prog || opp?.prog), enrollment: e?.id || null, opp: opp?.id || null, lead: lead?.id || null,
+      createdBy: l.created_by, createdAt: l.created_at, expiresAt: l.expires_at,
+      sentBy: l.sent_by, sentVia: l.sent_via, sentTo: l.sent_to, sentAt: l.sent_at, sends: l.sends || 0,
+      paidAt: l.paid_at, receipt: pay?.rc || null, paymentStatus: pay?.status || null,
+    });
+  }
+  return c.json({ items, own });
 });
 
 // ------------------------------------------------------------------ LMS calls (enrol / cancel); /moodle/syncs kept as an alias
