@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { hmacSha256Hex, signJwt, verifyJwt, hashPassword, verifyPassword, safeEqual } from '../../src/lib/crypto';
 import { calcFee, feeFor, templateParams, msgFrom } from '../../src/domain/core';
-import { buildSched, instStatus, refundCalc, termProblem, lmsEnrolPayload, lmsMissing, targetsProblem, refundProblem } from '../../src/domain/terms';
+import { buildSched, instStatus, refundCalc, termProblem, lmsEnrolPayload, lmsMissing, targetsProblem, recTargetsProblem, refundProblem } from '../../src/domain/terms';
 import { parseStatus } from '../../src/integrations/exotel';
 import { clientIp } from '../../src/lib/ratelimit';
 import { mapLead, parseLeadgenWebhook } from '../../src/integrations/meta';
@@ -101,6 +101,14 @@ describe('refund rules', () => {
     expect(targetsProblem([{ m: '2026-10', c: 'S01', enr: 2.5, rev: 1, conv: 10 }], new Set(['S01']))).not.toBe('');
     expect(targetsProblem([{ m: '2026-10', c: 'S99', enr: 2, rev: 1, conv: 10 }], new Set(['S01']))).not.toBe('');
     expect(targetsProblem([{ m: '2026-10', c: 'S01', enr: 2, rev: 1000, conv: 10 }], new Set(['S01']))).toBe('');
+  });
+  it('checks reception (collections) targets', () => {
+    const rec = new Set(['S10']);
+    expect(recTargetsProblem([{ m: '2026-11', c: 'S10', col: 25000 }], rec)).toBe('');
+    expect(recTargetsProblem([{ m: '2026-11', c: 'S01', col: 25000 }], rec)).not.toBe('');
+    expect(recTargetsProblem([{ m: '2026-11', c: 'S10', col: -5 }], rec)).not.toBe('');
+    expect(recTargetsProblem([{ m: '2026-11', c: 'S10', col: '9' }], rec)).not.toBe('');
+    expect(recTargetsProblem([{ m: '2026-11', c: 'S10', col: 1 }, { m: '2026-11', c: 'S10', col: 2 }], rec)).not.toBe('');
   });
 });
 

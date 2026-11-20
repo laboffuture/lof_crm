@@ -18,7 +18,16 @@ const patches = [
   [/const\s+nowIso\s*=\s*\(\)\s*=>\s*NOW\.toISOString\(\);/, 'const nowIso=()=>(window.LOF_API?new Date():NOW).toISOString();'],
   [/\n\s*boot\(\);\s*\n\s*<\/script>/, '\nif(!window.LOF_API)boot();\n</script>\n<script src="/vendor/qrcode-generator-1.4.4.js"></script>\n<script src="/api-client.js"></script>'],
   ['<title>LOF CRM Prototype</title>', '<title>Lab of Future CRM</title>\n  <link rel="icon" type="image/png" href="/logo.png">'],
-  ['<small>CRM & Sales · Prototype</small>', '<small>CRM & Sales</small>'],
+  // Lab of Future style guide (Student Learning Hub look): Inter, the real logo in the sidebar, and
+  // public/lof-theme.css loaded after the prototype's styles (the sign-in screens keep their own design)
+  ['family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono', 'family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono'],
+  ['<div class="logo">LOF</div><div><b>Lab of Future</b><small>CRM & Sales · Prototype</small></div>',
+    '<img class="brand-logo" src="/lof-logo.png" alt="Lab of Future – CRM &amp; Sales" width="480" height="135"><span class="brand-mark" aria-hidden="true"></span>'],
+  // Activities & Calls: a conversation log (context of any conversation – call, WhatsApp, visit, e-mail, meeting) above the call log (api-client.js → convCard)
+  ["if (tab === 'activity') return card('Call log', table('lcalls', [", "if (tab === 'activity') return (window.convCard ? window.convCard(l) : '') + card('Call log', table('lcalls', ["],
+  // light / dark switch in the top bar (as in the Hub): moon in light mode, sun in dark mode; the choice is remembered
+  ['<button class="iconbtn" data-act="go" data-page="notifications"', '<button class="iconbtn theme-toggle" data-act="theme" title="Switch between light and dark theme" aria-label="Switch between light and dark theme"><svg class="ico i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg><svg class="ico i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>\n  <button class="iconbtn" data-act="go" data-page="notifications"'],
+  ['  </style>\n  <div id="app"></div>', '  </style>\n  <link rel="stylesheet" href="/lof-theme.css">\n  <div id="app"></div>'],
   // long modal forms: let the body scroll so the footer buttons stay on screen
   [/\.hide\s*\{\s*display:\s*none\s*!important\s*\}/, '.hide{display:none!important}\n.modal{max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px)}.modal>form{display:flex;flex-direction:column;min-height:0;flex:1 1 auto}.modal .mb{min-height:0;flex:1 1 auto}'],
   // Communication history: e-mail subject above the text, and Reply on received e-mails (api-client.js → mailReplyBtn)

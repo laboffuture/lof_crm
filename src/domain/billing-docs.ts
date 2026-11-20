@@ -8,11 +8,17 @@ import { instStatus } from './terms';
 import { LOF_LOGO_PNG_B64, LOF_LOGO_SIZE } from '../assets/lof-logo';
 
 export interface DocLine { desc: string; sub?: string; qty: number; unit: number; amount: number }
+export interface GstSummary {
+  taxable: number; cgstPct: number; cgst: number; sgstPct: number; sgst: number; total: number;
+  paid: { taxable: number; cgst: number; sgst: number };
+}
 export interface BillingDoc {
   invoiceNo: string; receiptNo: string; issued: string; paidAt: string; due: string | null;
   cur: string; lines: DocLine[]; subtotal: number; taxLabel: string; tax: number; total: number;
   /** Tax lines on the invoice: one line (VAT / GST), or CGST and SGST when the branch has GST set. */
   taxes: { label: string; amount: number }[];
+  /** India: the CGST / SGST breakdown (rates and amounts), and the part of it included in this payment. */
+  gst?: GstSummary | null;
   amountPaid: number; paidToDate: number; amountDue: number;
   from: { name: string; lines: string[] }; billTo: { name: string; lines: string[] };
   history: { method: string; at: string; amount: number; receiptNo: string }[];
@@ -58,16 +64,21 @@ export async function loadBillingDoc(repo: Repo, paymentId: string): Promise<Bil
   // Branch GST: the tax is shown as CGST and SGST (split by the branch's rates; an older enrolment charged at a
   // different total rate is split in the same proportion, with the rates it was actually charged at)
   let taxes = tax > 0 ? [{ label: taxLabel, amount: tax }] : [];
-  const g = branchGst(b);
+  let gst: GstSummary | null = null;
+  // India: GST is always shown as CGST + SGST. Without rates on the branch it is split in equal halves.
+  const india = country.startsWith('ind') || cur === 'INR';
+  const g = branchGst(b) || (india ? { cgst: 1, sgst: 1 } : null);
   if (g && tax > 0) {
     const sum = g.cgst + g.sgst, eff = subtotal > 0 ? (tax / subtotal) * 100 : sum;
-    const same = Math.abs(eff - sum) < 0.05;
-    const pct = (x: number) => String(Number(x.toFixed(2)));
-    const cg = r2((tax * g.cgst) / sum);
-    taxes = [
-      { label: `CGST ${pct(same ? g.cgst : (eff * g.cgst) / sum)}%`, amount: cg },
-      { label: `SGST ${pct(same ? g.sgst : (eff * g.sgst) / sum)}%`, amount: r2(tax - cg) },
-    ];
+    const pct = (x: number) => Number(x.toFixed(2));
+    const cgPct = pct((eff * g.cgst) / sum), sgPct = pct((eff * g.sgst) / sum);
+    const cg = r2((tax * g.cgst) / sum), sg = r2(tax - cg);
+    taxes = [{ label: `CGST ${cgPct}%`, amount: cg }, { label: `SGST ${sgPct}%`, amount: sg }];
+    // The part of this payment that is GST (payments are tax-inclusive, in proportion to the total)
+    const share = total > 0 ? Math.min(1, (+p.amt || 0) / total) : 0;
+    const ptax = r2(tax * share), pcg = r2(cg * share);
+    gst = { taxable: subtotal, cgstPct: cgPct, cgst: cg, sgstPct: sgPct, sgst: sg, total: tax,
+      paid: { taxable: r2((+p.amt || 0) - ptax), cgst: pcg, sgst: r2(ptax - pcg) } };
   }
 
   // Payments on this enrolment up to and including this one
@@ -90,7 +101,7 @@ export async function loadBillingDoc(repo: Repo, paymentId: string): Promise<Bil
   const cityLine = [real(b?.city), real(b?.country)].filter(Boolean).join(', ');
   return {
     invoiceNo: e?.id ? 'INV-' + String(e.id).replace(/^EN-/, '') : 'INV-' + p.id, receiptNo: p.rc || p.id,
-    issued: e?.date || p.at, paidAt: p.at, due, cur, lines, subtotal, taxLabel, tax, total, taxes,
+    issued: e?.date || p.at, paidAt: p.at, due, cur, lines, subtotal, taxLabel, tax, total, taxes, gst,
     amountPaid: r2(+p.amt || 0), paidToDate, amountDue,
     from: { name: 'Lab of Future', lines: [real(b?.name) ? clean(b.name) + ' branch' : '', real(b?.address), cityLine !== real(b?.address) ? cityLine : '', real(b?.phone), real(b?.email), real(b?.gstin) ? 'GSTIN: ' + clean(b.gstin) : '', real(b?.pan) ? 'PAN: ' + clean(b.pan) : ''].filter(Boolean) },
     billTo: { name: real(parent.name) || studentName || 'Parent / guardian', lines: [real(parent.email), real(parent.mobile), studentName ? `Student: ${studentName} (${s.id})` : ''].filter(Boolean) },
@@ -103,6 +114,14 @@ export async function loadBillingDoc(repo: Repo, paymentId: string): Promise<Bil
 // ------------------------------------------------------------------------------------------------ PDF
 const INK = rgb(0.06, 0.09, 0.16), MUTED = rgb(0.38, 0.42, 0.48), RULE = rgb(0.86, 0.88, 0.91);
 const W = 595.28, H = 841.89, L = 48, R = W - 48;
+
+/** Rows of the GST summary: the invoice, and on the receipt the GST included in this payment. */
+const gstRows = (d: BillingDoc, kind: 'invoice' | 'receipt'): [string, number, number, number][] => {
+  const g = d.gst!;
+  const rows: [string, number, number, number][] = [['Invoice', g.taxable, g.cgst, g.sgst]];
+  if (kind === 'receipt') rows.push(['This payment', g.paid.taxable, g.paid.cgst, g.paid.sgst]);
+  return rows;
+};
 
 /** Draws one invoice or receipt page in the agreed layout. */
 async function renderPdf(d: BillingDoc, kind: 'invoice' | 'receipt'): Promise<Uint8Array> {
@@ -191,6 +210,23 @@ async function renderPdf(d: BillingDoc, kind: 'invoice' | 'receipt'): Promise<Ui
     y -= 19;
   }
 
+  // GST summary (India): taxable value, CGST and SGST rates and amounts; the receipt adds this payment's share
+  if (d.gst) {
+    const g = d.gst, c = [235, 340, 445];
+    y -= 18;
+    text(page, 'GST summary', L, y, { f: bold, size: 12 }); y -= 22;
+    const heads = ['Taxable value', `CGST @ ${g.cgstPct}%`, `SGST @ ${g.sgstPct}%`];
+    heads.forEach((h, i) => text(page, h, c[i], y, { size: 8, color: MUTED, right: true }));
+    text(page, 'Total GST', R, y, { size: 8, color: MUTED, right: true });
+    y -= 7; rule(y, L, R, 0.9, INK); y -= 16;
+    for (const [k, tv, cg, sg] of gstRows(d, kind)) {
+      text(page, k, L, y, { max: 110 });
+      text(page, docMoney(tv, d.cur), c[0], y, { right: true }); text(page, docMoney(cg, d.cur), c[1], y, { right: true });
+      text(page, docMoney(sg, d.cur), c[2], y, { right: true }); text(page, docMoney(r2(cg + sg), d.cur), R, y, { right: true, f: bold });
+      y -= 18;
+    }
+  }
+
   // Receipt: payment history
   if (kind === 'receipt' && d.history.length) {
     y -= 26;
@@ -249,6 +285,10 @@ export function docHtml(d: BillingDoc, kind: 'invoice' | 'receipt', logo: string
   if (kind === 'invoice') { tot.push(['Amount paid', docMoney(d.paidToDate, d.cur), false]); tot.push(['Amount due', docMoney(d.amountDue, d.cur), true]); }
   else tot.push(['Amount paid', docMoney(d.amountPaid, d.cur), true]);
   const totals = tot.map(([k, v, s]) => `<tr><td style="padding:5px 0;border-top:1px solid #e3e6eb;font-size:14px;${s ? 'font-weight:700' : ''}">${esc(k)}</td><td style="padding:5px 0;border-top:1px solid #e3e6eb;font-size:14px;text-align:right;white-space:nowrap;${s ? 'font-weight:700' : ''}">${esc(v)}</td></tr>`).join('');
+  const r = `${td};text-align:right;white-space:nowrap;padding-left:10px`;
+  const gstTable = d.gst
+    ? `<div style="font-size:16px;font-weight:700;margin:28px 0 12px">GST summary</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><th align="left" style="${th}"></th><th align="right" style="${th}">Taxable value</th><th align="right" style="${th}">CGST @ ${d.gst.cgstPct}%</th><th align="right" style="${th}">SGST @ ${d.gst.sgstPct}%</th><th align="right" style="${th}">Total GST</th></tr>${gstRows(d, kind).map(([k, tv, cg, sg]) => `<tr><td style="${td}">${esc(k)}</td><td style="${r}">${esc(docMoney(tv, d.cur))}</td><td style="${r}">${esc(docMoney(cg, d.cur))}</td><td style="${r}">${esc(docMoney(sg, d.cur))}</td><td style="${r};font-weight:700">${esc(docMoney(r2(cg + sg), d.cur))}</td></tr>`).join('')}</table>`
+    : '';
   const history = kind === 'receipt' && d.history.length
     ? `<div style="font-size:20px;font-weight:700;margin:32px 0 14px">Payment history</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><th align="left" style="${th}">Payment method</th><th align="left" style="${th}">Date</th><th align="right" style="${th}">Amount paid</th><th align="right" style="${th}">Receipt number</th></tr>${d.history.map((h) => `<tr><td style="${td}">${esc(h.method || '—')}</td><td style="${td};white-space:nowrap;padding-left:8px">${esc(day(h.at))}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${esc(docMoney(h.amount, d.cur))}</td><td style="${td};text-align:right;white-space:nowrap;padding-left:10px">${esc(h.receiptNo)}</td></tr>`).join('')}</table>`
     : '';
@@ -262,7 +302,7 @@ ${kind === 'invoice'
 <div style="font-size:20px;font-weight:700;margin:30px 0 26px">${esc(headline)}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse"><tr><th align="left" style="${th}">Description</th><th align="right" style="${th}">Qty</th><th align="right" style="${th}">Unit price</th><th align="right" style="${th}">Amount</th></tr>${items}</table>
 <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin:14px 0 0 auto;width:100%;max-width:370px">${totals}</table>
-${history}</div>`;
+${gstTable}${history}</div>`;
 }
 
 /** The payment e-mail: the template's message, the receipt, and a note that the PDFs are attached. */

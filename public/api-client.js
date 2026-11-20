@@ -1507,189 +1507,172 @@
     loginScreen(msg);
   }
   var pendingPw = null; // kept in memory only between "sign in" and the forced password change
-  // ---------------- sign-in screens (design "LOF CRM Login" v2): one dark navy page – the header with the logo and
-  // "Need help?", the form in a frosted card on the left, and on the right the dotted map with the animated route of
-  // our centres (Jaipur → Dubai → Chennai → Coimbatore → Mumbai), the headline and the enquiry-to-enrolment journey.
-  // On phones: the header, a smaller map, then the form. The same shell is used for sign-in, the two-step code,
-  // password reset and the forced password change.
-  var LB_PERSON = '<svg class="lb-note-ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>';
+  // ---------------- sign-in screens (final design "LOF CRM Login v3"): a dark starry page with an orbiting satellite, a
+  // meteor and a planet horizon; the header with the logo and "Need help?"; the sign-in card in a glowing animated border
+  // on the left; on the right the dotted map with the animated route of our centres (Jaipur → Dubai → Chennai →
+  // Coimbatore → Mumbai), the headline and the enquiry-to-enrolment journey; the footer lists the roles.
+  // Phones: header, a smaller map, then the card. The same shell is used for sign-in, the two-step code, password reset
+  // and the forced password change. Stars, route and animations are copied from the design file.
+  var LB_ANIM = "@property --lof-a{syntax:'<angle>';inherits:false;initial-value:0deg}\n@keyframes lof-spin{to{--lof-a:360deg}}\n.lof-beam{background:conic-gradient(from var(--lof-a),rgba(142,177,242,0) 0deg,rgba(142,177,242,0) 230deg,rgba(142,177,242,.9) 290deg,#ffffff 318deg,rgba(213,58,40,.95) 340deg,rgba(213,58,40,0) 360deg),rgba(255,255,255,.14);animation:lof-spin 6s linear infinite}\n\n@keyframes lof-rise{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}\n@keyframes lof-fade{from{opacity:0}to{opacity:1}}\n.lof-rise{animation:lof-rise .9s cubic-bezier(.2,.7,.2,1) both}\n.lof-fade{animation:lof-fade 1.4s ease both}\n.lof-d1{animation-delay:.1s}.lof-d2{animation-delay:.35s}.lof-d3{animation-delay:.55s}.lof-d4{animation-delay:.75s}\n\n@keyframes lof-flow{0%{left:-23px;opacity:0}6%{opacity:1}84%{left:calc(100% - 23px);opacity:1}96%,100%{left:calc(100% - 23px);opacity:0}}\n.lof-flow{animation:lof-flow 5s cubic-bezier(.45,0,.55,1) infinite}\n@keyframes lof-arrive{0%,82%{box-shadow:0 0 0 0 rgba(213,58,40,0)}88%{box-shadow:0 0 0 8px rgba(213,58,40,.4)}100%{box-shadow:0 0 0 14px rgba(213,58,40,0)}}\n.lof-arrive{animation:lof-arrive 5s ease-out infinite}\n\n@keyframes lof-twinkle{0%,100%{opacity:.15}50%{opacity:.95}}\n.lof-tw1{animation:lof-twinkle 3.2s ease-in-out infinite}\n.lof-tw2{animation:lof-twinkle 4.6s ease-in-out 1.2s infinite}\n.lof-tw3{animation:lof-twinkle 5.8s ease-in-out 2.4s infinite}\n@keyframes lof-rot{to{transform:rotate(360deg)}}\n@keyframes lof-rot-rev{to{transform:rotate(-360deg)}}\n.lof-orbit{transform-origin:600px 600px;animation:lof-rot 48s linear infinite}\n.lof-orbit2{transform-origin:600px 600px;animation:lof-rot-rev 80s linear infinite}\n@keyframes lof-blink{0%,92%,100%{opacity:.25}96%{opacity:1}}\n.lof-blink{animation:lof-blink 2.4s ease-in-out infinite}\n@keyframes lof-meteor{0%,72%{transform:translate(0,0) rotate(-24deg);opacity:0}74%{opacity:1}84%,100%{transform:translate(-520px,232px) rotate(-24deg);opacity:0}}\n.lof-meteor{animation:lof-meteor 11s ease-in 3s infinite}\n\n@keyframes lof-trail1{0%,2%{stroke-dashoffset:379;opacity:1}20%,94%{stroke-dashoffset:0;opacity:1}99%{stroke-dashoffset:0;opacity:0}100%{stroke-dashoffset:379;opacity:0}}\n@keyframes lof-comet1{0%,1.8%{stroke-dashoffset:26;opacity:0}2%{stroke-dashoffset:26;opacity:1}20%{stroke-dashoffset:-379;opacity:1}20.3%,100%{stroke-dashoffset:-379;opacity:0}}\n.lof-trail1{stroke-dasharray:379 379;animation:lof-trail1 var(--lof-t) linear infinite}\n.lof-comet1{stroke-dasharray:26 431;animation:lof-comet1 var(--lof-t) ease-in-out infinite}\n@keyframes lof-trail2{0%,26%{stroke-dashoffset:523;opacity:1}46%,94%{stroke-dashoffset:0;opacity:1}99%{stroke-dashoffset:0;opacity:0}100%{stroke-dashoffset:523;opacity:0}}\n@keyframes lof-comet2{0%,25.8%{stroke-dashoffset:26;opacity:0}26%{stroke-dashoffset:26;opacity:1}46%{stroke-dashoffset:-523;opacity:1}46.3%,100%{stroke-dashoffset:-523;opacity:0}}\n.lof-trail2{stroke-dasharray:523 523;animation:lof-trail2 var(--lof-t) linear infinite}\n.lof-comet2{stroke-dasharray:26 575;animation:lof-comet2 var(--lof-t) ease-in-out infinite}\n@keyframes lof-trail3{0%,52%{stroke-dashoffset:81;opacity:1}58%,94%{stroke-dashoffset:0;opacity:1}99%{stroke-dashoffset:0;opacity:0}100%{stroke-dashoffset:81;opacity:0}}\n@keyframes lof-comet3{0%,51.8%{stroke-dashoffset:26;opacity:0}52%{stroke-dashoffset:26;opacity:1}58%{stroke-dashoffset:-81;opacity:1}58.3%,100%{stroke-dashoffset:-81;opacity:0}}\n.lof-trail3{stroke-dasharray:81 81;animation:lof-trail3 var(--lof-t) linear infinite}\n.lof-comet3{stroke-dasharray:26 133;animation:lof-comet3 var(--lof-t) ease-in-out infinite}\n@keyframes lof-trail4{0%,64%{stroke-dashoffset:177;opacity:1}74%,94%{stroke-dashoffset:0;opacity:1}99%{stroke-dashoffset:0;opacity:0}100%{stroke-dashoffset:177;opacity:0}}\n@keyframes lof-comet4{0%,63.8%{stroke-dashoffset:26;opacity:0}64%{stroke-dashoffset:26;opacity:1}74%{stroke-dashoffset:-177;opacity:1}74.3%,100%{stroke-dashoffset:-177;opacity:0}}\n.lof-trail4{stroke-dasharray:177 177;animation:lof-trail4 var(--lof-t) linear infinite}\n.lof-comet4{stroke-dasharray:26 229;animation:lof-comet4 var(--lof-t) ease-in-out infinite}\n@keyframes lof-on-jaipur{0%,94%{opacity:1}99%,100%{opacity:.75}}\n@keyframes lof-ping-jaipur{0%,0%{transform:scale(.6);opacity:0}0.1%{transform:scale(.6);opacity:.9}7%,100%{transform:scale(2.6);opacity:0}}\n.lof-on-jaipur{animation:lof-on-jaipur var(--lof-t) linear infinite}.lof-ping-jaipur{transform-box:fill-box;transform-origin:center;animation:lof-ping-jaipur var(--lof-t) ease-out infinite}\n@keyframes lof-on-dubai{0%,19.5%{opacity:.4}20%,94%{opacity:1}99%,100%{opacity:.4}}\n@keyframes lof-ping-dubai{0%,19.9%{transform:scale(.6);opacity:0}20.1%{transform:scale(.6);opacity:.9}27%,100%{transform:scale(2.6);opacity:0}}\n.lof-on-dubai{animation:lof-on-dubai var(--lof-t) linear infinite}.lof-ping-dubai{transform-box:fill-box;transform-origin:center;animation:lof-ping-dubai var(--lof-t) ease-out infinite}\n@keyframes lof-on-mumbai{0%,73.5%{opacity:.4}74%,94%{opacity:1}99%,100%{opacity:.4}}\n@keyframes lof-ping-mumbai{0%,73.9%{transform:scale(.6);opacity:0}74.1%{transform:scale(.6);opacity:.9}81%,100%{transform:scale(2.6);opacity:0}}\n.lof-on-mumbai{animation:lof-on-mumbai var(--lof-t) linear infinite}.lof-ping-mumbai{transform-box:fill-box;transform-origin:center;animation:lof-ping-mumbai var(--lof-t) ease-out infinite}\n@keyframes lof-on-chennai{0%,45.5%{opacity:.4}46%,94%{opacity:1}99%,100%{opacity:.4}}\n@keyframes lof-ping-chennai{0%,45.9%{transform:scale(.6);opacity:0}46.1%{transform:scale(.6);opacity:.9}53%,100%{transform:scale(2.6);opacity:0}}\n.lof-on-chennai{animation:lof-on-chennai var(--lof-t) linear infinite}.lof-ping-chennai{transform-box:fill-box;transform-origin:center;animation:lof-ping-chennai var(--lof-t) ease-out infinite}\n@keyframes lof-on-coimbatore{0%,57.5%{opacity:.4}58%,94%{opacity:1}99%,100%{opacity:.4}}\n@keyframes lof-ping-coimbatore{0%,57.9%{transform:scale(.6);opacity:0}58.1%{transform:scale(.6);opacity:.9}65%,100%{transform:scale(2.6);opacity:0}}\n.lof-on-coimbatore{animation:lof-on-coimbatore var(--lof-t) linear infinite}.lof-ping-coimbatore{transform-box:fill-box;transform-origin:center;animation:lof-ping-coimbatore var(--lof-t) ease-out infinite}\n.lof-route{--lof-t:12s}\n\n@media (prefers-reduced-motion: reduce){\n.lof-route *,.lof-beam,.lof-rise,.lof-fade,.lof-flow,.lof-arrive,.lof-tw1,.lof-tw2,.lof-tw3,.lof-orbit,.lof-orbit2,.lof-blink,.lof-meteor{animation:none !important}\n.lof-route [class^=lof-comet],.lof-route [class^=lof-ping],.lof-flow,.lof-meteor{opacity:0 !important}\n.lof-route [class^=lof-trail]{stroke-dashoffset:0 !important}\n}";
+  var LB_STARS = "<circle class=\"lof-tw1\" cx=\"466.3\" cy=\"111.3\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.29\"></circle><circle cx=\"771.7\" cy=\"269.9\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.75\"></circle><circle cx=\"309.2\" cy=\"63.4\" r=\"1.3\" fill=\"#dbe6f7\" opacity=\"0.29\"></circle><circle cx=\"130.6\" cy=\"313.3\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.77\"></circle><circle cx=\"908.1\" cy=\"430.3\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.57\"></circle><circle class=\"lof-tw3\" cx=\"571.2\" cy=\"720.5\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.56\"></circle><circle cx=\"191.8\" cy=\"309.3\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.56\"></circle><circle cx=\"806.8\" cy=\"503.3\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.57\"></circle><circle cx=\"920.0\" cy=\"274.8\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.56\"></circle><circle cx=\"891.4\" cy=\"366.4\" r=\"1.3\" fill=\"#dbe6f7\" opacity=\"0.68\"></circle><circle class=\"lof-tw2\" cx=\"670.5\" cy=\"681.5\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.41\"></circle><circle cx=\"1143.9\" cy=\"515.9\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.3\"></circle><circle cx=\"432.4\" cy=\"365.4\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.65\"></circle><circle cx=\"414.6\" cy=\"723.4\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.53\"></circle><circle cx=\"237.5\" cy=\"252.4\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.48\"></circle><circle class=\"lof-tw1\" cx=\"1385.3\" cy=\"57.3\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.44\"></circle><circle cx=\"504.3\" cy=\"366.5\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.29\"></circle><circle cx=\"134.8\" cy=\"199.2\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.28\"></circle><circle cx=\"1010.1\" cy=\"477.6\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.41\"></circle><circle cx=\"555.5\" cy=\"493.5\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.77\"></circle><circle class=\"lof-tw3\" cx=\"511.9\" cy=\"450.9\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.28\"></circle><circle cx=\"1106.3\" cy=\"95.5\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.47\"></circle><circle cx=\"1320.2\" cy=\"366.4\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.5\"></circle><circle cx=\"791.2\" cy=\"651.9\" r=\"1.3\" fill=\"#dbe6f7\" opacity=\"0.73\"></circle><circle cx=\"400.9\" cy=\"306.5\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.63\"></circle><circle class=\"lof-tw2\" cx=\"547.8\" cy=\"170.3\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.35\"></circle><circle cx=\"334.0\" cy=\"172.2\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.71\"></circle><circle cx=\"262.6\" cy=\"208.1\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.48\"></circle><circle cx=\"531.7\" cy=\"418.0\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.63\"></circle><circle cx=\"742.3\" cy=\"455.8\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.5\"></circle><circle class=\"lof-tw1\" cx=\"1254.2\" cy=\"702.5\" r=\"1.3\" fill=\"#dbe6f7\" opacity=\"0.47\"></circle><circle cx=\"567.5\" cy=\"355.4\" r=\"1.3\" fill=\"#dbe6f7\" opacity=\"0.28\"></circle><circle cx=\"97.0\" cy=\"154.1\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.31\"></circle><circle cx=\"865.0\" cy=\"75.6\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.55\"></circle><circle cx=\"1366.5\" cy=\"452.9\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.73\"></circle><circle class=\"lof-tw3\" cx=\"884.3\" cy=\"109.6\" r=\"1\" fill=\"#dbe6f7\" opacity=\"0.78\"></circle><circle cx=\"867.3\" cy=\"349.9\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.72\"></circle><circle cx=\"1430.1\" cy=\"343.9\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.42\"></circle><circle cx=\"207.5\" cy=\"553.3\" r=\"1\" fill=\"#dbe6f7\" opacity=\"0.51\"></circle><circle cx=\"996.6\" cy=\"381.1\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.77\"></circle><circle class=\"lof-tw2\" cx=\"760.7\" cy=\"108.2\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.67\"></circle><circle cx=\"429.2\" cy=\"474.5\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.63\"></circle><circle cx=\"376.0\" cy=\"270.6\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.45\"></circle><circle cx=\"320.8\" cy=\"399.7\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.6\"></circle><circle cx=\"883.0\" cy=\"581.8\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.69\"></circle><circle class=\"lof-tw1\" cx=\"1178.4\" cy=\"546.0\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.36\"></circle><circle cx=\"709.6\" cy=\"539.5\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.68\"></circle><circle cx=\"680.0\" cy=\"142.9\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.5\"></circle><circle cx=\"1349.3\" cy=\"729.2\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.29\"></circle><circle cx=\"147.1\" cy=\"346.9\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.36\"></circle><circle class=\"lof-tw3\" cx=\"898.7\" cy=\"664.4\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.51\"></circle><circle cx=\"940.3\" cy=\"590.1\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.71\"></circle><circle cx=\"172.7\" cy=\"286.7\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.51\"></circle><circle cx=\"257.1\" cy=\"582.4\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.3\"></circle><circle cx=\"1362.5\" cy=\"532.7\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.47\"></circle><circle class=\"lof-tw2\" cx=\"1363.4\" cy=\"534.9\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.8\"></circle><circle cx=\"39.7\" cy=\"436.0\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.69\"></circle><circle cx=\"210.5\" cy=\"610.0\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.61\"></circle><circle cx=\"504.6\" cy=\"404.9\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.26\"></circle><circle cx=\"1151.1\" cy=\"536.1\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.54\"></circle><circle class=\"lof-tw1\" cx=\"1344.4\" cy=\"320.2\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.7\"></circle><circle cx=\"303.9\" cy=\"185.9\" r=\"1\" fill=\"#dbe6f7\" opacity=\"0.53\"></circle><circle cx=\"1099.7\" cy=\"240.6\" r=\"1.3\" fill=\"#dbe6f7\" opacity=\"0.71\"></circle><circle cx=\"87.7\" cy=\"546.1\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.61\"></circle><circle cx=\"1173.7\" cy=\"381.4\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.54\"></circle><circle class=\"lof-tw3\" cx=\"753.8\" cy=\"13.8\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.68\"></circle><circle cx=\"876.3\" cy=\"572.7\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.34\"></circle><circle cx=\"681.8\" cy=\"535.2\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.43\"></circle><circle cx=\"746.4\" cy=\"409.9\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.74\"></circle><circle cx=\"81.8\" cy=\"141.2\" r=\"0.6\" fill=\"#dbe6f7\" opacity=\"0.67\"></circle><circle class=\"lof-tw2\" cx=\"731.1\" cy=\"414.6\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.49\"></circle><circle cx=\"882.0\" cy=\"373.1\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.63\"></circle><circle cx=\"651.4\" cy=\"393.6\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.53\"></circle><circle cx=\"356.6\" cy=\"386.1\" r=\"1\" fill=\"#dbe6f7\" opacity=\"0.76\"></circle><circle cx=\"1285.6\" cy=\"149.5\" r=\"1.6\" fill=\"#dbe6f7\" opacity=\"0.33\"></circle><circle class=\"lof-tw1\" cx=\"175.1\" cy=\"326.3\" r=\"0.7\" fill=\"#dbe6f7\" opacity=\"0.62\"></circle><circle cx=\"616.8\" cy=\"157.0\" r=\"1\" fill=\"#dbe6f7\" opacity=\"0.68\"></circle><circle cx=\"1291.7\" cy=\"114.0\" r=\"1.1\" fill=\"#dbe6f7\" opacity=\"0.33\"></circle><circle cx=\"1271.3\" cy=\"714.0\" r=\"0.9\" fill=\"#dbe6f7\" opacity=\"0.66\"></circle><circle cx=\"135.5\" cy=\"653.1\" r=\"0.8\" fill=\"#dbe6f7\" opacity=\"0.79\"></circle>";
+  var LB_ROUTE = "<path d=\"M466.9 42.2 Q284 -18 100.6 76.2\" stroke=\"#2F3E62\" stroke-width=\"1.2\" stroke-dasharray=\"3 5\" fill=\"none\"></path>\n<path class=\"lof-trail1\" d=\"M466.9 42.2 Q284 -18 100.6 76.2\" stroke=\"#4A7BD6\" stroke-width=\"1.6\" fill=\"none\"></path>\n<path class=\"lof-comet1\" d=\"M466.9 42.2 Q284 -18 100.6 76.2\" stroke=\"#8EB1F2\" stroke-width=\"9\" stroke-linecap=\"round\" fill=\"none\" opacity=\"0\" stroke-opacity=\".3\"></path>\n<path class=\"lof-comet1\" d=\"M466.9 42.2 Q284 -18 100.6 76.2\" stroke=\"#ffffff\" stroke-width=\"3\" stroke-linecap=\"round\" fill=\"none\" opacity=\"0\"></path>\n<path d=\"M100.6 76.2 Q340 60 546.9 305.8\" stroke=\"#2F3E62\" stroke-width=\"1.2\" stroke-dasharray=\"3 5\" fill=\"none\"></path>\n<path class=\"lof-trail2\" d=\"M100.6 76.2 Q340 60 546.9 305.8\" stroke=\"#4A7BD6\" stroke-width=\"1.6\" fill=\"none\"></path>\n<path class=\"lof-comet2\" d=\"M100.6 76.2 Q340 60 546.9 305.8\" stroke=\"#8EB1F2\" stroke-width=\"9\" stroke-linecap=\"round\" fill=\"none\" opacity=\"0\" stroke-opacity=\".3\"></path>\n<path class=\"lof-comet2\" d=\"M100.6 76.2 Q340 60 546.9 305.8\" stroke=\"#ffffff\" stroke-width=\"3\" stroke-linecap=\"round\" fill=\"none\" opacity=\"0\"></path>\n<path d=\"M546.9 305.8 Q540 350 487.8 343.7\" stroke=\"#2F3E62\" stroke-width=\"1.2\" stroke-dasharray=\"3 5\" fill=\"none\"></path>\n<path class=\"lof-trail3\" d=\"M546.9 305.8 Q540 350 487.8 343.7\" stroke=\"#4A7BD6\" stroke-width=\"1.6\" fill=\"none\"></path>\n<path class=\"lof-comet3\" d=\"M546.9 305.8 Q540 350 487.8 343.7\" stroke=\"#8EB1F2\" stroke-width=\"9\" stroke-linecap=\"round\" fill=\"none\" opacity=\"0\" stroke-opacity=\".3\"></path>\n<path class=\"lof-comet3\" d=\"M546.9 305.8 Q540 350 487.8 343.7\" stroke=\"#ffffff\" stroke-width=\"3\" stroke-linecap=\"round\" fill=\"none\" opacity=\"0\"></path>\n<path d=\"M487.8 343.7 Q405 290 415 194.2\" stroke=\"#2F3E62\" stroke-width=\"1.2\" stroke-dasharray=\"3 5\" fill=\"none\"></path>\n<path class=\"lof-trail4\" d=\"M487.8 343.7 Q405 290 415 194.2\" stroke=\"#4A7BD6\" stroke-width=\"1.6\" fill=\"none\"></path>\n<path class=\"lof-comet4\" d=\"M487.8 343.7 Q405 290 415 194.2\" stroke=\"#8EB1F2\" stroke-width=\"9\" stroke-linecap=\"round\" fill=\"none\" opacity=\"0\" stroke-opacity=\".3\"></path>\n<path class=\"lof-comet4\" d=\"M487.8 343.7 Q405 290 415 194.2\" stroke=\"#ffffff\" stroke-width=\"3\" stroke-linecap=\"round\" fill=\"none\" opacity=\"0\"></path>\n<circle class=\"lof-ping-jaipur\" cx=\"466.9\" cy=\"42.2\" r=\"10\" stroke=\"#8EB1F2\" stroke-width=\"2\" fill=\"none\" opacity=\"0\"></circle>\n<g class=\"lof-on-jaipur\"><circle cx=\"466.9\" cy=\"42.2\" r=\"13\" fill=\"#1D4087\" opacity=\".28\"></circle><circle cx=\"466.9\" cy=\"42.2\" r=\"6\" fill=\"#ffffff\"></circle><circle cx=\"466.9\" cy=\"42.2\" r=\"2.5\" fill=\"#1D4087\"></circle><text x=\"482.9\" y=\"38\" text-anchor=\"start\" fill=\"#ffffff\" font-family=\"Inter,system-ui,sans-serif\" font-size=\"13\" font-weight=\"600\">Jaipur</text><text x=\"482.9\" y=\"52\" text-anchor=\"start\" fill=\"#8EB1F2\" font-family=\"Inter,system-ui,sans-serif\" font-size=\"9.5\" font-weight=\"500\">Where it began</text></g>\n<circle class=\"lof-ping-dubai\" cx=\"100.6\" cy=\"76.2\" r=\"10\" stroke=\"#8EB1F2\" stroke-width=\"2\" fill=\"none\" opacity=\"0\"></circle>\n<g class=\"lof-on-dubai\"><circle cx=\"100.6\" cy=\"76.2\" r=\"13\" fill=\"#1D4087\" opacity=\".28\"></circle><circle cx=\"100.6\" cy=\"76.2\" r=\"6\" fill=\"#ffffff\"></circle><circle cx=\"100.6\" cy=\"76.2\" r=\"2.5\" fill=\"#1D4087\"></circle><text x=\"116.6\" y=\"92\" text-anchor=\"start\" fill=\"#ffffff\" font-family=\"Inter,system-ui,sans-serif\" font-size=\"13\" font-weight=\"600\">Dubai</text><text x=\"116.6\" y=\"106\" text-anchor=\"start\" fill=\"#8EB1F2\" font-family=\"Inter,system-ui,sans-serif\" font-size=\"9.5\" font-weight=\"500\">Well established</text></g>\n<circle class=\"lof-ping-mumbai\" cx=\"415\" cy=\"194.2\" r=\"10\" stroke=\"#8EB1F2\" stroke-width=\"2\" fill=\"none\" opacity=\"0\"></circle>\n<g class=\"lof-on-mumbai\"><circle cx=\"415\" cy=\"194.2\" r=\"13\" fill=\"#1D4087\" opacity=\".28\"></circle><circle cx=\"415\" cy=\"194.2\" r=\"6\" fill=\"#ffffff\"></circle><circle cx=\"415\" cy=\"194.2\" r=\"2.5\" fill=\"#1D4087\"></circle><text x=\"431\" y=\"192\" text-anchor=\"start\" fill=\"#ffffff\" font-family=\"Inter,system-ui,sans-serif\" font-size=\"13\" font-weight=\"600\">Mumbai</text><text x=\"431\" y=\"206\" text-anchor=\"start\" fill=\"#8EB1F2\" font-family=\"Inter,system-ui,sans-serif\" font-size=\"9.5\" font-weight=\"500\">Newest centre</text></g>\n<circle class=\"lof-ping-chennai\" cx=\"546.9\" cy=\"305.8\" r=\"10\" stroke=\"#8EB1F2\" stroke-width=\"2\" fill=\"none\" opacity=\"0\"></circle>\n<g class=\"lof-on-chennai\"><circle cx=\"546.9\" cy=\"305.8\" r=\"13\" fill=\"#1D4087\" opacity=\".28\"></circle><circle cx=\"546.9\" cy=\"305.8\" r=\"6\" fill=\"#ffffff\"></circle><circle cx=\"546.9\" cy=\"305.8\" r=\"2.5\" fill=\"#1D4087\"></circle><text x=\"562.9\" y=\"310.8\" text-anchor=\"start\" fill=\"#ffffff\" font-family=\"Inter,system-ui,sans-serif\" font-size=\"13\" font-weight=\"600\">Chennai</text></g>\n<circle class=\"lof-ping-coimbatore\" cx=\"487.8\" cy=\"343.7\" r=\"10\" stroke=\"#8EB1F2\" stroke-width=\"2\" fill=\"none\" opacity=\"0\"></circle>\n<g class=\"lof-on-coimbatore\"><circle cx=\"487.8\" cy=\"343.7\" r=\"13\" fill=\"#1D4087\" opacity=\".28\"></circle><circle cx=\"487.8\" cy=\"343.7\" r=\"6\" fill=\"#ffffff\"></circle><circle cx=\"487.8\" cy=\"343.7\" r=\"2.5\" fill=\"#1D4087\"></circle><text x=\"471.8\" y=\"348.7\" text-anchor=\"end\" fill=\"#ffffff\" font-family=\"Inter,system-ui,sans-serif\" font-size=\"13\" font-weight=\"600\">Coimbatore</text></g>";
   function lbBrand() {
-    return '<div class="lb-brand"><span class="lb-logo-tile"><img class="lb-logo" src="/lof-logo.png" alt="Lab of Future" width="160" height="45"></span>' +
-      '<span class="lb-brand-sub">CRM &amp; Sales</span></div>';
+    return '<div class="lb-brand"><span class="lb-logo-tile"><img class="lb-logo" src="/login-logo.png" alt="Lab of Future, Be Curious" width="480" height="135"></span>' +
+      '<span class="lb-brand-sep" aria-hidden="true"></span><span class="lb-brand-sub">CRM &amp; Sales</span></div>';
   }
-  function lbOrbits() {
-    return '<svg class="lb-orbits" aria-hidden="true" focusable="false" width="1200" height="1200" viewBox="0 0 1200 1200" fill="none">' +
-      '<circle cx="600" cy="600" r="230" stroke="#1f3655" stroke-width="1.5"/><circle cx="600" cy="600" r="390" stroke="#1f3655" stroke-width="1.5"/>' +
-      '<circle cx="600" cy="600" r="560" stroke="#1b3050" stroke-width="1.5" stroke-dasharray="3 9"/>' +
-      '<circle cx="990" cy="600" r="6" fill="#7c9cc4"/><circle cx="324" cy="204" r="5" fill="#2d5b9a"/><circle cx="1080" cy="890" r="4" fill="#b7c7dc"/></svg>';
-  }
-  // the route over the dotted map (both 620 × 380): four legs drawn one after another, a comet on each leg and a ping
-  // on each city when the route reaches it
-  var LB_LEGS = [['M466.9 42.2 Q284 -18 100.6 76.2', 379], ['M100.6 76.2 Q340 60 546.9 305.8', 523], ['M546.9 305.8 Q540 350 487.8 343.7', 81], ['M487.8 343.7 Q405 290 415 194.2', 177]];
-  var LB_CITIES = [['jaipur', 'Jaipur', 466.9, 42.2, 16, -10, 'start'], ['dubai', 'Dubai', 100.6, 76.2, 16, -12, 'start'], ['mumbai', 'Mumbai', 415, 194.2, -16, 5, 'end'],
-    ['chennai', 'Chennai', 546.9, 305.8, 16, 5, 'start'], ['coimbatore', 'Coimbatore', 487.8, 343.7, -16, 5, 'end']];
-  function lbMap() {
-    var legs = LB_LEGS.map(function (l, i) {
-      var n = i + 1;
-      return '<path d="' + l[0] + '" stroke="#2b4a73" stroke-width="1.2" stroke-dasharray="3 5"/>' +
-        '<path class="lof-trail' + n + '" d="' + l[0] + '" stroke="#7c9cc4" stroke-width="1.6"/>' +
-        '<path class="lof-comet' + n + '" d="' + l[0] + '" stroke="#9cc0ff" stroke-width="9" stroke-linecap="round" opacity="0" stroke-opacity=".3"/>' +
-        '<path class="lof-comet' + n + '" d="' + l[0] + '" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity="0"/>';
-    }).join('');
-    var cities = LB_CITIES.map(function (c) {
-      return '<circle class="lof-ping-' + c[0] + '" cx="' + c[2] + '" cy="' + c[3] + '" r="10" stroke="#9cc0ff" stroke-width="2" opacity="0"/>' +
-        '<g class="lof-on-' + c[0] + '"><circle cx="' + c[2] + '" cy="' + c[3] + '" r="13" fill="#2d5b9a" opacity=".28"/><circle cx="' + c[2] + '" cy="' + c[3] + '" r="6" fill="#fff"/>' +
-        '<circle cx="' + c[2] + '" cy="' + c[3] + '" r="2.5" fill="#2d5b9a"/><text x="' + (c[2] + c[4]) + '" y="' + (c[3] + c[5]) + '" text-anchor="' + c[6] + '" fill="#fff" font-size="14" font-weight="600">' + c[1] + '</text></g>';
-    }).join('');
-    return '<figure class="lb-map"><div class="lb-map-in"><img src="/login-map.svg" alt="" width="620" height="380">' +
-      '<svg class="lof-route" role="img" aria-label="Lab of Future\'s growth: started in Jaipur, then Dubai, Chennai, Coimbatore and now Mumbai" viewBox="0 0 620 380" fill="none">' +
-      legs + cities + '</svg></div></figure>';
+  function lbScene() {
+    return '<svg class="lb-stars" aria-hidden="true" focusable="false" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice">' + LB_STARS + '</svg>' +
+      '<div class="lb-meteor lof-meteor" aria-hidden="true"></div>' +
+      '<div class="lb-planet" aria-hidden="true"></div>' +
+      '<svg class="lb-orbits" aria-hidden="true" focusable="false" width="1200" height="1200" viewBox="0 0 1200 1200" fill="none">' +
+        '<circle cx="600" cy="600" r="330" stroke="#22304E" stroke-width="1.2"/><circle cx="600" cy="600" r="450" stroke="#22304E" stroke-width="1.2" stroke-dasharray="2 8"/>' +
+        '<g class="lof-orbit"><g transform="translate(930 600) rotate(90)"><circle r="16" fill="#8EB1F2" opacity=".12"/>' +
+          '<rect x="-5" y="-7" width="10" height="14" rx="2" fill="#dbe6f7"/><rect x="-21" y="-4.5" width="13" height="9" rx="1" fill="#1D4087" stroke="#4A7BD6" stroke-width="1"/>' +
+          '<rect x="8" y="-4.5" width="13" height="9" rx="1" fill="#1D4087" stroke="#4A7BD6" stroke-width="1"/><path d="M-8 0H-5M5 0H8M0 -7V-12" stroke="#dbe6f7" stroke-width="1.2"/>' +
+          '<circle class="lof-blink" cx="0" cy="-13" r="2" fill="#D53A28"/></g></g>' +
+        '<g class="lof-orbit2"><circle cx="600" cy="150" r="3.5" fill="#dbe6f7"/><circle cx="600" cy="150" r="9" fill="#8EB1F2" opacity=".15"/></g></svg>' +
+      '<svg class="lb-sat-m" aria-hidden="true" focusable="false" width="390" height="200" viewBox="0 0 390 200"><g class="lof-sat"><g transform="translate(0 92) rotate(-8)">' +
+        '<circle r="11" fill="#8EB1F2" opacity=".12"/><rect x="-3.5" y="-5" width="7" height="10" rx="1.5" fill="#dbe6f7"/>' +
+        '<rect x="-15" y="-3" width="9" height="6" rx="1" fill="#1D4087" stroke="#4A7BD6" stroke-width=".8"/><rect x="6" y="-3" width="9" height="6" rx="1" fill="#1D4087" stroke="#4A7BD6" stroke-width=".8"/>' +
+        '<circle class="lof-blink" cx="0" cy="-8" r="1.6" fill="#D53A28"/></g></g></svg>';
   }
   function lbContext() {
     var steps = ['Enquiry', 'First call', 'Counselling', 'Opportunity', 'Enrolled'];
-    return '<section class="lb-ctx" aria-label="About LOF CRM">' + lbMap() +
-      '<div class="lb-hero-text"><h2>Every enquiry, from first call to first class.</h2>' +
-      '<p>One place for counsellors, reception and admissions to follow each family from the first enquiry to enrolment.</p></div>' +
-      '<ol class="lb-journey">' + steps.map(function (s, i) { return '<li' + (i === steps.length - 1 ? ' class="last"' : '') + '><span class="lb-j-mark" aria-hidden="true"><i></i><b></b></span><span class="lb-j-label">' + s + '</span></li>'; }).join('') + '</ol>' +
-      '</section>';
+    return '<section class="lb-ctx" aria-label="About LOF CRM"><div class="lb-map">' +
+      '<img class="lof-fade lof-d1" src="/login-map.svg" alt="" width="620" height="380">' +
+      '<svg class="lof-route lof-fade lof-d2" role="img" aria-label="Lab of Future\'s growth: started in Jaipur, then Dubai, Chennai, Coimbatore and now Mumbai" viewBox="0 0 620 380" fill="none">' + LB_ROUTE + '</svg>' +
+      '<div class="lb-hero lof-rise lof-d2"><h2>Every enquiry, from first call to <span>first class.</span></h2>' +
+      '<div class="lb-journey lof-rise lof-d4"><div class="lb-j-line"><span class="lof-flow" aria-hidden="true"></span></div><ol>' +
+      steps.map(function (s, i) { return '<li' + (i === steps.length - 1 ? ' class="last"' : '') + '><span class="lb-j-dot' + (i === steps.length - 1 ? ' lof-arrive' : '') + '"></span><span class="lb-j-label">' + s + '</span></li>'; }).join('') +
+      '</ol></div></div></div></section>';
   }
   function lbStyles() {
     if (document.getElementById('lbStyle')) return;
     var l = document.createElement('link');
-    l.rel = 'stylesheet'; l.href = 'https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap';
+    l.rel = 'stylesheet'; l.href = 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap';
     document.head.appendChild(l);
     var st = document.createElement('style'); st.id = 'lbStyle';
-    var F = '"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif';
-    var keys = [];
-    // route animation: leg n is drawn between from% and to% of the 12-second loop; a city lights up when reached
-    [[379, 2, 20], [523, 26, 46], [81, 52, 58], [177, 64, 74]].forEach(function (k, i) {
-      var n = i + 1, len = k[0], a = k[1], b = k[2];
-      keys.push('@keyframes lof-trail' + n + '{0%,' + a + '%{stroke-dashoffset:' + len + ';opacity:1}' + b + '%,94%{stroke-dashoffset:0;opacity:1}99%{stroke-dashoffset:0;opacity:0}100%{stroke-dashoffset:' + len + ';opacity:0}}',
-        '@keyframes lof-comet' + n + '{0%,' + (a - .2) + '%{stroke-dashoffset:26;opacity:0}' + a + '%{stroke-dashoffset:26;opacity:1}' + b + '%{stroke-dashoffset:-' + len + ';opacity:1}' + (b + .3) + '%,100%{stroke-dashoffset:-' + len + ';opacity:0}}',
-        '.lof-trail' + n + '{stroke-dasharray:' + len + ' ' + len + ';animation:lof-trail' + n + ' var(--lof-t) linear infinite}',
-        '.lof-comet' + n + '{stroke-dasharray:26 ' + (len + 52) + ';animation:lof-comet' + n + ' var(--lof-t) ease-in-out infinite}');
-    });
-    keys.push('@keyframes lof-on-jaipur{0%,94%{opacity:1}99%,100%{opacity:.75}}',
-      '@keyframes lof-ping-jaipur{0%{transform:scale(.6);opacity:0}0.1%{transform:scale(.6);opacity:.9}7%,100%{transform:scale(2.6);opacity:0}}');
-    [['dubai', 20], ['chennai', 46], ['coimbatore', 58], ['mumbai', 74]].forEach(function (c) {
-      var t = c[1];
-      keys.push('@keyframes lof-on-' + c[0] + '{0%,' + (t - .5) + '%{opacity:.4}' + t + '%,94%{opacity:1}99%,100%{opacity:.4}}',
-        '@keyframes lof-ping-' + c[0] + '{0%,' + (t - .1) + '%{transform:scale(.6);opacity:0}' + (t + .1) + '%{transform:scale(.6);opacity:.9}' + (t + 7) + '%,100%{transform:scale(2.6);opacity:0}}');
-    });
-    LB_CITIES.forEach(function (c) {
-      keys.push('.lof-on-' + c[0] + '{animation:lof-on-' + c[0] + ' var(--lof-t) linear infinite}' +
-        '.lof-ping-' + c[0] + '{transform-box:fill-box;transform-origin:center;animation:lof-ping-' + c[0] + ' var(--lof-t) ease-out infinite}');
-    });
+    var F = 'Inter,system-ui,-apple-system,"Segoe UI",sans-serif';
     st.textContent = [
-      '.lb-shell{position:relative;min-height:100vh;min-height:100dvh;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;font-family:' + F + ';color:#c7d2e1;color-scheme:light;' +
-        'background:#13243b radial-gradient(1000px 760px at 21% 56%,#2a4a76 0%,#1f3a5f 30%,#172c48 55%,#13243b 80%)}',
-      '.lb-shell :focus-visible{outline:2px solid #7c9cc4;outline-offset:2px}.lb-card :focus-visible{outline-color:#2d5b9a}',
-      '.lb-orbits{position:absolute;left:-40px;top:-170px;pointer-events:none}',
-      '.lb-top,.lb-main,.lb-page-foot{position:relative}',
+      '.lb-shell{position:relative;min-height:100vh;min-height:100dvh;width:100%;box-sizing:border-box;display:flex;flex-direction:column;overflow:hidden;font-family:' + F + ';color:#B6C1D8;color-scheme:light;' +
+        'background:radial-gradient(620px 540px at 19% 56%,rgba(42,91,176,.5),rgba(42,91,176,0) 70%),radial-gradient(980px 760px at 70% 46%,rgba(29,64,135,.26),rgba(29,64,135,0) 70%),#0A1120}',
+      '.lb-shell :focus-visible{outline:2px solid #4A7BD6;outline-offset:2px}',
+      '.lb-stars{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}',
+      '.lb-meteor{position:absolute;left:1180px;top:70px;width:140px;height:2px;border-radius:2px;background:linear-gradient(90deg,#fff,rgba(142,177,242,0));opacity:0;pointer-events:none}',
+      '.lb-planet{position:absolute;left:50%;top:calc(100% - 150px);width:3200px;height:3200px;margin-left:-1600px;border-radius:50%;pointer-events:none;' +
+        'background:radial-gradient(circle at 50% 0%,#1A3F80 0%,#0F2550 6%,#0A1120 18%);box-shadow:0 -1px 0 rgba(190,210,248,.55),0 -10px 30px rgba(142,177,242,.28),0 -40px 120px rgba(74,123,214,.22)}',
+      '.lb-orbits{position:absolute;left:-300px;top:-128px;pointer-events:none}.lb-sat-m{display:none}',
       // header
-      '.lb-top{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:28px 80px}',
+      '.lb-top{position:relative;display:flex;justify-content:space-between;align-items:center;gap:16px;padding:28px 80px}',
       '.lb-brand{display:flex;align-items:center;gap:12px}',
-      '.lb-logo-tile{display:flex;align-items:center;background:#fff;border-radius:9px;padding:6px 10px}.lb-logo{height:30px;width:auto;display:block}',
-      '.lb-brand-sub{font-size:13px;color:#8ea2bd;white-space:nowrap}',
-      '.lb-help{font:14px ' + F + ';color:#c7d2e1;background:transparent;padding:10px 16px;border:1px solid #2b4a73;border-radius:8px;cursor:pointer}',
-      '.lb-help:hover{color:#fff;border-color:#7c9cc4}',
-      // main: the form on the left, the map and the journey on the right
-      '.lb-main{flex:1;display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:56px 96px;padding:8px 80px 40px}',
+      '.lb-logo-tile{background:#fff;border-radius:12px;padding:7px 12px;display:flex;align-items:center;box-shadow:0 8px 24px rgba(3,8,20,.45)}.lb-logo{height:38px;width:auto;display:block}',
+      '.lb-brand-sep{width:1px;height:28px;background:#2F3E62}.lb-brand-sub{font-size:14px;font-weight:600;color:#fff;letter-spacing:.01em;white-space:nowrap}',
+      '.lb-help{font:14px ' + F + ';color:#B6C1D8;padding:10px 16px;border:1px solid #2F3E62;border-radius:10px;background:rgba(255,255,255,.03);cursor:pointer}.lb-help:hover{color:#fff}',
+      // main: the card on the left, the map on the right
+      '.lb-main{position:relative;flex:1;display:flex;flex-wrap:wrap;align-items:center;gap:40px 48px;padding:0 56px 24px 80px}',
       '.lb-left{flex:0 1 440px;min-width:0;display:flex;flex-direction:column;gap:18px}',
-      '.lb-frost{padding:10px;border-radius:26px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);box-shadow:0 30px 80px rgba(8,20,40,.35)}',
-      '.lb-card{margin:0;background:linear-gradient(180deg,#fff 0%,#f4f7fc 100%);border-radius:18px;padding:40px;box-shadow:0 1px 0 rgba(255,255,255,.6) inset,0 8px 24px rgba(19,36,59,.18);display:flex;flex-direction:column;gap:22px;color:#1b2633}',
+      '.lb-frost{padding:1.5px;border-radius:22px;box-shadow:0 30px 80px rgba(3,8,20,.55),0 0 70px rgba(74,123,214,.22)}',
+      '.lb-card{margin:0;background:#fff;border-radius:20.5px;padding:40px;display:flex;flex-direction:column;gap:22px;color:#0F1B33;font-family:' + F + '}',
       '.lb-head{display:flex;flex-direction:column;gap:8px}',
-      '.lb-h1{margin:0;font-size:30px;line-height:1.15;font-weight:600;color:#13243b}',
-      '.lb-sub{margin:0;font-size:15px;line-height:1.5;color:#5d6a7a}',
+      '.lb-eyebrow{font:600 11px ' + F + ';letter-spacing:.12em;text-transform:uppercase;color:#1D4087}',
+      '.lb-h1{margin:0;font-size:32px;line-height:1.15;font-weight:600;color:#0F2550}',
+      '.lb-sub{margin:0;font-size:15px;line-height:1.5;color:#66708A}',
       '.lb-fields{display:flex;flex-direction:column;gap:16px}',
       '.lb-f,.lb-card .f{display:flex;flex-direction:column;gap:6px}',
-      '.lb-f label,.lb-card .f label{font-size:13px;font-weight:500;color:#1b2633}',
+      '.lb-f label,.lb-card .f label{font-size:13px;font-weight:500;color:#0F1B33}',
       '.lb-labrow{display:flex;justify-content:space-between;align-items:baseline;gap:12px}',
-      '.lb-in,.lb-card .f input{width:100%;box-sizing:border-box;height:46px;border:1px solid #c9d2df;border-radius:8px;padding:0 14px;font:15px ' + F + ';color:#1b2633;background:#fff}',
-      '.lb-in:hover,.lb-card .f input:hover{border-color:#8a9bb2}',
-      '.lb-in:focus,.lb-card .f input:focus{outline:none;border-color:#2d5b9a;box-shadow:0 0 0 3px rgba(45,91,154,.18)}',
-      '.lb-in::placeholder,.lb-card .f input::placeholder{color:#8a96a6}',
-      '.lb-card .f input[readonly]{background:#f3f5f9}',
+      '.lb-in,.lb-card .f input{width:100%;box-sizing:border-box;height:48px;border:1px solid #CFD7E4;border-radius:10px;padding:0 14px;font:15px ' + F + ';color:#0F1B33;background:#fff;transition:border-color .2s,box-shadow .2s}',
+      '.lb-in:hover,.lb-card .f input:hover{border-color:#A0A8BA}',
+      '.lb-in:focus,.lb-card .f input:focus{border-color:#1D4087;box-shadow:0 0 0 4px rgba(29,64,135,.15);outline:none}',
+      '.lb-card .f input[readonly]{background:#F5F7FB}',
       '.lb-pw{position:relative}.lb-pw .lb-in{padding-right:76px}',
-      '.lb-eye{position:absolute;right:6px;top:6px;height:34px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:#2d5b9a;font:500 13px ' + F + ';cursor:pointer}',
-      '.lb-eye:hover{background:#f3f5f9}',
-      '.lb-check{display:flex;align-items:center;gap:10px;font-size:14px;color:#1b2633;cursor:pointer}.lb-check input{width:18px;height:18px;margin:0;accent-color:#2d5b9a}',
-      '.lb-btn{height:48px;width:100%;border:0;border-radius:8px;background:#2d5b9a;color:#fff;font:600 15px ' + F + ';cursor:pointer}',
-      '.lb-btn:hover{filter:brightness(.9)}.lb-btn:disabled{opacity:.65;cursor:progress}',
-      '.lb-link{color:#2d5b9a;text-decoration:none;font-weight:500;font-size:13px;cursor:pointer}.lb-link:hover{text-decoration:underline}',
-      '.lb-note,.lb-msg{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:8px;background:#e7eef8;color:#13243b;font-size:13px;line-height:1.5}',
-      '.lb-note-ic{flex:none;width:18px;height:18px;margin-top:1px;fill:none;stroke:#2d5b9a;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
+      '.lb-eye{position:absolute;right:6px;top:7px;height:34px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:#1D4087;font:500 13px ' + F + ';cursor:pointer}',
+      '.lb-check{display:flex;align-items:center;gap:10px;font-size:14px;color:#0F1B33;cursor:pointer}.lb-check input{width:18px;height:18px;margin:0;accent-color:#1D4087}',
+      '.lb-btn{height:50px;width:100%;border:0;border-radius:10px;background:#1D4087;color:#fff;font:600 15px ' + F + ';cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;transition:transform .15s,box-shadow .2s,filter .2s}',
+      '.lb-btn svg{width:18px;height:18px;fill:none;stroke:#fff;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
+      '.lb-btn:hover{filter:brightness(1.08);box-shadow:0 10px 24px rgba(29,64,135,.45);transform:translateY(-1px)}.lb-btn:disabled{opacity:.65;cursor:progress;transform:none}',
+      '.lb-link{color:#1D4087;text-decoration:none;font-weight:500;font-size:13px;cursor:pointer}.lb-link:hover{text-decoration:underline}',
+      '.lb-msg{padding:12px 14px;border-radius:10px;background:#EEF3FB;color:#0F2550;font-size:13px;line-height:1.5}',
       '.lb-err{font-size:13.5px;line-height:1.45;color:#b42318}.lb-err:empty{display:none}',
-      '.lb-info{font-size:13px;color:#5d6a7a}.lb-info:empty{display:none}',
-      '.lb-foot{font-size:13px;color:#5d6a7a}.lb-foot a{color:#2d5b9a!important}',
-      '.lb-card .help{font-size:12.5px;color:#5d6a7a}.lb-card .banner{margin:0}',
-      '.lb-access{margin:0;padding:0 14px;font-size:13px;color:#8ea2bd}.lb-sub-m{display:none}',
-      '.lb-helpbox{margin:0;padding:12px 14px;border-radius:12px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);font-size:13px;line-height:1.5;color:#dbe4ef}.lb-helpbox[hidden]{display:none}',
-      '.lb-sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}',
-      // right side
-      '.lb-ctx{flex:1 1 520px;min-width:0;max-width:720px;display:flex;flex-direction:column;gap:28px}',
-      '.lb-map{margin:0}.lb-map-in{position:relative;width:100%;max-width:560px}.lb-map-in img{width:100%;height:auto;display:block}',
-      '.lof-route{position:absolute;inset:0;width:100%;height:100%;overflow:visible;font-family:' + F + ';--lof-t:12s}',
-      '.lb-hero-text{display:flex;flex-direction:column;gap:14px}',
-      '.lb-hero-text h2{margin:0;font-size:clamp(34px,3.1vw,44px);line-height:1.08;font-weight:600;color:#fff;letter-spacing:-.01em;text-wrap:balance}',
-      '.lb-hero-text p{margin:0;font-size:17px;line-height:1.55;max-width:540px}',
-      '.lb-journey{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));max-width:620px}',
-      '.lb-journey li{display:flex;flex-direction:column;gap:10px}',
-      '.lb-j-mark{height:12px;display:block;position:relative}',
-      '.lb-j-mark i{position:absolute;left:0;top:5px;right:0;height:2px;background:#2d5b9a}',
-      '.lb-j-mark b{position:absolute;left:0;top:0;width:12px;height:12px;border-radius:50%;background:#7c9cc4}',
-      '.lb-journey li.last i{display:none}.lb-journey li.last b{background:#fff}',
-      '.lb-j-label{font-size:13px;font-weight:500;color:#fff}.lb-journey li.last .lb-j-label{font-weight:600}',
-      // footer
-      '.lb-page-foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 24px;padding:20px 80px;border-top:1px solid #1f3655;font-size:13px;color:#8ea2bd}',
-    ].concat(keys, [
-      '@media (prefers-reduced-motion:reduce){.lof-route *{animation:none!important}.lof-route [class^=lof-comet],.lof-route [class^=lof-ping]{opacity:0!important}.lof-route [class^=lof-trail]{stroke-dashoffset:0!important}}',
-      // narrower windows: smaller side padding, the right side wraps below the form
-      '@media (max-width:1100px){.lb-top,.lb-page-foot{padding-left:40px;padding-right:40px}.lb-main{padding:8px 40px 40px}}',
-      // phones: header, a smaller map, then the form; the headline and the journey are left out
-      '@media (max-width:700px){' +
-        '.lb-shell{background:#13243b radial-gradient(520px 560px at 50% 68%,#2a4a76 0%,#1f3a5f 35%,#172c48 60%,#13243b 85%)}' +
-        '.lb-orbits{width:640px;height:640px;left:-125px;top:120px}' +
-        '.lb-top{padding:20px 20px 0}.lb-logo{height:26px}.lb-logo-tile{padding:5px 8px}.lb-brand{gap:10px}.lb-brand-sub{font-size:12px}' +
+      '.lb-info{font-size:13px;color:#66708A}.lb-info:empty{display:none}',
+      '.lb-foot{font-size:13px;color:#66708A}.lb-foot a{color:#1D4087!important}',
+      '.lb-card .help{font-size:12.5px;color:#66708A}.lb-card .banner{margin:0}',
+      '.lb-access{margin:0;padding:0 6px;font-size:13px;color:#8592AD}',
+      '.lb-helpbox{margin:0;padding:12px 14px;border-radius:12px;border:1px solid #2F3E62;background:rgba(255,255,255,.04);font-size:13px;line-height:1.5;color:#B6C1D8}.lb-helpbox b{color:#fff}.lb-helpbox[hidden]{display:none}',
+      // right: map, route, headline and journey
+      '.lb-ctx{flex:1 1 560px;min-width:0;display:flex;justify-content:center}',
+      '.lb-map{position:relative;width:100%;max-width:900px;aspect-ratio:620/380}',
+      '.lb-map img{position:absolute;inset:0;width:100%;height:100%;display:block;-webkit-mask-image:radial-gradient(ellipse 72% 72% at 55% 45%,#000 45%,rgba(0,0,0,0) 100%);mask-image:radial-gradient(ellipse 72% 72% at 55% 45%,#000 45%,rgba(0,0,0,0) 100%)}',
+      '.lof-route{position:absolute;inset:0;width:100%;height:100%;overflow:visible}',
+      '.lb-hero{position:absolute;left:8%;top:44%;width:50%;display:flex;flex-direction:column;gap:22px}',
+      '.lb-hero h2{margin:0;font-size:clamp(28px,3vw,46px);line-height:1.06;font-weight:600;color:#fff;letter-spacing:-.015em}.lb-hero h2 span{color:#EE5A46}',
+      '.lb-journey{position:relative;max-width:460px}',
+      '.lb-j-line{position:absolute;left:6px;right:6px;top:5px;height:2px;background:#2F3E62;border-radius:2px}',
+      '.lb-j-line .lof-flow{position:absolute;top:-4px;width:46px;height:10px;border-radius:10px;background:radial-gradient(closest-side,#fff,rgba(142,177,242,.7) 45%,rgba(142,177,242,0))}',
+      '.lb-journey ol{position:relative;list-style:none;margin:0;padding:0;display:flex;justify-content:space-between}',
+      '.lb-journey li{display:flex;flex-direction:column;align-items:center;gap:10px}.lb-journey li:first-child{align-items:flex-start}.lb-journey li.last{align-items:flex-end}',
+      '.lb-j-dot{width:12px;height:12px;border-radius:50%;background:#4A7BD6;box-shadow:0 0 0 4px #0F1A33}.lb-journey li.last .lb-j-dot{background:#D53A28}',
+      '.lb-j-label{font-size:13px;font-weight:500;color:#B6C1D8}.lb-journey li.last .lb-j-label{font-weight:600;color:#fff}',
+      // footer: the roles
+      '.lb-page-foot{position:relative;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px 24px;padding:18px 80px;border-top:1px solid rgba(133,146,173,.16);background:rgba(6,12,24,.45)}',
+      '.lb-roles{display:flex;flex-wrap:wrap;align-items:center;gap:8px}',
+      '.lb-roles-t{font:600 11px ' + F + ';letter-spacing:.1em;text-transform:uppercase;color:#8592AD;margin-right:6px}',
+      '.lb-role{font-size:13px;color:#B6C1D8;padding:5px 12px;border:1px solid rgba(133,146,173,.25);border-radius:999px;background:rgba(255,255,255,.03)}',
+      '.lb-copy{font-size:13px;color:#8592AD}',
+      LB_ANIM,
+      '@keyframes lof-sat{0%{transform:translate(-40px,0)}100%{transform:translate(430px,-60px)}}.lof-sat{animation:lof-sat 26s linear infinite}',
+      '@media (prefers-reduced-motion:reduce){.lof-sat{animation:none!important}}',
+      '@media (max-width:1180px){.lb-top{padding:24px 40px}.lb-main{padding:0 32px 24px 40px}.lb-page-foot{padding:16px 40px}}',
+      // phones and narrow windows: header, a smaller map, then the card
+      '@media (max-width:900px){' +
+        '.lb-shell{gap:12px;padding:18px 16px;background:radial-gradient(420px 460px at 50% 70%,rgba(42,91,176,.5),rgba(42,91,176,0) 70%),radial-gradient(420px 300px at 50% 22%,rgba(29,64,135,.28),rgba(29,64,135,0) 70%),#0A1120}' +
+        '.lb-orbits,.lb-meteor,.lb-hero,.lb-page-foot,.lb-brand-sep{display:none}' +
+        '.lb-sat-m{display:block;position:absolute;left:0;top:0;pointer-events:none}' +
+        '.lb-planet{top:auto;bottom:-1346px;width:1400px;height:1400px;margin-left:-700px;background:radial-gradient(circle at 50% 0%,#1A3F80 0%,#0F2550 8%,#0A1120 22%);box-shadow:0 -1px 0 rgba(190,210,248,.55),0 -10px 30px rgba(142,177,242,.28),0 -30px 80px rgba(74,123,214,.22)}' +
+        '.lb-top{padding:0 4px}.lb-brand{gap:10px}.lb-logo-tile{border-radius:10px;padding:6px 10px}.lb-logo{height:30px}.lb-brand-sub{font-size:13px}' +
         '.lb-help{min-height:44px;padding:0 12px}' +
-        '.lb-main{flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:16px;padding:16px 16px 24px}' +
-        '.lb-ctx{display:contents}.lb-hero-text,.lb-journey{display:none}' +
-        '.lb-map{order:-1;display:flex;justify-content:center}.lb-map-in{width:300px;max-width:100%}' +
-        '.lb-left{flex:none;gap:14px}.lb-frost{padding:6px;border-radius:22px;box-shadow:0 24px 60px rgba(8,20,40,.35)}' +
-        '.lb-card{padding:22px;border-radius:16px;gap:18px}.lb-h1{font-size:24px}.lb-sub{font-size:14px}.lb-head{gap:4px}' +
-        '.lb-in,.lb-card .f input{height:48px;font-size:16px}.lb-eye{top:2px;right:4px;height:44px;padding:0 12px;font-size:14px}' +
-        '.lb-btn{height:52px;font-size:16px}.lb-check input{width:20px;height:20px}' +
-        '.lb-sub-d,.lb-card>.lb-note{display:none}.lb-sub-m{display:inline}' +
-        '.lb-access{text-align:center}.lb-page-foot{padding:14px 16px 20px;justify-content:center;text-align:center}' +
+        '.lb-main{flex:none;flex-direction:column;flex-wrap:nowrap;align-items:stretch;gap:12px;padding:0}' +
+        '.lb-ctx{order:-1;flex:none}.lb-map{width:340px;max-width:100%}' +
+        '.lb-left{flex:none;gap:12px}.lb-frost{border-radius:20px;box-shadow:0 24px 60px rgba(3,8,20,.55),0 0 60px rgba(74,123,214,.22)}' +
+        '.lb-card{border-radius:18.5px;padding:22px;gap:16px}.lb-head{gap:4px}.lb-eyebrow{font-size:10px}.lb-h1{font-size:24px;line-height:1.2}.lb-sub{display:none}' +
+        '.lb-fields{gap:14px}.lb-in,.lb-card .f input{font-size:16px}.lb-eye{right:4px;top:2px;height:44px;padding:0 12px;font-size:14px}' +
+        '.lb-check input{width:20px;height:20px}.lb-btn{font-size:16px}' +
+        '.lb-access{text-align:center;line-height:1.5}' +
       '}',
-    ]).join('\n');
+    ].join('\n');
     document.head.appendChild(st);
   }
   function authShell(cardHtml) {
     lbStyles();
     // the sign-in screens keep their own colours; the CRM applies the user's own theme again after sign-in
     document.documentElement.removeAttribute('data-theme');
+    var roles = ['Counsellor', 'Reception', 'Admissions Head', 'Centre Administrator', 'Management'];
     document.getElementById('app').innerHTML =
-      '<div class="lb-shell" id="lbRoot">' + lbOrbits() +
-      '<header class="lb-top">' + lbBrand() +
+      '<div class="lb-shell" id="lbRoot">' + lbScene() +
+      '<header class="lb-top lof-fade">' + lbBrand() +
       '<button type="button" class="lb-help" id="lbHelp" aria-expanded="false" aria-controls="lbHelpBox"><span class="lb-help-l">Need help?</span></button></header>' +
-      '<main class="lb-main"><div class="lb-left"><div class="lb-frost">' + cardHtml + '</div>' +
+      '<main class="lb-main"><div class="lb-left">' +
+      '<div class="lb-frost lof-beam lof-rise lof-d1">' + cardHtml + '</div>' +
       '<p class="lb-helpbox" id="lbHelpBox" hidden>Forgot your password? Use <b>Forgot password?</b> on the sign-in form to get a 6-digit reset code. ' +
       'For a new account, a locked account or a lost authenticator, ask your Centre Administrator.</p>' +
-      '<p class="lb-access">No access yet? Ask your Centre Administrator.</p></div>' +
+      '<p class="lb-access lof-rise lof-d3">No access yet? Ask your Centre Administrator.</p></div>' +
       lbContext() + '</main>' +
-      '<footer class="lb-page-foot"><span>© ' + new Date().getFullYear() + ' Lab of Future · Top Rock Global Pvt Ltd</span></footer></div>';
+      '<footer class="lb-page-foot lof-fade lof-d3"><div class="lb-roles"><span class="lb-roles-t">Built for every desk</span>' +
+      roles.map(function (r) { return '<span class="lb-role">' + r + '</span>'; }).join('') + '</div>' +
+      '<span class="lb-copy">© ' + new Date().getFullYear() + ' Lab of Future · Top Rock Global Pvt Ltd</span></footer>' +
+      '</div>';
     var hb = document.getElementById('lbHelp');
-    if (window.matchMedia && window.matchMedia('(max-width:700px)').matches) hb.querySelector('.lb-help-l').textContent = 'Help';
+    if (window.matchMedia && window.matchMedia('(max-width:900px)').matches) hb.querySelector('.lb-help-l').textContent = 'Help';
     hb.addEventListener('click', function () {
       var box = document.getElementById('lbHelpBox'), open = box.hidden;
       box.hidden = !open;
       hb.setAttribute('aria-expanded', String(open));
     });
   }
+  var LB_ARROW = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>';
   function authCard(sub, msg, inner, btn, foot) {
     authShell('<form id="lofAuth" class="lb-card" novalidate>' +
-      '<div class="lb-head"><h1 class="lb-h1">' + esc(sub) + '</h1></div>' +
+      '<div class="lb-head"><span class="lb-eyebrow">LOF CRM · Staff sign in</span><h1 class="lb-h1">' + esc(sub) + '</h1></div>' +
       (msg ? '<div class="lb-msg" role="status">' + esc(msg) + '</div>' : '') + '<div class="lb-fields">' + inner + '</div>' +
       '<div class="lb-err" id="lofErr" role="alert"></div>' +
       '<button class="lb-btn" type="submit">' + esc(btn) + '</button>' +
@@ -1724,7 +1707,7 @@
       // Remember Me keeps only the e-mail address on this device – never the password
       var saved = LS.get('lof_login_email') || '';
       authShell('<form id="lofAuth" class="lb-card" novalidate>' +
-        '<div class="lb-head"><h1 class="lb-h1">Welcome back</h1><p class="lb-sub"><span class="lb-sub-d">Sign in to follow up leads, manage admissions and collect payments.</span><span class="lb-sub-m">Your menu follows your role.</span></p></div>' +
+        '<div class="lb-head"><span class="lb-eyebrow">LOF CRM · Staff sign in</span><h1 class="lb-h1">Welcome back</h1><p class="lb-sub">Pick up your leads, admissions and payments where you left them.</p></div>' +
         (msg ? '<div class="lb-msg" role="status">' + esc(msg) + '</div>' : '') +
         '<div class="lb-fields">' +
         '<div class="lb-f"><label for="le">Work email</label>' +
@@ -1735,8 +1718,7 @@
         '<label class="lb-check"><input type="checkbox" name="remember" id="lbRemember"' + (saved ? ' checked' : '') + '>Remember my e-mail on this device</label>' +
         '</div>' +
         '<div class="lb-err" id="lofErr" role="alert"></div>' +
-        '<button class="lb-btn" type="submit">Sign in</button>' +
-        '<div class="lb-note">' + LB_PERSON + '<span>Your menu follows your role: Counsellor, Reception, Admissions Head, Centre Administrator or Management.</span></div>' +
+        '<button class="lb-btn" type="submit">Sign in' + LB_ARROW + '</button>' +
         '</form>');
       f = document.getElementById('lofAuth');
       (saved ? document.getElementById('lp') : document.getElementById('le')).focus();
@@ -1959,7 +1941,15 @@
     return h;
   };
   var _theme = ACT.theme;
-  ACT.theme = function () { _theme(); LS.set('lof_theme', S.theme); };
+  ACT.theme = function () {
+    // smooth crossfade between light and dark (skipped when the user prefers reduced motion)
+    var root = document.documentElement;
+    if (!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+      root.classList.add('theme-switching'); clearTimeout(ACT.theme.t); ACT.theme.t = setTimeout(function () { root.classList.remove('theme-switching'); }, 420);
+    }
+    _theme(); LS.set('lof_theme', S.theme);
+    toast((S.theme === 'dark' ? 'Dark' : 'Light') + ' theme on', 'ok');
+  };
   var _saveFilter = ACT.saveFilter;
   ACT.saveFilter = function () { _saveFilter(); LS.set('lof_saved_filters', JSON.stringify(S.saved)); };
 
@@ -3733,6 +3723,258 @@
       .catch(function (e) { toast(e.message, 'err'); });
   };
 
+
+  // ------------------------------------------------------------------ conversation log (lead → Activities & Calls)
+  // Staff record the context of any conversation with the family – a call, WhatsApp chat, walk-in visit, e-mail or
+  // meeting: when, how, who they spoke with, what was discussed and the agreed next step (optionally with a follow-up
+  // date, which becomes a follow-up task). Entries are lead timeline events (type "conv"), kept with the lead's history.
+  (function () {
+    var CH = ['Phone call', 'WhatsApp', 'Walk-in / visit', 'E-mail', 'Video meeting', 'Other'];
+    var WITH = ['Parent', 'Student', 'Parent and student', 'Other family member', 'Other'];
+    function nowLocal() { return new Date(Date.now() + 4 * 36e5).toISOString().slice(0, 16); } // Gulf time, as locIso() reads it
+    function convs(l) { return (l.events || []).filter(function (e) { return e.type === 'conv' && e.conv; }).sort(function (a, b) { return new Date(b.conv.when || b.at) - new Date(a.conv.when || a.at); }); }
+    window.convCard = function (l) {
+      var rows = convs(l);
+      var list = rows.length ? rows.map(function (e) {
+        var c = e.conv;
+        return '<div class="conv-it"><div class="conv-hd"><b>' + esc(c.ch) + '</b><span class="muted">with ' + esc(c.with) + '</span><span class="muted sm" style="margin-left:auto">' + fDT(c.when || e.at) + ' · ' + esc(e.by || '') + '</span></div>' +
+          '<div class="conv-tx">' + esc(c.ctx) + '</div>' +
+          (c.next ? '<div class="conv-nx"><span class="badge info">Next step</span> ' + esc(c.next) + (c.fu ? ' <span class="muted sm">· follow-up ' + fDT(c.fu) + '</span>' : '') + '</div>' : '') + '</div>';
+      }).join('') : '<div class="empty"><b>No conversations logged yet</b><div class="muted">Use <b>Log conversation</b> to record what was discussed with the family.</div></div>';
+      return card('Conversation log', '<div class="conv-list">' + list + '</div>', { act: '<button class="btn sm primary" data-act="convNew" data-id="' + esc(l.id) + '">' + ic('plus') + ' Log conversation</button>' }) + '<div style="height:14px"></div>';
+    };
+    ACT.convNew = function (d) { openModal('convLog', { id: d.id }); };
+    MODALS.convLog = function (m) {
+      var l = leadById(m.id);
+      return { title: 'Log conversation – ' + l.student, form: 'convLog', ok: 'Save conversation', body:
+        '<input type="hidden" name="id" value="' + esc(l.id) + '"><div class="row" style="margin-bottom:12px"><span class="mono">' + esc(l.phone) + '</span><span class="muted sm">' + esc(l.parent) + '</span></div>' +
+        '<div class="fgrid">' + F('How did you talk?', 'ch', { opts: CH, v: 'Phone call', req: 1 }) + F('Spoke with', 'with', { opts: WITH, v: 'Parent', req: 1 }) +
+        F('When', 'when', { t: 'datetime-local', v: nowLocal(), req: 1 }) +
+        F('Context of the conversation', 'ctx', { t: 'textarea', full: 1, req: 1, help: 'What was discussed – the family’s needs, questions, concerns, interest level and anything agreed.' }) +
+        F('Next step (optional)', 'next', { full: 1, help: 'e.g. Send fee details on WhatsApp, book a trial class on Saturday.' }) +
+        F('Follow-up date (optional)', 'fu', { t: 'datetime-local', help: 'Creates a follow-up call on the calendar.' }) + '</div>' };
+    };
+    SUB.convLog = function (d, f) {
+      if (!need(f, d, ['ch', 'with', 'when', 'ctx'])) return;
+      var ctx = String(d.ctx).trim(), next = String(d.next || '').trim();
+      if (ctx.length < 5) { setErr(f, 'ctx', 'Please describe the conversation'); return; }
+      if (ctx.length > 4000) { setErr(f, 'ctx', 'Keep it under 4,000 characters'); return; }
+      var when = locIso(d.when);
+      if (!when || isNaN(new Date(when)) || new Date(when) > new Date(Date.now() + 5 * 6e4)) { setErr(f, 'when', 'The conversation date cannot be in the future'); return; }
+      var fu = d.fu ? locIso(d.fu) : null;
+      if (fu && new Date(fu) < new Date()) { setErr(f, 'fu', 'The follow-up must be in the future'); return; }
+      var l = leadById(d.id);
+      l.events.push({ at: nowIso(), type: 'conv', by: me().name, text: 'Conversation (' + d.ch + ', with ' + d['with'] + '): ' + ctx + (next ? ' · Next step: ' + next : ''),
+        conv: { ch: d.ch, with: d['with'], when: when, ctx: ctx, next: next, fu: fu } });
+      l.last = nowIso();
+      if (fu) { S.tasks.push({ id: 'T-' + (S.seq.task++), lead: l.id, cslr: fuOwner(l), due: fu, type: 'Follow-up call', status: 'Pending', remarks: next ? 'From conversation: ' + next : 'From conversation log', outcome: '', next: '' }); syncNext(l); }
+      addAudit('Conversation logged', l.id, d.ch + ' with ' + d['with']);
+      closeModal(); toast('Conversation logged' + (fu ? ' – follow-up added to the calendar' : ''), 'ok');
+    };
+  })();
+
+  // ------------------------------------------------------------------ page motion (LOF style guide)
+  // Like the Student Learning Hub: when the page (or a record tab) changes, the blocks of the new page rise into place
+  // one after another (direction follows the sidebar order), KPI figures count up, and the sidebar highlight glides
+  // from the old item to the new one. Ordinary re-renders (typing, filters) do not animate. Off with reduced motion.
+  (function () {
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var lastKey = null, lastIdx = -1, lastTop = null;
+    function routeKey() { return S && S.route ? JSON.stringify(S.route) + '|' + (S.tab || '') + '|' + (S.stuTab || '') : null; }
+    function glide(nav, animate) {
+      var on = nav.querySelector('a.it.on');
+      var ind = document.createElement('div'); ind.className = 'nav-ind'; nav.insertBefore(ind, nav.firstChild); nav.classList.add('glide');
+      if (!on) { ind.style.opacity = 0; lastTop = null; return; }
+      var top = on.offsetTop, h = on.offsetHeight;
+      ind.style.height = h + 'px';
+      if (animate && lastTop !== null && lastTop !== top) {
+        ind.style.transition = 'none'; ind.style.transform = 'translateY(' + lastTop + 'px)';
+        requestAnimationFrame(function () { requestAnimationFrame(function () { ind.style.transition = ''; ind.style.transform = 'translateY(' + top + 'px)'; }); });
+      } else ind.style.transform = 'translateY(' + top + 'px)';
+      lastTop = top;
+    }
+    function countUp(el) {
+      var node = [].slice.call(el.childNodes).find(function (n) { return n.nodeType === 3 && /\d/.test(n.textContent); });
+      if (!node) return; var raw = node.textContent, m = raw.match(/^(\D*)([\d,]+(?:\.\d+)?)(.*)$/); if (!m) return;
+      var target = parseFloat(m[2].replace(/,/g, '')); if (!isFinite(target) || target === 0) return;
+      var dec = (m[2].split('.')[1] || '').length, start = performance.now(), dur = 700;
+      (function step(t) {
+        if (!document.body.contains(node)) return;
+        var p = Math.min((t - start) / dur, 1), e = 1 - Math.pow(1 - p, 3), v = target * e;
+        node.textContent = m[1] + (dec ? v.toFixed(dec) : Math.round(v).toLocaleString('en-IN')) + m[3];
+        if (p < 1) requestAnimationFrame(step); else node.textContent = raw;
+      })(start);
+    }
+    var _renderMotion = window.render;
+    window.render = function () {
+      _renderMotion.apply(this, arguments);
+      try {
+        var nav = document.querySelector('.shell .nav'); if (!nav) { lastKey = null; return; }
+        var key = routeKey(), changed = key !== lastKey && lastKey !== null, first = lastKey === null; lastKey = key;
+        var items = [].slice.call(nav.querySelectorAll('a.it')), idx = items.findIndex(function (a) { return a.classList.contains('on'); });
+        glide(nav, changed && !reduce);
+        if ((!changed && !first) || reduce) { lastIdx = idx; return; }
+        var main = document.getElementById('main'); if (!main) return;
+        main.style.setProperty('--dir', idx >= 0 && lastIdx >= 0 && idx < lastIdx ? -1 : 1); lastIdx = idx;
+        var i = 0;
+        main.querySelectorAll('.tabs, .ph, .banner, .kpis > *, .grid > *, #main > .card, .content > .card, .tbl tbody tr').forEach(function (el) {
+          if (el.closest('.tbl') && i > 14) return; // long tables: only the first rows take part
+          el.style.setProperty('--d', Math.min(i++, 14)); el.classList.add('lof-enter');
+        });
+        main.querySelectorAll('.kpi .v').forEach(countUp);
+      } catch (e) { /* motion is decoration only */ }
+    };
+  })();
+
+  // ------------------------------------------------------------------ appreciation (LOF style guide, like the Hub's XP award)
+  // A short celebration card – rocket lift-off, progress ring, count-up and stardust – when a student is enrolled, and a
+  // bigger one when a counsellor reaches the monthly enrolment target or a receptionist reaches the monthly collections
+  // target. Click or wait ~2.5 s to close; a "+1" chip then flies to the user's avatar. Reduced motion: a toast instead.
+  (function () {
+    var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var C = 263.9, layer = null, queue = [], busy = false;
+    var ROCKET = '<svg class="xc-rocket" viewBox="0 0 60 122" aria-hidden="true"><path d="M30 4C42 16 46 34 46 56v28H14V56C14 34 18 16 30 4z"/><circle cx="30" cy="42" r="7"/><path d="M14 70h32M14 62 4 84v12l10-8M46 62l10 22v12l-10-8M22 84l2 8h12l2-8M26 98l-2 14M30 98v20M34 98l2 14"/></svg>';
+    function fmt(n) { return Math.round(n).toLocaleString('en-IN'); }
+    function countTo(el, from, to, dur, f) { var s = performance.now(); (function step(t) { var p = Math.min((t - s) / dur, 1), e = 1 - Math.pow(1 - p, 3); el.textContent = (f || fmt)(from + (to - from) * e); if (p < 1) requestAnimationFrame(step); })(s); }
+    function stardust(canvas, cx, cy, big) {
+      var dpr = window.devicePixelRatio || 1, ctx = canvas.getContext('2d');
+      canvas.width = innerWidth * dpr; canvas.height = innerHeight * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      var colors = ['#D53A28', '#D53A28', '#E8604F', '#3A66C4', '#7BA2EA', '#FFFFFF'];
+      var parts = [];
+      for (var i = 0; i < (big ? 160 : 90); i++) { var a = Math.random() * Math.PI * 2, sp = 3 + Math.random() * (big ? 9 : 7); parts.push({ x: cx, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1.2, r: 1 + Math.random() * 2.2, c: colors[i % colors.length], streak: Math.random() < .35, life: 1, decay: .010 + Math.random() * .012 }); }
+      (function frame() {
+        ctx.clearRect(0, 0, innerWidth, innerHeight); var alive = 0;
+        parts.forEach(function (p) {
+          if (p.life <= 0) return; alive++;
+          p.x += p.vx; p.y += p.vy; p.vx *= .955; p.vy = p.vy * .955 + .06; p.life -= p.decay;
+          ctx.globalAlpha = Math.max(0, p.life); ctx.strokeStyle = ctx.fillStyle = p.c;
+          if (p.streak) { ctx.lineWidth = p.r * .9; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 3, p.y - p.vy * 3); ctx.stroke(); }
+          else { ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill(); }
+        });
+        ctx.globalAlpha = 1; if (alive) requestAnimationFrame(frame); else ctx.clearRect(0, 0, innerWidth, innerHeight);
+      })();
+    }
+    // o: { label, num, numFrom, unit, title, sub, from, to (ring %), ringText, big, chip }
+    function show(o) {
+      if (reduceMotion) { toast(o.label + ' – ' + o.title, 'ok'); next(); return; }
+      if (!layer) {
+        layer = document.createElement('div'); layer.className = 'xc-layer';
+        layer.innerHTML = '<div class="xc-scrim"></div><canvas class="xc-dust"></canvas><div class="xc-card" role="status" aria-live="polite">' + ROCKET +
+          '<div class="xc-ring"><svg viewBox="0 0 96 96"><circle class="t" cx="48" cy="48" r="42"/><circle class="f" cx="48" cy="48" r="42"/></svg><b class="xc-pct"></b></div>' +
+          '<div class="xc-label"></div><div class="xc-amount"><span class="xc-pre"></span><span class="xc-num">0</span><small class="xc-unit"></small></div><div class="xc-sub"></div></div>';
+        document.body.appendChild(layer);
+      }
+      var L = layer, ring = L.querySelector('.f');
+      L.classList.toggle('big', !!o.big);
+      L.querySelector('.xc-label').textContent = o.label;
+      L.querySelector('.xc-pre').textContent = o.pre || '';
+      L.querySelector('.xc-unit').textContent = o.unit || '';
+      L.querySelector('.xc-sub').innerHTML = '<div style="font-weight:600;color:#fff">' + esc(o.title) + '</div>' + (o.sub ? '<div style="margin-top:2px">' + esc(o.sub) + '</div>' : '');
+      ring.style.transition = 'none'; ring.style.strokeDashoffset = C * (1 - o.from / 100);
+      var pctEl = L.querySelector('.xc-pct'); pctEl.textContent = o.ringText ? '' : Math.round(o.from) + '%';
+      L.querySelector('.xc-num').textContent = fmt(o.numFrom || 0);
+      L.classList.remove('on', 'out'); void L.offsetWidth; L.classList.add('on');
+      setTimeout(function () {
+        ring.style.transition = ''; ring.style.strokeDashoffset = C * (1 - Math.min(100, o.to) / 100);
+        countTo(L.querySelector('.xc-num'), o.numFrom || 0, o.num, 650);
+        if (o.ringText) pctEl.textContent = o.ringText;
+        else { var s0 = performance.now(); (function step(t) { var p = Math.min((t - s0) / 1200, 1), e = 1 - Math.pow(1 - p, 3); pctEl.textContent = Math.round(o.from + (Math.min(100, o.to) - o.from) * e) + '%'; if (p < 1) requestAnimationFrame(step); })(s0); }
+        var r = L.querySelector('.xc-card').getBoundingClientRect();
+        stardust(L.querySelector('.xc-dust'), r.left + r.width / 2, r.top + 74, o.big);
+        if (o.big) setTimeout(function () { stardust(L.querySelector('.xc-dust'), r.left + r.width / 2, r.top + 74, true); }, 700);
+      }, 260);
+      var done = false, timer;
+      function close() {
+        if (done) return; done = true; clearTimeout(timer);
+        var av = document.querySelector('.shell .avatar');
+        if (av && o.chip) {
+          var card = L.querySelector('.xc-card').getBoundingClientRect(), to = av.getBoundingClientRect();
+          var chip = document.createElement('div'); chip.className = 'xc-fly'; chip.textContent = o.chip; document.body.appendChild(chip);
+          var cw = chip.offsetWidth, ch = chip.offsetHeight, sx = card.left + card.width / 2 - cw / 2, sy = card.top + card.height / 2 - ch / 2, ex = to.left + to.width / 2 - cw / 2, ey = to.top + to.height / 2 - ch / 2;
+          chip.style.left = sx + 'px'; chip.style.top = sy + 'px';
+          chip.animate([{ transform: 'translate(0,0) scale(1)', opacity: 1 }, { transform: 'translate(' + (ex - sx) * .55 + 'px,' + ((ey - sy) * .35 - 40) + 'px) scale(1.05)', opacity: 1, offset: .5 }, { transform: 'translate(' + (ex - sx) + 'px,' + (ey - sy) + 'px) scale(.6)', opacity: .2 }],
+            { duration: 700, easing: 'cubic-bezier(.5,0,.25,1)' }).onfinish = function () { chip.remove(); av.classList.remove('xc-pulse'); void av.offsetWidth; av.classList.add('xc-pulse'); };
+        }
+        L.classList.add('out');
+        setTimeout(function () { L.classList.remove('on', 'out'); next(); }, 420);
+      }
+      timer = setTimeout(close, o.big ? 3400 : 2600);
+      L.onclick = close;
+    }
+    function next() { if (queue.length) { busy = true; show(queue.shift()); } else busy = false; }
+    window.lofCelebrate = function (o) { queue.push(o); if (!busy) next(); };
+
+    // ---- reception targets (collections recorded by the receptionist, in their branch currency, excluding cancelled)
+    function recFor(c, m) { return (S.cfg.recTargets || []).find(function (t) { return t.c === c && t.m === m; }); }
+    function recAch(c, m) {
+      var st = S.staff.find(function (s) { return s.id === c; }), cur = st ? brCur(st.branch) : 'AED';
+      return r2(S.pay.filter(function (p) { return p.by === c && p.status !== 'Cancelled' && p.cur === cur && String(p.at).slice(0, 7) === m; }).reduce(function (a, p) { return a + (+p.amt || 0); }, 0));
+    }
+    window.recFor = recFor; window.recAch = recAch;
+    var _cfgTargets = CFG.targets;
+    CFG.targets = function () {
+      var html = _cfgTargets.apply(this, arguments);
+      var m = S.tgtMonth || curMonth(), rs = S.staff.filter(function (s) { return s.role === 'Reception' && s.status === 'Active'; });
+      var rows = rs.map(function (s) {
+        var t = recFor(s.id, m), a = recAch(s.id, m), cur = brCur(s.branch);
+        return '<tr><td><b>' + esc(s.name) + '</b><div class="muted xs">' + esc(branchName(s.branch)) + '</div></td><td><input name="c_' + s.id + '" type="number" min="0" step="1" value="' + (t ? t.col : '') + '" aria-label="Collections target ' + esc(s.name) + '" style="width:120px"> <span class="muted xs">' + cur + '</span></td>' +
+          '<td class="r num">' + money(a, cur) + ' ' + (t && t.col ? achB(a, t.col) : '') + '</td></tr>';
+      }).join('') || '<tr><td colspan="3" class="muted">No active receptionists</td></tr>';
+      return html + '<div style="height:14px"></div>' + card('Reception targets – ' + esc(monthName(m)),
+        cfgForm('recTargets', '<input type="hidden" name="m" value="' + m + '"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>Receptionist</th><th>Collections target</th><th class="r">Collected</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+          '<p class="muted xs">Achievement: payments the receptionist recorded in the month, in their branch currency (cancelled payments excluded). Reaching the target shows an appreciation on their screen.</p>', { ok: 'Save reception targets' }));
+    };
+    SUB.cfg_recTargets = function (d) {
+      var m = d.m, T = S.cfg.recTargets || (S.cfg.recTargets = []);
+      var rs = S.staff.filter(function (s) { return s.role === 'Reception' && s.status === 'Active'; });
+      for (var i = 0; i < rs.length; i++) { var v = d['c_' + rs[i].id]; if (v !== '' && v != null && !(+v >= 0)) { toast('Check the collections target for ' + rs[i].name, 'err'); return; } }
+      rs.forEach(function (s) {
+        var v = d['c_' + s.id], k = T.findIndex(function (t) { return t.m === m && t.c === s.id; });
+        if (v === '' || v == null) { if (k >= 0) T.splice(k, 1); return; }
+        var row = { m: m, c: s.id, col: +v }; if (k >= 0) T[k] = row; else T.push(row);
+      });
+      cfgSave('Reception targets', monthName(m));
+    };
+
+    function progName(id) { var p = (S.programs || []).find(function (x) { return x.id === id; }); return p ? p.name : ''; }
+    function receptionTargetCheck(before) {
+      var u = me(); if (!u || u.role !== 'Reception') return;
+      var m = curMonth(), t = recFor(u.id, m); if (!t || !t.col) return;
+      var after = recAch(u.id, m), cur = brCur(u.branch);
+      if (before < t.col && after >= t.col) lofCelebrate({ big: 1, label: 'Target achieved', pre: '', num: after, numFrom: before, unit: ' ' + cur, title: 'Collections target reached for ' + monthName(m), sub: money(after, cur) + ' of ' + money(t.col, cur) + ' – brilliant work!', from: Math.min(100, before / t.col * 100), to: 100, ringText: '100%', chip: 'Target!' });
+    }
+
+    // ---- student enrolled: from "Complete enrolment"
+    var _wizFin = SUB.wizFinish;
+    SUB.wizFinish = function (d, f) {
+      var n0 = S.enr.length, u = me(), m = curMonth();
+      var ct = u && u.role === 'Counsellor' ? tgtFor(u.id, m) : null, a0 = ct ? tgtAch(u.id, m).enr : 0;
+      var rb = u && u.role === 'Reception' ? recAch(u.id, m) : 0;
+      var r = _wizFin.apply(this, arguments);
+      try {
+        if (S.enr.length > n0) {
+          var e = S.enr[S.enr.length - 1], s = stuById(e.stu), name = s ? s.first + ' ' + s.last : e.stu;
+          if (ct && ct.enr) {
+            var a1 = tgtAch(u.id, m).enr;
+            lofCelebrate({ label: 'Enrolment complete', pre: '+', num: 1, unit: ' student', title: name + ' – ' + progName(e.prog), sub: a1 + ' of ' + ct.enr + ' enrolments this month', from: Math.min(100, a0 / ct.enr * 100), to: a1 / ct.enr * 100, chip: '+1 enrolment' });
+            if (a0 < ct.enr && a1 >= ct.enr) lofCelebrate({ big: 1, label: 'Target achieved', num: a1, numFrom: a0, unit: ' / ' + ct.enr, title: 'Enrolment target reached for ' + monthName(m), sub: 'Every enquiry, from first call to first class – brilliant work!', from: Math.min(100, a0 / ct.enr * 100), to: 100, ringText: '100%', chip: 'Target!' });
+          } else {
+            lofCelebrate({ label: 'Enrolment complete', pre: '+', num: 1, unit: ' student', title: name + ' – ' + progName(e.prog), sub: 'Welcome to Lab of Future!', from: 0, to: 100, ringText: '✓', chip: '+1 enrolment' });
+          }
+          receptionTargetCheck(rb);
+        }
+      } catch (x) { /* appreciation is decoration only */ }
+      return r;
+    };
+    // ---- payment recorded at the front desk: celebrate when a receptionist reaches the collections target
+    var _payF = SUB.pay;
+    SUB.pay = function () {
+      var u = me(), rb = u && u.role === 'Reception' ? recAch(u.id, curMonth()) : 0, n0 = S.pay.length;
+      var r = _payF.apply(this, arguments);
+      try { if (S.pay.length > n0) receptionTargetCheck(rb); } catch (x) { /* decoration only */ }
+      return r;
+    };
+  })();
 
   // ------------------------------------------------------------------ go
   var _closeModal = window.closeModal;

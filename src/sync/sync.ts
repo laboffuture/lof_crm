@@ -22,7 +22,7 @@ import type { Env, Job, User } from '../types';
 import { HttpError } from '../types';
 import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify, gstProblem } from '../domain/core';
 import { hashPassword } from '../lib/crypto';
-import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, lmsProblem } from '../domain/terms';
+import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, recTargetsProblem, lmsProblem } from '../domain/terms';
 import { checkEmailTemplates } from '../domain/email-templates';
 import { checkMailSettings } from '../domain/mail';
 import { checkMailAuto } from '../domain/mail-send';
@@ -701,6 +701,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         || (doc.refund !== undefined && refundProblem(doc.refund))
         || (doc.refund && !ALL_ROLES.includes(doc.refund.approver) ? 'Refund approver must be a role' : '')
         || (doc.targets !== undefined && targetsProblem(doc.targets, counsellors))
+        || (doc.recTargets !== undefined && recTargetsProblem(doc.recTargets, new Set(staffList.filter((x) => x.role === 'Reception').map((x) => x.id as string))))
         || (doc.lms !== undefined && lmsProblem(doc.lms));
       if (problem) { rejected.push({ coll: 'settings', id: 'cfg', reason: problem }); continue; }
       if (doc.emailTpls !== undefined) {

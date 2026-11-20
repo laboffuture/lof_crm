@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { setup, USERS, doc, type TestCtx } from '../helpers/app';
 import { calcFee, gstProblem } from '../../src/domain/core';
-import { loadBillingDoc, docHtml, invoicePdf } from '../../src/domain/billing-docs';
+import { loadBillingDoc, docHtml, invoicePdf, receiptPdf } from '../../src/domain/billing-docs';
 import { writeFileSync } from 'node:fs';
 import { Repo } from '../../src/lib/db';
 
@@ -73,6 +73,37 @@ describe('branch GST', () => {
     const pdf = await invoicePdf(d);
     expect(pdf.length).toBeGreaterThan(1000);
     if (process.env.BILLING_PDF_OUT) writeFileSync(`${process.env.BILLING_PDF_OUT}/gst-tax-invoice.pdf`, pdf);
+  });
+
+  it('invoice and receipt carry a GST summary with CGST / SGST rates and amounts; the receipt adds this payment', async () => {
+    await setBranchGst(USERS.admin, { ...GST, cgst: 9, sgst: 9 });
+    const p = (await t.sql<any>("SELECT data FROM docs WHERE type='payment' AND branch='BLR' LIMIT 1")).map((x) => JSON.parse(x.data))[0];
+    const d = (await loadBillingDoc(new Repo(t.env.DB), p.id))!;
+    const g = d.gst!;
+    expect(g).toBeTruthy();
+    expect(g.cgst + g.sgst).toBeCloseTo(d.tax, 2);
+    expect(g.taxable).toBeCloseTo(d.subtotal, 2);
+    expect(g.paid.taxable + g.paid.cgst + g.paid.sgst).toBeCloseTo(d.amountPaid, 2);
+    const inv = docHtml(d, 'invoice', 'logo.png'), rc = docHtml(d, 'receipt', 'logo.png');
+    for (const h of [inv, rc]) {
+      expect(h).toContain('GST summary');
+      expect(h).toContain(`CGST @ ${g.cgstPct}%`);
+      expect(h).toContain(`SGST @ ${g.sgstPct}%`);
+      expect(h).toContain('GSTIN: 29ABCDE1234F1Z5');
+      expect(h).toContain('PAN: ABCDE1234F');
+    }
+    expect(rc).toContain('This payment');
+    expect(inv).not.toContain('This payment');
+    expect((await receiptPdf(d)).length).toBeGreaterThan(1000);
+  });
+
+  it('an Indian branch without rates still shows GST as CGST and SGST halves', async () => {
+    const p = (await t.sql<any>("SELECT data FROM docs WHERE type='payment' AND branch='BLR' LIMIT 1")).map((x) => JSON.parse(x.data))[0];
+    const d = (await loadBillingDoc(new Repo(t.env.DB), p.id))!;
+    expect(d.tax).toBeGreaterThan(0);
+    expect(d.taxes.map((x) => x.label)).toEqual([expect.stringMatching(/^CGST \d/), expect.stringMatching(/^SGST \d/)]);
+    expect(d.gst!.cgstPct).toBe(d.gst!.sgstPct);
+    expect(d.gst!.cgst + d.gst!.sgst).toBeCloseTo(d.tax, 2);
   });
 
   it('branches without GST keep the single tax line', async () => {
