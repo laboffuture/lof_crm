@@ -2219,6 +2219,181 @@
     render();
   };
 
+  // ---------------- Fees & Pricing: tax comes from the branch
+  // Indian branches: the fee form shows CGST % and SGST % read-only, taken from the branch (Settings → Branches);
+  // choosing another branch in the dropdown updates them. They cannot be typed in. Other branches (UAE) keep VAT %.
+  function isIndiaBr(b) { return !!b && (/^ind/i.test(String(b.country || '')) || b.cur === 'INR'); }
+  function feeTaxState(b) {
+    var g = branchGst(b);
+    if (g) return { mode: 'gst', cgst: g.cgst, sgst: g.sgst, sum: Math.round((g.cgst + g.sgst) * 100) / 100 };
+    return { mode: isIndiaBr(b) ? 'unset' : 'vat' };
+  }
+  var GST_HELP = 'From the branch – change it in Settings → Branches';
+  var GST_UNSET = 'Not set for this branch – add CGST and SGST in Settings → Branches';
+  // One form cell (where "Tax %" was) split in two: CGST % | SGST %
+  function gstFieldsHtml(st) {
+    var one = function (name, label, v) {
+      return '<div class="gst-half" data-f="' + name + '"><label for="f_fee_' + name + '">' + label + '</label>' +
+        '<input id="f_fee_' + name + '" class="ro-field" type="text" readonly tabindex="-1" aria-readonly="true" value="' + (v == null ? '' : v) + '" placeholder="Not set"><div class="fe"></div></div>';
+    };
+    return '<div class="f gst-pair" data-fee-gst' + (st.mode === 'vat' ? ' hidden' : '') + '><div class="gst-row">' +
+      one('cgst', 'CGST %', st.cgst) + one('sgst', 'SGST %', st.sgst) + '</div><div class="help">' + (st.mode === 'unset' ? GST_UNSET : GST_HELP) + '</div></div>';
+  }
+  window.feeTaxCell = function (f) {
+    var st = feeTaxState(brOf(f));
+    return st.mode === 'gst' ? 'CGST ' + st.cgst + '% + SGST ' + st.sgst + '%' : (Number(f.tax) || 0) + '%';
+  };
+  var _feeModal = MODALS.fee;
+  MODALS.fee = function (m) {
+    var x = _feeModal(m), f = m.id ? (S.fees || []).find(function (y) { return y.id === m.id; }) : null;
+    var sel = /name="branch"[^>]*>[\s\S]*?<option value="([^"]*)"[^>]*selected/.exec(x.body);
+    var st = feeTaxState((S.branches || []).find(function (b) { return b.id === (f ? f.branch : sel && sel[1]); }));
+    x.body = x.body.replace(/<div class="f" data-f="tax">[\s\S]*?<div class="fe"><\/div><\/div>/, function (fld) {
+      return fld.replace('<div class="f" data-f="tax">', '<div class="f" data-f="tax" data-fee-vat' + (st.mode === 'vat' ? '' : ' hidden') + '>').replace('>Tax %<', '>VAT %<') +
+        gstFieldsHtml(st);
+    });
+    // At an Indian branch the hidden tax value is the GST; switching to a VAT branch starts from the VAT default (5)
+    if (st.mode !== 'vat') x.body = x.body.replace(/(id="f_tax" name="tax" type="number" value=")([^"]*)"/, function (_m, pre, v) {
+      return pre + (!f && st.mode === 'gst' ? st.sum : v) + '" data-gst-fill="1" data-vat="' + (f ? '5' : v) + '"';
+    });
+    x.body = x.body.replace('name="branch"', 'name="branch" data-change="feeBranch"');
+    // Programme and branch can be changed on an existing fee too (a fee used by enrolments gets a new version)
+    x.body = x.body.replace(/(<select id="f_(?:prog|branch)" name="(?:prog|branch)"[^>]*?) disabled>/g, '$1>');
+    if (f) x.body = x.body.replace('Currency follows the branch', 'Currency follows the branch. A fee already used by enrolments is saved as a new version.');
+    // Course ID: required for new fees; existing fees start empty and can be filled in when edited
+    x.body = x.body.replace(/(<div class="f" data-f="pkg">[\s\S]*?<div class="fe"><\/div><\/div>)/, function (pkg) {
+      return pkg + F('Course ID', 'courseId', { v: (f && f.courseId) || '', req: !f, ph: 'e.g. ROB-T24-MUM', help: f && !f.courseId ? 'Not entered yet – add the course ID' : 'The course this fee is for' });
+    });
+    return x;
+  };
+  CHG.feeBranch = function (el) {
+    var form = el.form, st = feeTaxState((S.branches || []).find(function (b) { return b.id === el.value; }));
+    if (!form) return;
+    form.querySelectorAll('[data-fee-gst]').forEach(function (n) { n.hidden = st.mode === 'vat'; var h = n.querySelector(':scope > .help'); if (h) h.textContent = st.mode === 'unset' ? GST_UNSET : GST_HELP; });
+    form.querySelectorAll('.gst-half').forEach(function (n) { n.classList.remove('bad'); var e = n.querySelector('.fe'); if (e) e.textContent = ''; });
+    var vat = form.querySelector('[data-fee-vat]'); if (vat) vat.hidden = st.mode !== 'vat';
+    var c = form.querySelector('#f_fee_cgst'), s = form.querySelector('#f_fee_sgst'), t = form.querySelector('[name="tax"]');
+    if (c) c.value = st.mode === 'gst' ? st.cgst : '';
+    if (s) s.value = st.mode === 'gst' ? st.sgst : '';
+    if (!t) return;
+    // Keep the VAT % typed for a non-Indian branch; the GST total is only filled in while an Indian branch is chosen
+    if (st.mode === 'vat') { if (t.dataset.gstFill) { t.value = t.dataset.vat || '5'; delete t.dataset.gstFill; } }
+    else { if (!t.dataset.gstFill) t.dataset.vat = t.value; t.dataset.gstFill = '1'; if (st.mode === 'gst') t.value = st.sum; }
+  };
+  var _feeSub = SUB.fee;
+  var COURSE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,39}$/;
+  function nextFeeId() {
+    var n = (S.fees || []).length + 1, id;
+    do { id = 'FEE-' + String(n++).padStart(3, '0'); } while ((S.fees || []).some(function (x) { return x.id === id; }));
+    return id;
+  }
+  SUB.fee = function (d, f) {
+    var o = d.oid ? (S.fees || []).find(function (y) { return y.id === d.oid; }) : null;
+    var brId = d.branch || (o && o.branch), prog = d.prog || (o && o.prog);
+    var b = (S.branches || []).find(function (x) { return x.id === brId; });
+    var st = feeTaxState(b), cid = String(d.courseId || '').trim();
+    var moved = !!o && (prog !== o.prog || brId !== o.branch);
+    if (!need(f, d, o ? ['pkg', 'amt', 'from'] : ['pkg', 'courseId', 'amt', 'from'])) return;
+    if (cid && !COURSE_ID_RE.test(cid)) { setErr(f, 'courseId', 'Letters, numbers and - _ . / only, up to 40 characters'); return; }
+    if (st.mode === 'unset' && (!o || moved)) { setErr(f, 'cgst', 'Add CGST and SGST for this branch in Settings → Branches first'); return; }
+    // The tax of an Indian fee is the branch's CGST + SGST (charged that way in calcFee); it is never typed in here
+    if (st.mode !== 'vat') d.tax = o && !moved ? o.tax : st.sum;
+    if (!moved) {
+      var before = (S.fees || []).length;
+      _feeSub(d, f);
+      if (S.modal) return; // not saved (a check in the form failed)
+      var rec = S.fees.length > before ? S.fees[S.fees.length - 1] : o;
+      if (rec && (rec.courseId || '') !== cid) { rec.courseId = cid; render(); }
+      return;
+    }
+    // Programme or branch changed on an existing fee
+    if (!(+d.amt > 0)) { setErr(f, 'amt', 'Enter an amount above zero'); return; }
+    if (d.to && d.to < d.from) { setErr(f, 'to', 'End date is before start date'); return; }
+    if (S.fees.find(function (x) { return x.id !== o.id && x.prog === prog && x.branch === brId && x.pkg === d.pkg && x.active && !x.to; })) {
+      setErr(f, 'pkg', 'An active fee already exists for this programme, branch and package'); return;
+    }
+    var where = PNAME(prog) + ' · ' + b.name;
+    var vals = { prog: prog, branch: brId, cur: b.cur, pkg: d.pkg, sessions: +d.sessions, amt: +d.amt, tax: +d.tax, extra: { name: o.extra.name, amt: +d.reg }, to: d.to || '', active: !!d.active, courseId: cid };
+    if ((S.enr || []).some(function (e) { return e.feeId === o.id; })) {
+      // Used by enrolments: those keep the old record; the old one ends yesterday and a new one starts today
+      var y = dayKey(dAt(-1, 12)), n = Object.assign({}, o, vals, { id: nextFeeId(), from: TODAY });
+      o.to = y; S.fees.push(n); closeModal();
+      cfgSave('Fee ' + o.id, 'moved to ' + where + ' as new record ' + n.id + ' effective today; ' + o.id + ' (used by enrolments) ended ' + y);
+      return;
+    }
+    Object.assign(o, vals, { from: d.from }); closeModal();
+    cfgSave('Fee ' + o.id, 'programme / branch changed to ' + where);
+  };
+
+  // ---------------- Students: edit personal details and parents / guardians
+  // Student ID, branch, family ID and registration date stay permanent (the server enforces it). Unknown values
+  // are stored as "—" like the rest of the student record and shown as empty boxes in the form.
+  var EMAIL_RE = /^\S+@\S+\.\S+$/, MOBILE_RE = /^\+?[\d\s()-]{7,20}$/;
+  var blankDash = function (v) { v = v == null ? '' : String(v); return v === '—' ? '' : v; };
+  var dashBlank = function (v) { v = String(v == null ? '' : v).trim(); return v || '—'; };
+  ACT.mStuEdit = function (d) { openModal('stuEdit', { id: d.id }); };
+  MODALS.stuEdit = function (m) {
+    var s = stuById(m.id);
+    return { title: 'Edit student ' + s.id, size: 'lg', form: 'stuEdit', ok: 'Save changes', body: '<input type="hidden" name="id" value="' + esc(s.id) + '"><div class="fgrid">' +
+      F('First name', 'first', { v: s.first, req: 1 }) + F('Last name', 'last', { v: s.last, req: 1 }) +
+      F('Date of birth', 'dob', { t: 'date', v: s.dob, req: 1, max: TODAY }) +
+      F('Gender', 'gender', { v: s.gender, opts: ['Female', 'Male', 'Other'] }) +
+      F('Nationality', 'nat', { v: blankDash(s.nat) }) + F('School', 'school', { v: blankDash(s.school) }) +
+      F('Grade', 'grade', { v: blankDash(s.grade) }) + F('Curriculum', 'curr', { v: blankDash(s.curr), ph: 'e.g. CBSE, IB, British' }) +
+      F('Student e-mail', 'email', { t: 'email', v: s.email || '', help: 'Optional' }) + F('Student mobile', 'mobile', { v: s.mobile || '', help: 'Optional' }) +
+      F('Address', 'address', { t: 'textarea', v: blankDash(s.address), full: 1, rows: 2 }) +
+      '<div class="f full"><p class="muted xs" style="margin:0">Student ID, branch, family ID and registration date cannot be changed.</p></div></div>' };
+  };
+  SUB.stuEdit = function (d, f) {
+    if (!need(f, d, ['first', 'last', 'dob'])) return;
+    if (d.dob > TODAY) { setErr(f, 'dob', 'Date of birth cannot be in the future'); return; }
+    if (d.email && !EMAIL_RE.test(d.email.trim())) { setErr(f, 'email', 'Enter a valid e-mail'); return; }
+    if (d.mobile && !MOBILE_RE.test(d.mobile.trim())) { setErr(f, 'mobile', 'Enter a valid mobile number'); return; }
+    var s = stuById(d.id), was = JSON.stringify(s), changed = [];
+    var next = { first: d.first.trim(), last: d.last.trim(), dob: d.dob, gender: d.gender, nat: dashBlank(d.nat), school: dashBlank(d.school),
+      grade: dashBlank(d.grade), curr: dashBlank(d.curr), address: dashBlank(d.address), email: (d.email || '').trim(), mobile: (d.mobile || '').trim() };
+    Object.keys(next).forEach(function (k) { if (String(s[k] == null ? '' : s[k]) !== String(next[k])) changed.push(k); });
+    Object.assign(s, next);
+    closeModal();
+    if (JSON.stringify(s) === was) { toast('No changes', 'info'); return; }
+    addAudit('Student profile edited', s.id, 'Personal information: ' + changed.join(', '));
+    render(); toast('Student details saved', 'ok');
+  };
+  ACT.mParentEdit = function (d) { openModal('parentEdit', { id: d.id, i: +d.i }); };
+  MODALS.parentEdit = function (m) {
+    var s = stuById(m.id), p = s.parents[m.i] || {};
+    var rels = ['Father', 'Mother', 'Legal Guardian'].concat(p.rel && ['Father', 'Mother', 'Legal Guardian'].indexOf(p.rel) < 0 ? [p.rel] : []);
+    return { title: 'Edit parent / guardian', form: 'parentEdit', ok: 'Save', body: '<input type="hidden" name="id" value="' + esc(s.id) + '"><input type="hidden" name="i" value="' + m.i + '"><div class="fgrid">' +
+      F('Name', 'name', { v: p.name, req: 1 }) + F('Relationship', 'rel', { v: p.rel, opts: rels }) +
+      F('Mobile', 'mobile', { v: p.mobile, req: 1 }) + F('Email', 'email', { t: 'email', v: p.email, req: 1, help: m.i === 0 ? 'Main contact – receipts and LMS e-mails go here' : '' }) +
+      F('Profession', 'job', { v: blankDash(p.job) }) + '</div>' +
+      (s.parents.length > 1 && m.i > 0 ? '<div class="row" style="margin-top:12px"><button class="btn sm danger" type="button" data-act="parentRemove" data-id="' + esc(s.id) + '" data-i="' + m.i + '">Remove this parent / guardian</button></div>' : '') };
+  };
+  SUB.parentEdit = function (d, f) {
+    if (!need(f, d, ['name', 'mobile', 'email'])) return;
+    if (!EMAIL_RE.test(d.email.trim())) { setErr(f, 'email', 'Enter a valid e-mail'); return; }
+    if (!MOBILE_RE.test(d.mobile.trim())) { setErr(f, 'mobile', 'Enter a valid mobile number'); return; }
+    var s = stuById(d.id), p = s.parents[+d.i];
+    if (!p) { closeModal(); return; }
+    Object.assign(p, { name: d.name.trim(), rel: d.rel, mobile: d.mobile.trim(), email: d.email.trim(), job: dashBlank(d.job) });
+    addAudit('Parent edited', s.id, p.name + (+d.i === 0 ? ' (main contact)' : ''));
+    closeModal(); render(); toast('Parent / guardian saved', 'ok');
+  };
+  ACT.parentRemove = function (d) {
+    var s = stuById(d.id), i = +d.i;
+    if (!s || i < 1 || s.parents.length < 2) return;
+    var p = s.parents.splice(i, 1)[0];
+    addAudit('Parent removed', s.id, p.name);
+    closeModal(); render(); toast(p.name + ' removed', 'ok');
+  };
+  // Adding a parent: same checks as editing
+  var _parentSub = SUB.parent;
+  SUB.parent = function (d, f) {
+    if (d.email && !EMAIL_RE.test(String(d.email).trim())) { clearErrs(f); setErr(f, 'email', 'Enter a valid e-mail'); return; }
+    if (d.mobile && !MOBILE_RE.test(String(d.mobile).trim())) { clearErrs(f); setErr(f, 'mobile', 'Enter a valid mobile number'); return; }
+    _parentSub(d, f); render();
+  };
+
   // ---------------- Payments → Payment links / Cancelled
   // Every payment link: who it went to, who created and sent it (how, when) and whether the parent paid.
   // Counsellors see only the links they shared (the server filters). Cancelled transactions have their own section.

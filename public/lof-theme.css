@@ -220,6 +220,17 @@ body { font-family: var(--f-body); font-size: 14px; line-height: 1.5; -webkit-fo
 
 /* ---------- Conversation log (lead → Activities & Calls) ---------- */
 .shell .conv-list { display: grid; gap: 10px }
+/* Fees & Pricing: CGST / SGST come from the branch and are read-only */
+[data-fee-gst][hidden], [data-fee-vat][hidden] { display: none !important }
+:is(.shell, .ov) .f input.ro-field { background: var(--panel2); color: var(--fg); border-style: dashed; cursor: not-allowed; font-weight: 600 }
+:is(.shell, .ov) .f input.ro-field:focus { box-shadow: none; border-color: var(--line-strong) }
+.gst-pair .gst-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px }
+.gst-pair .gst-half { display: flex; flex-direction: column; gap: 4px; min-width: 0 }
+.gst-pair .gst-half label { font-size: 12px; font-weight: 600; color: var(--text-2) }
+.gst-pair .gst-half input { width: 100% }
+.gst-pair .gst-half.bad input { border-color: var(--lof-red) }
+.gst-pair .gst-half .fe:empty { display: none }
+.gst-pair .gst-half .fe { color: var(--red-text); font-size: 12px }
 .shell .conv-it { border: 1px solid var(--line); border-left: 3px solid var(--lof-navy); border-radius: 10px; padding: 12px 14px; background: var(--panel); transition: border-color .25s }
 .shell .conv-it:hover { border-left-color: var(--lof-red) }
 .shell .conv-hd { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap }

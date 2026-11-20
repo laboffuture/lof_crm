@@ -77,6 +77,13 @@ const patches = [
   ["const ps = S.pay.filter(p => inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at)), f = S.payF", "const ps = S.pay.filter(p => p.status !== 'Cancelled' && inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at)), f = S.payF"],
   // Branch GST: fees at a branch with CGST + SGST are charged at that rate (api-client.js → feeTaxPct)
   ["tax = r2(net * fee.tax / 100)", "tax = r2(net * (window.feeTaxPct ? window.feeTaxPct(fee) : fee.tax) / 100)"],
+  // Student 360: edit personal information (api-client.js → MODALS.stuEdit) and each parent / guardian (MODALS.parentEdit)
+  ["['Address', esc(s.address)]]))}${card('Enrolment information'", "['Address', esc(s.address)], ['Student e-mail', esc(s.email || '—')], ['Student mobile', esc(s.mobile || '—')]]), { act: E ? `<button class=\"btn sm\" data-act=\"mStuEdit\" data-id=\"${s.id}\">Edit</button>` : '' })}${card('Enrolment information'"],
+  ["{ h: 'Profession', f: p => esc(p.job) }], s.parents, { all: 1 })", "{ h: 'Profession', f: p => esc(p.job) }, { h: '', f: p => E ? `<button class=\"btn sm\" data-act=\"mParentEdit\" data-id=\"${s.id}\" data-i=\"${s.parents.indexOf(p)}\">Edit</button>` : '' }], s.parents, { all: 1 })"],
+  // Fee master: Course ID column (empty for older fees until it is filled in)
+  ["{ h: 'Package', f: f => esc(f.pkg) }, { h: 'Sessions', f: f => f.sessions, r: 1 }", "{ h: 'Package', f: f => esc(f.pkg) }, { h: 'Course ID', f: f => f.courseId ? `<span class=\"mono\">${esc(f.courseId)}</span>` : '<span class=\"faint\">—</span>', s: f => f.courseId || '' }, { h: 'Sessions', f: f => f.sessions, r: 1 }"],
+  // Fee master: Indian branches show the branch's CGST + SGST in the Tax column (api-client.js → feeTaxCell)
+  ["{ h: 'Tax', f: f => f.tax + '%', r: 1 }", "{ h: 'Tax', f: f => window.feeTaxCell ? window.feeTaxCell(f) : f.tax + '%', r: 1 }"],
   ["<dt>Tax (${f.tax}%)</dt>", "<dt>${window.feeTaxLabel ? esc(window.feeTaxLabel(f)) : 'Tax (' + f.tax + '%)'}</dt>"],
   // Cancelled transactions keep their receipt numbers in every list but drop out of all totals
   ["S.pay.filter(p => p.branch === b[0] && dayKey(p.at)", "S.pay.filter(p => p.status !== 'Cancelled' && p.branch === b[0] && dayKey(p.at)"],

@@ -106,6 +106,21 @@ describe('branch GST', () => {
     expect(d.gst!.cgst + d.gst!.sgst).toBeCloseTo(d.tax, 2);
   });
 
+  it('a new fee needs a valid course ID; an older fee without one can still be edited', async () => {
+    const fees = (await t.sql<any>("SELECT data FROM docs WHERE type='fee'")).map((r) => JSON.parse(r.data));
+    const old = fees.find((f) => f.branch === 'BLR' && f.active);
+    const fresh = { ...old, id: 'FEE-901', pkg: 'Course ID test package', from: '2099-01-01', to: '' };
+    delete fresh.courseId;
+    expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: fresh }])).body.error).toMatch(/course ID/);
+    expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: { ...fresh, courseId: 'bad id!' } }])).body.error).toMatch(/Course ID: letters/);
+    expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: { ...fresh, courseId: ' ROB-T24-BLR ' } }])).status).toBe(200);
+    expect((await doc(t, 'fee', fresh.id)).courseId).toBe('ROB-T24-BLR');
+    // an existing fee with no course ID: other changes still save
+    expect(old.courseId).toBeFalsy();
+    const r = await sync(USERS.admin, [{ coll: 'fees', id: old.id, op: 'upsert', doc: { ...old, active: old.active }, base: old }]);
+    expect(r.status).toBe(200);
+  });
+
   it('branches without GST keep the single tax line', async () => {
     const p = (await t.sql<any>("SELECT data FROM docs WHERE type='payment' AND branch='KRM' LIMIT 1")).map((x) => JSON.parse(x.data))[0];
     const d = (await loadBillingDoc(new Repo(t.env.DB), p.id))!;

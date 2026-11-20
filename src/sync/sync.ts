@@ -262,6 +262,10 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         } else if (c.coll === 'branches' && o?.archived) Object.assign(d, { archived: true, archivedAt: o.archivedAt, archivedBy: o.archivedBy });
         if (c.coll === 'fees') {
           if (!(num(d.amt) > 0) || !(num(d.tax) >= 0) || !(num(d.extra?.amt) >= 0)) { reject(c, 'Fee, tax and registration must be valid numbers'); break; }
+          // Course ID: required on new fees; older fees may still be empty until someone fills it in
+          d.courseId = String(d.courseId ?? '').trim();
+          if (d.courseId && !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,39}$/.test(d.courseId)) { reject(c, 'Course ID: letters, numbers and - _ . / only, up to 40 characters'); break; }
+          if (!o && !d.courseId) { reject(c, 'Enter the course ID for the new fee'); break; }
           if (o && (o.amt !== d.amt || o.tax !== d.tax || o.extra?.amt !== d.extra?.amt || o.prog !== d.prog || o.branch !== d.branch) && o.from <= today) {
             const used = await repo.count('enrollment', "json_extract(data,'$.feeId')=?", [o.id]);
             if (used) { reject(c, 'This fee is used by enrolments – create a new version instead of editing the amount'); break; }
@@ -477,6 +481,17 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           if (keys.some((k) => ['id', 'reg', 'branch', 'fam'].includes(k))) { reject(c, 'Student ID, branch, family and registration date are permanent'); break; }
           d.moodle = o.moodle; // owned by the Moodle sync
           if (!P('students', 'E') && !(P('enrollments', 'C') && subset(keys, ['status', 'comm', 'moodle']))) { reject(c, `${user.role} cannot edit student profiles`); break; }
+          // Edited personal details and parents / guardians: the same checks as at registration
+          const okEmail = (v: unknown) => /^\S+@\S+\.\S+$/.test(String(v ?? '').trim());
+          if ((keys.includes('first') || keys.includes('last')) && (!String(d.first ?? '').trim() || !String(d.last ?? '').trim())) { reject(c, 'First and last name are required'); break; }
+          if (keys.includes('dob') && !(/^\d{4}-\d{2}-\d{2}$/.test(String(d.dob)) && String(d.dob) <= today)) { reject(c, 'Date of birth is not valid'); break; }
+          if (keys.includes('email') && d.email && !okEmail(d.email)) { reject(c, 'Student e-mail is not valid'); break; }
+          if (keys.includes('mobile') && d.mobile && !/^\+?[\d\s()-]{7,20}$/.test(String(d.mobile))) { reject(c, 'Student mobile is not valid'); break; }
+          if (keys.includes('email') || keys.includes('mobile')) { d.email = str(d.email, 160); d.mobile = str(d.mobile, 20); }
+          if (keys.includes('parents')) {
+            if (!Array.isArray(d.parents) || !d.parents.length || !okEmail(d.parents[0]?.email)) { reject(c, 'The main parent / guardian needs a valid e-mail'); break; }
+            if (d.parents.some((p: any) => !String(p?.name ?? '').trim() || (p?.email && !okEmail(p.email)))) { reject(c, 'Every parent / guardian needs a name and a valid e-mail'); break; }
+          }
         }
         // Messages: only the server-built welcome e-mail is sent, to the parent address on record
         const prevLen = o?.comm?.length || 0;
