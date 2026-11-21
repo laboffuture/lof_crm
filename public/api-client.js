@@ -2281,7 +2281,8 @@
     else { if (!t.dataset.gstFill) t.dataset.vat = t.value; t.dataset.gstFill = '1'; if (st.mode === 'gst') t.value = st.sum; }
   };
   var _feeSub = SUB.fee;
-  var COURSE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,39}$/;
+  // Course ID: any text up to 80 characters (commas, spaces, & / ( ) # + : etc.), except < > " ' ` \ and control characters
+  var COURSE_ID_RE = /^[^<>"'`\\\u0000-\u001f\u007f]{1,80}$/;
   function nextFeeId() {
     var n = (S.fees || []).length + 1, id;
     do { id = 'FEE-' + String(n++).padStart(3, '0'); } while ((S.fees || []).some(function (x) { return x.id === id; }));
@@ -2294,7 +2295,7 @@
     var st = feeTaxState(b), cid = String(d.courseId || '').trim();
     var moved = !!o && (prog !== o.prog || brId !== o.branch);
     if (!need(f, d, o ? ['pkg', 'amt', 'from'] : ['pkg', 'courseId', 'amt', 'from'])) return;
-    if (cid && !COURSE_ID_RE.test(cid)) { setErr(f, 'courseId', 'Letters, numbers and - _ . / only, up to 40 characters'); return; }
+    if (cid && !COURSE_ID_RE.test(cid)) { setErr(f, 'courseId', 'Up to 80 characters, without < > " \' ` or \\'); return; }
     if (st.mode === 'unset' && (!o || moved)) { setErr(f, 'cgst', 'Add CGST and SGST for this branch in Settings → Branches first'); return; }
     // The tax of an Indian fee is the branch's CGST + SGST (charged that way in calcFee); it is never typed in here
     if (st.mode !== 'vat') d.tax = o && !moved ? o.tax : st.sum;

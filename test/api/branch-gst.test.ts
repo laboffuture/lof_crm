@@ -112,9 +112,10 @@ describe('branch GST', () => {
     const fresh = { ...old, id: 'FEE-901', pkg: 'Course ID test package', from: '2099-01-01', to: '' };
     delete fresh.courseId;
     expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: fresh }])).body.error).toMatch(/course ID/);
-    expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: { ...fresh, courseId: 'bad id!' } }])).body.error).toMatch(/Course ID: letters/);
-    expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: { ...fresh, courseId: ' ROB-T24-BLR ' } }])).status).toBe(200);
-    expect((await doc(t, 'fee', fresh.id)).courseId).toBe('ROB-T24-BLR');
+    expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: { ...fresh, courseId: 'bad <id>' } }])).body.error).toMatch(/Course ID: up to 80/);
+    expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: { ...fresh, courseId: 'x'.repeat(81) } }])).body.error).toMatch(/Course ID: up to 80/);
+    expect((await sync(USERS.admin, [{ coll: 'fees', id: fresh.id, op: 'upsert', doc: { ...fresh, courseId: ' ROB-T24, Term 1 (BLR) & Lab #2: 2026/27_v1+ ' } }])).status).toBe(200);
+    expect((await doc(t, 'fee', fresh.id)).courseId).toBe('ROB-T24, Term 1 (BLR) & Lab #2: 2026/27_v1+');
     // an existing fee with no course ID: other changes still save
     expect(old.courseId).toBeFalsy();
     const r = await sync(USERS.admin, [{ coll: 'fees', id: old.id, op: 'upsert', doc: { ...old, active: old.active }, base: old }]);

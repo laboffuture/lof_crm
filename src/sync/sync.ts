@@ -264,7 +264,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           if (!(num(d.amt) > 0) || !(num(d.tax) >= 0) || !(num(d.extra?.amt) >= 0)) { reject(c, 'Fee, tax and registration must be valid numbers'); break; }
           // Course ID: required on new fees; older fees may still be empty until someone fills it in
           d.courseId = String(d.courseId ?? '').trim();
-          if (d.courseId && !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,39}$/.test(d.courseId)) { reject(c, 'Course ID: letters, numbers and - _ . / only, up to 40 characters'); break; }
+          if (d.courseId && !/^[^<>"'`\\\u0000-\u001f\u007f]{1,80}$/.test(d.courseId)) { reject(c, 'Course ID: up to 80 characters, without < > " \' ` or \\'); break; }
           if (!o && !d.courseId) { reject(c, 'Enter the course ID for the new fee'); break; }
           if (o && (o.amt !== d.amt || o.tax !== d.tax || o.extra?.amt !== d.extra?.amt || o.prog !== d.prog || o.branch !== d.branch) && o.from <= today) {
             const used = await repo.count('enrollment', "json_extract(data,'$.feeId')=?", [o.id]);
