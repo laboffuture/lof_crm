@@ -1,9 +1,6 @@
 // ---------------- Payment link from an opportunity (Opportunity 30% / Admission Decision 70%)
 // The counsellor fills in the enrolment form (student, programme, fee, payment term) and, instead of enrolling,
 // creates a payment link. The server checks the form now and enrols the student automatically when the parent pays.
-function canShareLink() {
-  return can('enrollments', 'C') || can('opportunities', 'E') || can('payments', 'C');
-}
 var LINK_ST = {
   created: ['Awaiting payment', 'warn'],
   paid: ['Paid – enrolled', 'ok'],

@@ -160,7 +160,7 @@ const ACCESS = {
   admPipeline: ['opportunities', 'V'],
   admDecisions: ['opportunities', 'V'],
   enrollments: ['enrollments', 'V'],
-  wizard: ['*wiz'],
+  wizard: ['enrollments', 'C'],
   students: ['students', 'V'],
   student: ['students', 'V'],
   history: ['enrollments', 'V'],
@@ -180,8 +180,11 @@ const ACCESS = {
   approvalHistory: ['*appr'],
   integration: ['*any'],
 };
+function canShareLink() {
+  return can('enrollments', 'C') || can('opportunities', 'E') || can('payments', 'C');
+}
 function allowed(rt) {
-  if (rt.page === 'wizard' && S.wiz?.viaLink) return !!window.canSeeLinks?.();
+  if (rt.page === 'wizard' && S.wiz?.viaLink) return canShareLink();
   const a = ACCESS[rt.page];
   if (!a) return true;
   if (a[0][0] === '*') return visItem([0, 0, 0, a[0]]);
