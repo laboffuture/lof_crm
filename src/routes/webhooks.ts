@@ -15,6 +15,8 @@ import { verifyHubSignature, parseWebhook } from '../integrations/whatsapp';
 import { parseLeadgenWebhook, fetchLead, mapLead } from '../integrations/meta';
 import { parseStatus } from '../integrations/exotel';
 import { razorpayVerifyWebhook, telrCheck } from '../integrations/payments';
+import { easebuzzVerifyResponse } from '../integrations/easebuzz';
+import { confirmEasebuzz } from '../domain/easebuzz-payments';
 
 type WEnv = { Bindings: Env; Variables: { isTest: boolean } };
 export const webhooks = new Hono<WEnv>();
@@ -282,6 +284,30 @@ webhooks.post('/razorpay', async (c) => {
   return c.json({ ok: true, ...result, payment: undefined });
 });
 
+// ------------------------------------------------------------------ Easebuzz (signed callback + independent transaction check)
+async function easebuzzCallback(c: any, browserReturn: boolean) {
+  const raw = await c.req.text();
+  if (raw.length > 65536) throw new HttpError(413, 'Payment response is too large');
+  const fields = Object.fromEntries(new URLSearchParams(raw));
+  const logFields = Object.fromEntries(['txnid', 'amount', 'status', 'key', 'hash', 'easepayid', 'easebuzz_id', 'mode', 'productinfo'].filter(k => fields[k] !== undefined).map(k => [k, fields[k]]));
+  if (!(await easebuzzVerifyResponse(c.env, fields))) {
+    await logInbound(c.env, 'easebuzz', 'payment.callback', false, logFields, {}, undefined, false, 'Invalid response hash');
+    throw new HttpError(401, 'Invalid Easebuzz response hash');
+  }
+  try {
+    const result = await confirmEasebuzz(c.env, fields.txnid);
+    await logInbound(c.env, 'easebuzz', 'payment.callback', true, logFields, { status: result.status, paymentId: result.paymentId }, result.link.id, !!result.link.is_test);
+    if (result.paymentId && !result.sandbox) await dispatch(c.env, waitOf(c), [{ kind: 'erp_payment', id: result.paymentId }]);
+    if (browserReturn) return c.redirect('/webhooks/pay/return?link=' + encodeURIComponent(result.link.id), 303);
+    return c.json({ ok: true, status: result.status });
+  } catch (error: any) {
+    await logInbound(c.env, 'easebuzz', 'payment.callback', false, logFields, {}, fields.txnid, false, error.message);
+    throw error;
+  }
+}
+webhooks.post('/easebuzz', c => easebuzzCallback(c, false));
+webhooks.post('/easebuzz/return', c => easebuzzCallback(c, true));
+
 // ------------------------------------------------------------------ Telr (transaction advice + customer return)
 async function telrVerify(c: any, linkId: string, mockPaid: boolean) {
   const link = await c.env.DB.prepare('SELECT * FROM payment_links WHERE id=?').bind(linkId).first();
@@ -316,7 +342,12 @@ webhooks.get('/pay/return', async (c) => {
   const link = await c.env.DB.prepare('SELECT * FROM payment_links WHERE id=?').bind(linkId).first<any>();
   let msg = 'We could not find this payment.';
   if (link) {
-    if (link.provider.startsWith('telr')) {
+    if (link.provider.startsWith('easebuzz')) {
+      // Read the recorded result only. GET parameters cannot settle a payment.
+      msg = link.status === 'paid'
+        ? 'Payment confirmed. You can close this page.'
+        : 'Your payment has not been confirmed. Please contact the centre if you completed checkout.';
+    } else if (link.provider.startsWith('telr')) {
       const r = await telrVerify(c, linkId, c.req.query('mock') === '1' && link.provider.endsWith('-mock'));
       msg = r.status === 'paid' ? 'Thank you – your payment was received. A receipt will follow.' : r.status === 'created' ? 'Your payment is being confirmed. You may close this page.' : 'The payment was not completed. Please contact the centre.';
     } else {

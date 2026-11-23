@@ -1,5 +1,5 @@
-// LOF CRM to LMS Integration Guide v1.1, 2 November 2026.
-// Moodle accepts form-encoded calls and reports application errors even with HTTP 200.
+// LOF CRM to LMS v1.1 plus the JSON UAT update, 14 November 2026.
+// Both transports report application errors even with HTTP 200.
 import type { Env } from '../types';
 import { callApi, logMock, redact, type Mode } from './base';
 
@@ -43,6 +43,10 @@ export interface Receipt {
   inboxid?: number;
   warnings?: { item?: string; message: string }[];
   purchaseknown?: boolean;
+}
+export function receivedOrder(result: any): result is Receipt {
+  return !!result && (result.accepted === true || result.duplicate === true) &&
+    Number.isSafeInteger(result.inboxid) && result.inboxid > 0;
 }
 export class LmsError extends Error {
   constructor(
@@ -92,28 +96,49 @@ export function diagnosticEndpoint(env: Pick<Env, 'LMS_URL' | 'LMS_TOKEN'>): str
   }
 }
 
-/** Explicit allowlist: financial fields and credentials from payloads can never reach Moodle. */
-export function purchaseForm(payload: Purchase): URLSearchParams {
+/** Explicit allowlist at every level: financial fields and payload credentials never reach Moodle. */
+function purchaseData(payload: Purchase): Record<string, unknown> {
+  if (typeof payload.student_id !== 'string' || !payload.student_id.trim())
+    throw new LmsError('A permanent student_id is required for an LMS purchase.', false, 'localvalidation');
+  const data: Record<string, unknown> = {};
+  for (const key of FIELDS) if (payload[key] !== undefined && payload[key] !== '') data[key] = payload[key];
+  data.items = (payload.items || []).map((item) => ({
+    track: item.track,
+    credits: [...item.credits],
+    ...(item.product_name ? { product_name: item.product_name } : {}),
+  }));
+  // UAT currently has no Skills Labs: omit the field when there are no lines.
+  if (payload.skillslabs?.length) data.skillslabs = payload.skillslabs.map((item) => ({
+    program: item.program,
+    sessions: item.sessions,
+    ...(item.valid_until ? { valid_until: item.valid_until } : {}),
+    ...(item.product_name ? { product_name: item.product_name } : {}),
+  }));
+  return data;
+}
+
+function requestForm(data: Record<string, unknown>): URLSearchParams {
   const form = new URLSearchParams();
-  for (const key of FIELDS) if (payload[key] !== undefined && payload[key] !== '') form.set(key, String(payload[key]));
-  (payload.items || []).forEach((item, i) => {
-    form.set(`items[${i}][track]`, item.track);
-    item.credits.forEach((code, j) => form.set(`items[${i}][credits][${j}]`, code));
-    if (item.product_name) form.set(`items[${i}][product_name]`, item.product_name);
-  });
-  (payload.skillslabs || []).forEach((item, i) => {
-    form.set(`skillslabs[${i}][program]`, item.program);
-    form.set(`skillslabs[${i}][sessions]`, String(item.sessions));
-    if (item.valid_until) form.set(`skillslabs[${i}][valid_until]`, item.valid_until);
-    if (item.product_name) form.set(`skillslabs[${i}][product_name]`, item.product_name);
-  });
+  const append = (key: string, value: unknown) => {
+    if (value === undefined || value === null) return;
+    if (typeof value === 'object') {
+      for (const [child, entry] of Object.entries(value)) append(`${key}[${child}]`, entry);
+    } else form.set(key, String(value));
+  };
+  for (const [key, value] of Object.entries(data)) append(key, value);
   return form;
 }
 
-async function post(c: LmsCtx, operation: keyof typeof FUNCTIONS, form: URLSearchParams, ref?: string): Promise<any> {
-  form.set('wstoken', c.env.LMS_TOKEN || '');
-  form.set('wsfunction', FUNCTIONS[operation]);
-  form.set('moodlewsrestformat', 'json');
+export function purchaseForm(payload: Purchase): URLSearchParams {
+  return requestForm(purchaseData(payload));
+}
+
+const applicationError = (result: any) => !!(result?.exception || result?.errorcode || result?.error || result?.ok === false);
+
+async function post(c: LmsCtx, operation: keyof typeof FUNCTIONS, data: Record<string, unknown>, ref?: string): Promise<any> {
+  // Existing server.php/custom endpoints retain their form transport.
+  const json = new URL(c.env.LMS_URL || '').pathname.endsWith('/crm_api.php');
+  const body = { ...data, wstoken: c.env.LMS_TOKEN || '', wsfunction: FUNCTIONS[operation] };
   const r = await callApi(
     c.env,
     {
@@ -121,14 +146,22 @@ async function post(c: LmsCtx, operation: keyof typeof FUNCTIONS, form: URLSearc
       operation,
       method: 'POST',
       url: c.env.LMS_URL || '',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body: form,
+      headers: { 'content-type': json ? 'application/json' : 'application/x-www-form-urlencoded', accept: 'application/json' },
+      body: json ? JSON.stringify(body) : requestForm({ ...body, moodlewsrestformat: 'json' }),
       ref,
       secrets: [c.env.LMS_TOKEN],
       timeoutMs: 30000,
+      acceptResponse: (result) => !applicationError(result),
     },
     c.isTest,
   );
+  const result = r.json == null ? null : JSON.parse(redact(JSON.stringify(r.json), [c.env.LMS_TOKEN]));
+  if (r.status >= 200 && r.status < 300 && applicationError(result))
+    throw new LmsError(
+      `LMS ${result.errorcode || 'error'}: ${String(result.message || result.error || 'Request refused').slice(0, 500)}`,
+      false,
+      result.errorcode || 'refused',
+    );
   if (!r.ok)
     throw new LmsError(
       r.status
@@ -137,18 +170,15 @@ async function post(c: LmsCtx, operation: keyof typeof FUNCTIONS, form: URLSearc
       !r.status || r.status === 408 || r.status === 429 || r.status >= 500,
       'transport',
     );
-  const result = r.json == null ? null : JSON.parse(redact(JSON.stringify(r.json), [c.env.LMS_TOKEN]));
   if (!result || typeof result !== 'object')
     throw new LmsError('LMS returned no valid JSON acknowledgement; delivery is uncertain', true);
-  if (result.exception || result.errorcode || result.error || result.ok === false)
-    throw new LmsError(
-      `LMS ${result.errorcode || 'error'}: ${String(result.message || result.error || 'Request refused').slice(0, 500)}`,
-      false,
-      result.errorcode || 'refused',
-    );
   if (operation === 'enrol' || operation === 'cancel') {
     if (result.accepted !== true && result.duplicate !== true)
       throw new LmsError('LMS did not acknowledge the order; delivery is uncertain', true);
+    if (!Number.isSafeInteger(result.inboxid) || result.inboxid <= 0)
+      throw new LmsError('LMS acknowledgement has no valid inboxid; delivery is uncertain', true);
+    if (result.duplicate !== undefined && typeof result.duplicate !== 'boolean')
+      throw new LmsError('LMS acknowledgement has an invalid duplicate flag; delivery is uncertain', true);
     if (
       result.warnings !== undefined &&
       (!Array.isArray(result.warnings) || result.warnings.some((w: any) => !w || typeof w.message !== 'string'))
@@ -172,7 +202,7 @@ export async function enrol(c: LmsCtx, payload: Purchase, ref?: string): Promise
     await logMock(c.env, 'lms', 'enrol', payload, res, ref, c.isTest);
     return res;
   }
-  return post(c, 'enrol', purchaseForm(payload), ref);
+  return post(c, 'enrol', purchaseData(payload), ref);
 }
 
 export async function cancel(c: LmsCtx, reference: string, ref?: string, reason?: string): Promise<Receipt> {
@@ -194,7 +224,7 @@ export async function cancel(c: LmsCtx, reference: string, ref?: string, reason?
     await logMock(c.env, 'lms', 'cancel', { reference }, res, ref, c.isTest);
     return res;
   }
-  return post(c, 'cancel', new URLSearchParams({ reference, ...(reason ? { reason } : {}) }), ref);
+  return post(c, 'cancel', { reference, ...(reason ? { reason } : {}) }, ref);
 }
 
 export async function catalogue(c: LmsCtx, track?: string) {
@@ -203,11 +233,11 @@ export async function catalogue(c: LmsCtx, track?: string) {
     await logMock(c.env, 'lms', 'catalogue', track ? { track } : {}, res, undefined, c.isTest);
     return res;
   }
-  return post(c, 'catalogue', new URLSearchParams(track ? { track } : {}));
+  return post(c, 'catalogue', track ? { track } : {});
 }
 
 export async function studentLookup(c: LmsCtx, student_id: string) {
-  if (c.mode === 'live') return post(c, 'lookup', new URLSearchParams({ student_id }));
+  if (c.mode === 'live') return post(c, 'lookup', { student_id });
   const res = { student_id, mock: true };
   await logMock(c.env, 'lms', 'lookup', { student_id }, res, student_id, c.isTest);
   return res;

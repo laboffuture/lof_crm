@@ -111,13 +111,49 @@ SUB.prog = (d, f) => {
   cfgSave('Programme ' + d.name, 'code ' + d.code);
 };
 /* fees */
+// The fee master must display the same current price as registration, regardless of load order.
+function currentFeeRows(fees) {
+  const groups = new Map();
+  fees.forEach((f) => {
+    const key = JSON.stringify([f.branch, f.prog, f.pkg]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  });
+  return [...groups.values()]
+    .map((versions) => {
+      const f = versions[0];
+      const current = feeFor({ fees: versions }, f.prog, f.branch, f.pkg);
+      if (current) return current;
+      // Keep scheduled and inactive-only packages manageable when no price applies today.
+      const scheduled = versions.filter((v) => v.active && v.from > TODAY);
+      const candidates = scheduled.length ? scheduled : versions;
+      return candidates
+        .slice()
+        .sort(
+          (a, b) =>
+            (scheduled.length
+              ? String(a.from).localeCompare(String(b.from))
+              : String(b.from).localeCompare(String(a.from))) ||
+            String(b.revisionAt || '').localeCompare(String(a.revisionAt || '')) ||
+            String(b.id).localeCompare(String(a.id), undefined, { numeric: true }),
+        )[0];
+    })
+    .sort(
+      (a, b) =>
+        String(a.branch).localeCompare(String(b.branch)) ||
+        String(a.prog).localeCompare(String(b.prog)) ||
+        String(a.pkg).localeCompare(String(b.pkg)),
+    );
+}
 CFG.fees = () => {
   const F2 = S.feeF || {};
-  const fs = S.fees.filter((f) => (!F2.branch || f.branch === F2.branch) && (!F2.prog || f.prog === F2.prog));
+  const filtered = S.fees.filter((f) => (!F2.branch || f.branch === F2.branch) && (!F2.prog || f.prog === F2.prog));
+  const fs = F2.view === 'all' ? filtered : currentFeeRows(filtered);
+  const applied = (f) => feeFor(S, f.prog, f.branch, f.pkg);
   return (
     card(
       'Fee master',
-      `<div class="tb"><select name="branch" data-change="feeF" aria-label="Branch"><option value="">All branches</option>${S.branches.map((b) => `<option value="${b.id}"${F2.branch === b.id ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}</select><select name="prog" data-change="feeF" aria-label="Programme"><option value="">All programmes</option>${S.programs.map((p) => `<option value="${p.id}"${F2.prog === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>` +
+      `<div class="tb"><select name="branch" data-change="feeF" aria-label="Branch"><option value="">All branches</option>${S.branches.map((b) => `<option value="${b.id}"${F2.branch === b.id ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}</select><select name="prog" data-change="feeF" aria-label="Programme"><option value="">All programmes</option>${S.programs.map((p) => `<option value="${p.id}"${F2.prog === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select><select name="view" data-change="feeF" aria-label="Fee versions"><option value="current"${F2.view !== 'all' ? ' selected' : ''}>Current fees</option><option value="all"${F2.view === 'all' ? ' selected' : ''}>All fee versions</option></select></div>` +
         table(
           'cf',
           [
@@ -134,22 +170,31 @@ CFG.fees = () => {
               h: 'Status',
               f: (f) =>
                 bdg(
-                  f.active && f.from <= TODAY && (!f.to || f.to >= TODAY)
-                    ? 'Active'
-                    : f.active
-                      ? 'Scheduled / ended'
-                      : 'Inactive',
+                  applied(f) && applied(f).id !== f.id && f.from <= TODAY
+                    ? 'Previous version'
+                    : f.active && f.from <= TODAY && (!f.to || f.to >= TODAY)
+                      ? 'Active'
+                      : f.active
+                        ? 'Scheduled / ended'
+                        : 'Inactive',
                   f.active && (!f.to || f.to >= TODAY) ? 'ok' : '',
                 ),
             },
-            { h: '', f: (f) => `<button class="btn sm" data-act="mFee" data-id="${f.id}">Edit</button>` },
+            {
+              h: '',
+              f: (f) => {
+                const current = applied(f);
+                const previous = current && current.id !== f.id && f.from <= TODAY;
+                return `<button class="btn sm" data-act="mFee" data-id="${previous ? current.id : f.id}">${previous ? 'Edit current fee' : 'Edit'}</button>`;
+              },
+            },
           ],
           fs,
           { ps: 10 },
         ),
       { np: 1, act: `<button class="btn sm primary" data-act="mFee">${ic('plus')} Add fee</button>` },
     ) +
-    `<p class="muted xs">Changing a fee amount, tax or registration charge ends the current record yesterday and creates a new one effective today, so completed enrolments and payments are never rewritten. Tax treatment needs business confirmation.</p>`
+    `<p class="muted xs">Current fees shows one price per programme, branch and package. Choose All fee versions to review previous or scheduled prices. Editing a used fee saves a new version; existing enrolments keep their original amounts.</p>`
   );
 };
 CHG.feeF = (el) => {
@@ -179,13 +224,33 @@ MODALS.fee = (m) => {
     size: 'lg',
     form: 'fee',
     ok: 'Save fee',
-    body: `<input type="hidden" name="oid" value="${m.id || ''}"><div class="fgrid">${F('Programme', 'prog', { v: f.prog, opts: S.programs.map((p) => [p.id, p.name]), dis: !!m.id })}${F('Branch', 'branch', { v: f.branch, opts: S.branches.map((b) => [b.id, b.name]), dis: !!m.id, help: 'Currency follows the branch' })}${F('Package / enrolment type', 'pkg', { v: f.pkg, req: 1 })}${F('Session count', 'sessions', { t: 'number', min: 1, v: f.sessions })}${F('Fee amount', 'amt', { t: 'number', min: 0, step: '0.01', v: f.amt, req: 1 })}${F('Tax %', 'tax', { t: 'number', min: 0, step: '0.01', v: f.tax })}${F('Additional charge – registration', 'reg', { t: 'number', min: 0, step: '0.01', v: f.extra.amt })}${F('Effective from', 'from', { t: 'date', v: f.from, req: 1 })}${F('Effective to (optional)', 'to', { t: 'date', v: f.to })}${CK('Active', 'active', f.active, { full: 1 })}</div>`,
+    body: `<input type="hidden" name="oid" value="${m.id || ''}"><div class="fgrid">${F('Programme', 'prog', { v: f.prog, opts: S.programs.map((p) => [p.id, p.name]), dis: !!m.id })}${F('Branch', 'branch', { v: f.branch, opts: S.branches.map((b) => [b.id, b.name]), dis: !!m.id, help: 'Currency follows the branch' })}${F('Package / enrolment type', 'pkg', { v: f.pkg, req: 1 })}${F('Session count', 'sessions', { t: 'number', min: 1, v: f.sessions })}${F('Fee amount', 'amt', { t: 'number', min: 0, step: '0.01', v: f.amt, req: 1 })}${F('Tax %', 'tax', { t: 'number', min: 0, step: '0.01', v: f.tax })}${F('Additional charge – registration', 'reg', { t: 'number', min: 0, step: '0.01', v: f.extra.amt })}${F('Effective from', 'from', { t: 'date', v: f.from, req: 1 })}${F('Effective to (optional)', 'to', { t: 'date', v: f.to })}${CK('Active', 'active', f.active, { full: 1 })}</div><p class="muted xs">For a fee used by an enrolment, a price change creates a new version effective today or later. An expired end date is cleared for the new version.</p><p data-fee-error role="alert" class="fe" hidden></p>`,
   };
 };
+// Keep edits out of shared state until the live server confirms the whole fee transaction.
+const persistFee = (entries, form, what, detail, data) => {
+  if (window.saveFeeChanges) return window.saveFeeChanges(entries, form, what, JSON.stringify(data));
+  entries.forEach(({ doc }) => {
+    const old = S.fees.find((x) => x.id === doc.id);
+    if (old) Object.assign(old, doc);
+    else S.fees.push(doc);
+  });
+  closeModal();
+  cfgSave(what, detail);
+};
 SUB.fee = (d, f) => {
+  if (f._feeSaving) return;
   if (!need(f, d, ['pkg', 'amt', 'from'])) return;
   if (!(+d.amt > 0)) {
     setErr(f, 'amt', 'Enter an amount above zero');
+    return;
+  }
+  if (!Number.isFinite(+d.tax) || +d.tax < 0) {
+    setErr(f, 'tax', 'Enter a tax percentage of zero or more');
+    return;
+  }
+  if (!Number.isFinite(+d.reg) || +d.reg < 0) {
+    setErr(f, 'reg', 'Enter a registration charge of zero or more');
     return;
   }
   if (d.to && d.to < d.from) {
@@ -195,36 +260,60 @@ SUB.fee = (d, f) => {
   if (d.oid) {
     const o = S.fees.find((x) => x.id === d.oid);
     const money = +d.amt !== o.amt || +d.tax !== o.tax || +d.reg !== o.extra.amt;
-    if (money && o.from <= TODAY) {
-      const y = dayKey(dAt(-1, 12));
-      o.to = y;
+    const used = (S.enr || []).some((e) => e.feeId === o.id);
+    if (money && used) {
+      const start = d.from > TODAY ? d.from : TODAY;
+      const y = addDays(start, -1);
+      const closed = Object.assign({}, o, { to: o.to && o.to < start ? o.to : y < o.from ? o.from : y });
+      if (y < o.from) closed.active = false;
       const n = Object.assign({}, o, {
-        id: 'FEE-' + String(S.fees.length + 1).padStart(3, '0'),
+        id: 'FEE-' + crypto.randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase(),
+        supersedes: o.id,
         amt: +d.amt,
         tax: +d.tax,
         extra: { name: o.extra.name, amt: +d.reg },
-        from: TODAY,
-        to: d.to || '',
+        from: start,
+        to: d.to && d.to >= start ? d.to : '',
         pkg: d.pkg,
         sessions: +d.sessions,
         active: !!d.active,
       });
-      S.fees.push(n);
-      closeModal();
-      cfgSave('Fee ' + o.id, 'versioned: new record ' + n.id + ' effective today; ' + o.id + ' ended ' + y);
-      return;
+      return persistFee(
+        [
+          { coll: 'fees', id: o.id, op: 'upsert', base: o, doc: closed },
+          { coll: 'fees', id: n.id, op: 'upsert', doc: n },
+        ],
+        f,
+        'Fee ' + o.id,
+        'versioned: new record ' + n.id + ' effective ' + start,
+        d,
+      );
     }
-    Object.assign(o, { pkg: d.pkg, sessions: +d.sessions, from: d.from, to: d.to, active: !!d.active });
-    closeModal();
-    cfgSave('Fee ' + o.id, 'updated');
+    const updated = Object.assign({}, o, {
+      pkg: d.pkg,
+      sessions: +d.sessions,
+      amt: +d.amt,
+      tax: +d.tax,
+      extra: { name: o.extra.name, amt: +d.reg },
+      from: d.from,
+      to: d.to,
+      active: !!d.active,
+    });
+    return persistFee(
+      [{ coll: 'fees', id: o.id, op: 'upsert', base: o, doc: updated }],
+      f,
+      'Fee ' + o.id,
+      'updated',
+      d,
+    );
   } else {
     if (S.fees.find((x) => x.prog === d.prog && x.branch === d.branch && x.pkg === d.pkg && x.active && !x.to)) {
       setErr(f, 'pkg', 'An active fee already exists for this programme, branch and package');
       return;
     }
     const b = S.branches.find((x) => x.id === d.branch);
-    S.fees.push({
-      id: 'FEE-' + String(S.fees.length + 1).padStart(3, '0'),
+    const created = {
+      id: 'FEE-' + crypto.randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase(),
       prog: d.prog,
       branch: d.branch,
       pkg: d.pkg,
@@ -236,9 +325,14 @@ SUB.fee = (d, f) => {
       from: d.from,
       to: d.to,
       active: !!d.active,
-    });
-    closeModal();
-    cfgSave('Fee added', PNAME(d.prog) + ' · ' + b.name);
+    };
+    return persistFee(
+      [{ coll: 'fees', id: created.id, op: 'upsert', doc: created }],
+      f,
+      'Fee added',
+      PNAME(d.prog) + ' · ' + b.name,
+      d,
+    );
   }
 };
 /* discounts */

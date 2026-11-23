@@ -49,6 +49,12 @@ export interface Env {
   RAZORPAY_KEY_SECRET?: string;
   RAZORPAY_WEBHOOK_SECRET?: string;
 
+  /** Legacy setting, ignored for new checkouts: Easebuzz is the sole provider. */
+  PAYMENTS_INR_PROVIDER?: string;
+  EASEBUZZ_KEY?: string;
+  EASEBUZZ_SALT?: string;
+  EASEBUZZ_ENV?: 'test' | 'prod' | string;
+
   ERPNEXT_URL?: string;
   ERPNEXT_API_KEY?: string;
   ERPNEXT_API_SECRET?: string;

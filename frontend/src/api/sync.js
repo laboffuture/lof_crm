@@ -1,4 +1,33 @@
 /* Snapshot of local state and PUT /sync of changed records; merging the server reply. */
+const canLogEnrolment = () =>
+  ['development', 'staging', 'test'].includes(SERVER.env) ||
+  new URLSearchParams(location.search).get('enrolmentLogs') === '1';
+
+function enrolmentConsoleLog(event, details, warning = false) {
+  if (!canLogEnrolment()) return;
+  const label = '[LOF CRM] ' + event;
+  if (warning) console.warn(label, details);
+  else console.info(label, details);
+}
+
+wizCheckOrder = async function (selection) {
+  const details = {
+    studentId: selection.studentId || null,
+    studentMode: selection.studentId ? 'existing' : 'new',
+    branch: selection.branch,
+    programme: selection.prog,
+    package: selection.pkg,
+  };
+  enrolmentConsoleLog('Checking enrolment', details);
+  try {
+    const result = await req('POST', '/lms/enrolment-check', selection);
+    enrolmentConsoleLog('Enrolment check passed', details);
+    return result;
+  } catch (error) {
+    enrolmentConsoleLog('Enrolment check failed', { ...details, httpStatus: error.status ?? null }, true);
+    throw error;
+  }
+};
 var snap = {},
   snapSet = {},
   busy = false,
@@ -67,8 +96,12 @@ function mergeDocs(docs) {
     });
     if (i >= 0) arr[i] = x.doc;
     else arr.unshift(x.doc);
+    const previous = snap[x.coll].get(x.doc.id);
     snap[x.coll].set(x.doc.id, JSON.stringify(x.doc));
-    if (x.coll === 'ms') watchLmsCall(x.doc);
+    if (x.coll === 'ms') {
+      logLmsCallChange(x.doc, previous);
+      watchLmsCall(x.doc);
+    }
   });
 }
 function userIsTyping() {
@@ -99,6 +132,17 @@ function flush() {
   applyRemaps();
   var d = diff();
   if (!d.changes.length && !d.settings.length) return Promise.resolve();
+  const wizard = S.wiz?.pendingSave && d.changes.some((change) => change.coll === 'enr' && change.id === S.wiz.pendingSave.enrollmentId)
+    ? S.wiz
+    : null;
+  const submitted = wizard?.pendingSave;
+  if (submitted) {
+    enrolmentConsoleLog('Saving enrolment', {
+      orderReference: submitted.enrollmentId,
+      studentId: submitted.studentId,
+      package: wizard.fee.pkg,
+    });
+  }
   busy = true;
   setSaving(true);
   return req('PUT', '/sync', d)
@@ -111,10 +155,41 @@ function flush() {
       (r.notices || []).forEach(function (n) {
         toast(n, 'ok');
       });
+      if (wizard) {
+        const saved = enrById(submitted.enrollmentId);
+        enrolmentConsoleLog('Enrolment saved', {
+          orderReference: submitted.enrollmentId,
+          studentId: submitted.studentId,
+          paymentStatus: saved?.payStatus,
+          lmsCallId: saved?.ms,
+        });
+        wizSaved(wizard);
+      }
       safeRender();
     })
     .catch(function (e) {
       if (e.message === 'Signed out') return;
+      if (wizard) {
+        enrolmentConsoleLog('Enrolment save failed', {
+          orderReference: submitted.enrollmentId,
+          httpStatus: e.status ?? null,
+        }, true);
+        return reload(true).then(function () {
+          if (enrById(wizard.pendingSave.enrollmentId)) {
+            wizSaved(wizard);
+            return;
+          }
+          delete wizard.pendingSave;
+          wizard.orderProblem = e.status ? e.message : 'Could not save the enrolment. Try again.';
+          if (S.wiz === wizard && S.route.page === 'wizard') {
+            render();
+            $('#wiz-order-error')?.focus();
+          }
+        }).catch(function () {
+          wizard.orderProblem = 'Could not confirm whether the enrolment was saved. Reload to check its status.';
+          if (S.wiz === wizard && S.route.page === 'wizard') render();
+        });
+      }
       toast('Not saved: ' + e.message, 'err');
       return reload(true);
     })
