@@ -3,16 +3,19 @@ import { Repo, nowIso } from '../lib/db';
 import type { Env } from '../types';
 import { modeFor, enabledInConfig, writeLog } from '../integrations/base';
 import * as lms from '../integrations/lms';
-import { lmsEnrolPayload, lmsMissing } from './terms';
+import { lmsEnrolPayload } from './terms';
 import * as wa from '../integrations/whatsapp';
 import * as erp from '../integrations/erpnext';
 import { calendarInsert } from '../integrations/gcal-email';
 import { deliverEmail } from './mail';
-import { gatewayFor, telrCreate, razorpayCreate, type LinkInput } from '../integrations/payments';
+import { gatewayFor, type LinkInput } from '../integrations/payments';
+import { assertEasebuzzCurrency, easebuzzCreate, easebuzzEnvironment, easebuzzSetup } from '../integrations/easebuzz';
 import { addAudit, addEv, fmtDT, money, notify, recordPayment, r2, templateParams } from './core';
 import { ID_FORMAT } from '../lib/indexing';
 
-import { activatePaidLms } from './lms-orders';
+import { activatePaidLms, checkLmsCreditOverlap, LMS_CONTRACT, lmsPayloadProblems, prepareLmsOrder, validateLmsCodes } from './lms-orders';
+import { isUatEnrollment } from './uat-policy';
+import { sandboxIdentity, sandboxOrder } from './sandbox-checkout';
 
 const testFlags = (repo: Repo) => repo.setting<any>('test_flags');
 
@@ -38,41 +41,64 @@ export async function processSync(env: Env, repo: Repo, syncId: string, options:
     return repo.get<any>('moodle_sync', m.id);
   };
   if (!s || !e) return hold('Retry Required', 'Student or enrolment record missing');
+  if (e.uatFlow && (!isUatEnrollment(env, e) || lc.mode !== 'live')) return hold('Awaiting Setup', 'Full-flow test delivery requires the supplied UAT LMS endpoint, enabled LMS and sandbox environment.');
   if (op === 'enrol' && e.status === 'Withdrawn') return hold('Closed', 'Not sent – the enrolment was withdrawn');
   if (op === 'enrol' && e.payStatus !== 'Paid') return hold('Awaiting Payment', 'Not sent – waiting for full payment (guide section 7)');
   // Business orders must reach Moodle in local/UAT environments too. Only explicit
   // Testing Console records and the automated test environment may simulate delivery.
   if (env.APP_ENV !== 'test' && !isTest && lc.mode !== 'live') return hold('Awaiting Setup', 'Not sent – enable LMS, set INTEGRATION_MODE=auto and configure LMS_URL / LMS_TOKEN; business orders cannot be simulated');
-  if (lc.mode === 'live' && op === 'enrol' && !m.payload && (!cfg.lms?.confirmed || !cfg.lms?.packages?.[e.prog]?.[e.pkg])) return hold('Awaiting Setup', 'Not sent – confirm the exact LMS package mapping and branch codes with LOF');
+  if (lc.mode === 'live' && op === 'enrol' && !m.payload && !e.lmsAccess && (!cfg.lms?.confirmed || !cfg.lms?.packages?.[e.prog]?.[e.pkg])) return hold('Awaiting Setup', 'Not sent – confirm the exact LMS package mapping and branch codes with LOF');
   // Claim atomically. Queue redelivery and simultaneous retries must not issue overlapping calls.
   // A redelivered queue job may only claim Pending. Failed calls must first be
   // requeued by the timed scheduler or a staff retry, including after retryMax.
   const queuedOnly = options.queued ? " AND status='Pending'" : '';
-  const claim = await env.DB.prepare("UPDATE docs SET status='Processing', data=json_set(data,'$.status','Processing','$.processingAt',?) WHERE type='moodle_sync' AND id=? AND status NOT IN ('Processing','Success','Closed','Warnings')" + queuedOnly)
+  const activeOrder = op === 'enrol'
+    ? " AND EXISTS (SELECT 1 FROM docs e WHERE e.type='enrollment' AND e.id=docs.ref1 AND e.status<>'Withdrawn')" : '';
+  const claim = await env.DB.prepare("UPDATE docs SET status='Processing', data=json_set(data,'$.status','Processing','$.processingAt',?) WHERE type='moodle_sync' AND id=? AND status NOT IN ('Processing','Success','Closed','Warnings')" + queuedOnly + activeOrder)
     .bind(nowIso(), m.id).run();
   if (!claim.meta.changes) return repo.get<any>('moodle_sync', m.id);
   m.status = 'Processing'; m.processingAt = nowIso();
   m.attempts = (m.attempts || 0) + 1;
+  delete m.lastErrorCode;
   m.hist.push({ at: m.processingAt, s: 'Processing', msg: `${op} call, attempt ${m.attempts}${tag}` });
   await repo.put('moodle_sync', m);
   try {
     let result: lms.Receipt;
     if (op === 'cancel') {
-      const purchases = await repo.many<any>('moodle_sync', 'ref1=?', [e.id]);
-      if (purchases.some((x) => x.op !== 'cancel' && x.status === 'Processing')) throw new lms.LmsError('Purchase is still processing; cancellation will retry', true);
+      const purchases = (await repo.many<any>('moodle_sync', 'ref1=?', [e.id])).filter((call) => call.op !== 'cancel');
+      if (purchases.some((call) => call.status === 'Processing')) throw new lms.LmsError('Purchase is still processing. Cancellation will retry.', true);
+      const endpoint = lms.diagnosticEndpoint(env);
+      const confirmed = purchases.some((call) => call.deliveryMode === lc.mode && lms.receivedOrder(call.response) &&
+        (!call.payload || call.payload.reference === e.id) &&
+        (!call.requestUrl || (endpoint && new URL(call.requestUrl).origin === new URL(endpoint).origin)));
+      if (!confirmed) {
+        if (purchases.some((call) => call.requestUrl && !call.requestRefused))
+          throw new lms.LmsError('Confirm the original purchase receipt with the LMS before retrying this cancellation.');
+        m.status = 'Closed';
+        m.err = 'Cancellation skipped because the LMS did not receive the original purchase.';
+        m.last = nowIso();
+        m.hist.push({ at: m.last, s: m.status, msg: m.err });
+        return repo.put('moodle_sync', m);
+      }
       m.requestUrl = lc.mode === 'live' ? lms.diagnosticEndpoint(env) : null;
       await repo.put('moodle_sync', m);
       result = await lms.cancel(lc, e.id, m.id, m.reason);
     } else {
       const program = await repo.get<any>('program', e.prog);
-      const payload: lms.Purchase = m.payload || lmsEnrolPayload(e, s, program, cfg.lms || {});
-      const problems = lmsMissing(payload);
+      const identity = e.sandboxSource ? sandboxIdentity(e) : s;
+      const payload: lms.Purchase = m.payload || lmsEnrolPayload(e, identity, program, cfg.lms || {});
+      const problems = lmsPayloadProblems(payload, e, identity);
       if (problems.length) throw new lms.LmsError('Not sent – missing or invalid ' + problems.join(', '), false, 'localvalidation');
+      if (lc.mode === 'live' && !m.payload) {
+        await checkLmsCreditOverlap(repo, payload);
+        await validateLmsCodes(lc, payload);
+      }
       // Freeze before the first network attempt. A timeout may mean LMS already received it.
       m.payload = payload;
       m.cid = payload.items[0]?.track || payload.skillslabs[0]?.program || '';
       m.credits = payload.items.flatMap((x) => x.credits);
       m.requestUrl = lc.mode === 'live' ? lms.diagnosticEndpoint(env) : null;
+      delete m.requestRefused;
       await repo.put('moodle_sync', m);
       result = await lms.enrol(lc, payload, m.id);
     }
@@ -90,9 +116,15 @@ export async function processSync(env: Env, repo: Repo, syncId: string, options:
   } catch (err: any) {
     // Moodle explicitly says invalidparameter was not received: corrected data may be rebuilt.
     // For uncertain delivery (timeout/5xx/malformed response), the original snapshot stays frozen.
-    if (err instanceof lms.LmsError && err.code === 'invalidparameter') delete m.payload;
+    if (err instanceof lms.LmsError && err.code === 'invalidparameter' && op === 'enrol') {
+      delete m.payload;
+      m.requestRefused = true;
+    }
     const max = cfg.integ?.lms?.retryMax ?? 3;
     m.status = err instanceof lms.LmsError && err.retryable && m.attempts < max ? 'Failed' : 'Retry Required';
+    const errorCode = err instanceof lms.LmsError ? err.code : 'internal';
+    m.lastErrorCode = ['localvalidation', 'duplicatecredit', 'transport', 'invalidresponse', 'invalidparameter',
+      'invalidtoken', 'refused', 'internal'].includes(errorCode) ? errorCode : 'providererror';
     m.err = String(err?.message || err);
     m.last = nowIso();
     m.hist.push({ at: m.last, s: m.status, msg: m.err });
@@ -243,23 +275,47 @@ export async function calendarForTask(env: Env, repo: Repo, taskId: string) {
 
 // ---------------- Payment links ----------------
 export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amount: number | undefined, createdBy: string) {
-  const e = await repo.get<any>('enrollment', enrId);
-  if (!e) throw new Error('Enrollment not found');
-  if (e.status === 'Withdrawn') throw new Error('Enrollment is withdrawn');
-  const outstanding = r2(e.total - e.paid);
-  const amt = r2(amount ?? outstanding);
-  if (!(amt > 0) || amt > outstanding + 0.005) throw new Error(`Amount must be between 0 and the outstanding ${money(outstanding, e.cur)}`);
-  const s = await repo.get<any>('student', e.stu);
-  const parent = (s?.parents || [])[0] || {};
+  const original = await repo.get<any>('enrollment', enrId);
+  if (!original) throw new Error('Enrollment not found');
+  if (original.status === 'Withdrawn') throw new Error('Enrollment is withdrawn');
+  const outstanding = r2(original.total - original.paid);
+  const requested = r2(amount ?? outstanding);
+  if (!(requested > 0) || requested > outstanding + 0.005)
+    throw new Error(`Amount must be between 0 and the outstanding ${money(outstanding, original.cur)}`);
+  const provider = gatewayFor(original.cur, env);
+  assertEasebuzzCurrency(original.cur);
   const cfg = await repo.setting<any>('cfg');
-  const provider = gatewayFor(e.cur);
-  const mode = modeFor(env, cfg, provider, repo.isTest || !!e.test);
+  const sandbox = easebuzzEnvironment(env) === 'test';
+  const mode = modeFor(env, cfg, provider, repo.isTest || !!original.test);
+  if (!sandbox && (repo.isTest || original.test)) throw new Error('Test enrolments cannot use Easebuzz production payments');
+  if (mode !== 'live') throw new Error('Enable payments, set INTEGRATION_MODE=auto and configure EASEBUZZ_KEY / EASEBUZZ_SALT');
+  const problem = easebuzzSetup(env).problems[0];
+  if (problem) throw new Error(problem);
+  if (requested < 1) throw new Error('Easebuzz payment amount must be at least INR 1');
+
+  const paymentRepo = sandbox ? new Repo(repo.db, createdBy, true) : repo;
+  const e = sandbox && !original.test ? await sandboxOrder(env, paymentRepo, cfg, original) : original;
+  const balance = r2(e.total - e.paid);
+  const amt = amount === undefined ? Math.min(requested, balance) : requested;
+  if (e.status === 'Withdrawn') throw new Error('The sandbox enrolment was withdrawn');
+  if (sandbox && balance <= 0) throw new Error('The sandbox enrolment for this order is already paid');
+  if (amt > balance + 0.005) throw new Error(`Amount exceeds the sandbox balance (${money(balance, e.cur)})`);
+  if (sandbox && e.uatFlow && !isUatEnrollment(env, e))
+    throw new Error('This test enrolment requires the configured UAT LMS and Easebuzz sandbox');
+  const s = sandbox && e.sandboxSource ? sandboxIdentity(e) : await paymentRepo.get<any>('student', e.stu);
+  const parent = (s?.parents || [])[0] || {};
+  if (e.lmsContract === LMS_CONTRACT && (!repo.isTest || e.uatFlow)) {
+    await prepareLmsOrder(env, paymentRepo, cfg, e, s, await repo.get('program', e.prog), false);
+  }
+  if (sandbox && e.sandboxSource) {
+    const open = await repo.db.prepare(
+      "SELECT id,url,provider_ref FROM payment_links WHERE enrollment_id=? AND provider='easebuzz-test' AND status='created' AND amount=? AND created_at>? ORDER BY created_at DESC LIMIT 1",
+    ).bind(e.id, amt, new Date(Date.now() - 10 * 60_000).toISOString()).first<{ id: string; url: string; provider_ref: string }>();
+    if (open) return { id: open.id, provider, mode, sandbox, url: open.url, providerRef: open.provider_ref, amount: amt, currency: e.cur, enrollmentId: e.id };
+  }
   // Random, unguessable link ids (they appear in customer-facing URLs)
   const rand = [...crypto.getRandomValues(new Uint8Array(10))].map((x) => 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'[x % 31]).join('');
-  const linkId = (repo.isTest || e.test ? 'TST-PL-' : 'PL-') + rand;
-  if (mode === 'mock' && env.APP_ENV === 'production' && !(repo.isTest || e.test)) {
-    throw new Error(`Online payments are not set up yet – ${provider === 'telr' ? 'Telr' : 'Razorpay'} is not live. Record the payment at the counter instead.`);
-  }
+  const linkId = (sandbox ? 'TST-PL-' : 'PL-') + rand;
   const base = env.APP_BASE_URL.replace(/\/+$/, '');
   const programs = await repo.many<any>('program');
   const input: LinkInput = {
@@ -267,12 +323,13 @@ export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amo
     customer: { name: parent.name || `${s?.first} ${s?.last}`, email: parent.email, phone: parent.mobile },
     returnUrl: `${base}/webhooks/pay/return?link=${linkId}`, callbackUrl: `${base}/webhooks/${provider}`,
   };
-  const ctx = { env, mode, isTest: repo.isTest || !!e.test };
-  const r = provider === 'telr' ? await telrCreate(ctx, input) : await razorpayCreate(ctx, input);
+  const ctx = { env, mode, isTest: sandbox };
+  const r = await easebuzzCreate(ctx, input);
+  const savedProvider = sandbox ? 'easebuzz-test' : provider;
   await env.DB.prepare('INSERT INTO payment_links (id,provider,provider_ref,enrollment_id,amount,currency,url,status,created_by,is_test) VALUES (?,?,?,?,?,?,?,?,?,?)')
-    .bind(linkId, mode === 'mock' ? `${provider}-mock` : provider, r.providerRef, e.id, amt, e.cur, r.url, 'created', createdBy, ctx.isTest ? 1 : 0).run();
-  await addAudit(repo, 'Payment link created', linkId, `${money(amt, e.cur)} via ${provider}${mode === 'mock' ? ' (mock)' : ''} for ${e.id}`, createdBy);
-  return { id: linkId, provider, mode, url: r.url, providerRef: r.providerRef, amount: amt, currency: e.cur };
+    .bind(linkId, savedProvider, r.providerRef, e.id, amt, e.cur, r.url, 'created', createdBy, ctx.isTest ? 1 : 0).run();
+  await addAudit(paymentRepo, 'Payment link created', linkId, `${money(amt, e.cur)} via ${provider} for ${e.id}`, createdBy);
+  return { id: linkId, provider, mode, sandbox, url: r.url, providerRef: r.providerRef, amount: amt, currency: e.cur, enrollmentId: e.id };
 }
 
 /** Marks a link paid and records the CRM payment exactly once (webhook, return URL or reconciliation). */
@@ -304,7 +361,7 @@ export async function settleLink(env: Env, repo: Repo, linkId: string, info: { a
   return { paymentId: p.id, payment: p };
 }
 
-const SECRET_KEYS = /token|secret|password|authkey|signature|api[_-]?key/i;
+const SECRET_KEYS = /token|secret|salt|password|authkey|signature|hash|^key$|api[_-]?key/i;
 const scrub = (v: unknown): string => {
   if (typeof v === 'string') {
     try { return scrub(JSON.parse(v)); } catch { return v.replace(/([?&](?:token|access_token|wstoken)=)[^&\s"]+/gi, '$1***'); }

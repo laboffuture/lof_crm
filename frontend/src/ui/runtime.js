@@ -4,7 +4,31 @@ const ACT = {},
   SUB = {},
   CHG = {},
   INP = {};
-function go(page, p) {
+
+// Keep the current CRM screen in the URL.  The application is a single-page
+// app, so without this a browser refresh recreates the default dashboard state.
+var lastRouteHash = null;
+function routeFromUrl() {
+  const raw = window.location.hash.replace(/^#/, '');
+  if (!raw) return null;
+  const q = new URLSearchParams(raw);
+  const page = q.get('page');
+  if (!page) return null;
+  const p = {};
+  q.forEach((value, key) => {
+    if (key !== 'page') p[key] = value;
+  });
+  return { page, p };
+}
+function routeHash(page, p) {
+  const q = new URLSearchParams();
+  q.set('page', page);
+  Object.entries(p || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') q.set(key, String(value));
+  });
+  return '#' + q.toString();
+}
+function setRoute(page, p) {
   S.route = Object.assign({ page }, p || {});
   S.menu = null;
   S.searchOpen = false;
@@ -12,10 +36,27 @@ function go(page, p) {
   S.shell = false;
   if (page !== 'lead') S.tab = 'overview';
   if (page !== 'student') S.stuTab = 'overview';
+}
+function restoreRouteFromUrl() {
+  if (!S || window.location.hash === lastRouteHash) return;
+  lastRouteHash = window.location.hash;
+  const r = routeFromUrl();
+  setRoute(r ? r.page : 'dashboard', r ? r.p : {});
+  render();
+}
+function go(page, p) {
+  setRoute(page, p);
+  const hash = routeHash(page, p);
+  if (window.location.hash !== hash) {
+    lastRouteHash = hash;
+    window.history.pushState(null, '', window.location.pathname + window.location.search + hash);
+  }
   render();
   const m = $('#main');
   if (m) m.scrollTop = 0;
 }
+window.addEventListener('hashchange', restoreRouteFromUrl);
+window.addEventListener('popstate', restoreRouteFromUrl);
 function toast(msg, kind) {
   const c = $('#toasts');
   if (!c) return;

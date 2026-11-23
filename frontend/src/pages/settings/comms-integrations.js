@@ -108,11 +108,11 @@ const INTEG = [
     'pay',
     'Payment gateway',
     [
-      ['provider', 'Provider', 'Not selected,To be confirmed'],
+      ['provider', 'Provider'],
       ['mode', 'Mode', 'Test,Production'],
       ['webhook', 'Webhook URL'],
     ],
-    'Gateway setup is separate from recording payments.',
+    'Gateway and checkout mode are set on the server. Sandbox payments update test records only.',
   ],
   [
     'erp',
@@ -141,7 +141,7 @@ CFG.integrations = () =>
         g[1],
         cfgForm(
           'integ_' + g[0],
-          `<p class="muted sm" style="margin:0 0 10px">${g[3]} Status: ${bdg(['web', 'meta'].includes(g[0]) ? (c.on ? 'Enabled – simulated' : 'Disabled') : 'Not connected', 'warn')}</p>${swRow('Enabled', 'on', c.on)}<div class="fgrid" style="margin-top:10px">${g[2].map((f) => F(f[1], f[0], { v: c[f[0]], opts: f[2] ? f[2].split(',') : null, t: ['retryMax', 'retryMin'].includes(f[0]) ? 'number' : 'text' })).join('')}</div>`,
+          `<p class="muted sm" style="margin:0 0 10px">${g[3]} Status: ${bdg(g[0] === 'pay' ? (c.on ? 'Enabled' : 'Disabled') : ['web', 'meta'].includes(g[0]) ? (c.on ? 'Enabled – simulated' : 'Disabled') : 'Not connected', 'warn')}</p>${swRow('Enabled', 'on', c.on)}<div class="fgrid" style="margin-top:10px">${g[2].map((f) => F(f[1], f[0], { v: c[f[0]], opts: f[2] ? f[2].split(',') : null, dis: g[0] === 'pay', t: ['retryMax', 'retryMin'].includes(f[0]) ? 'number' : 'text' })).join('')}</div>`,
           { ok: 'Save' },
         ) +
           `<div style="margin-top:8px"><button class="btn sm" type="button" data-act="testInteg" data-k="${g[0]}">Test connection (simulated)</button></div>`,
@@ -162,6 +162,7 @@ INTEG.forEach(
       const c = S.cfg.integ[g[0]];
       c.on = !!d.on;
       g[2].forEach((x) => {
+        if (g[0] === 'pay') return; // gateway, mode and callback address come from the server
         c[x[0]] = ['retryMax', 'retryMin'].includes(x[0]) ? +d[x[0]] : d[x[0]];
       });
       if (g[0] === 'moodle' && (!(c.retryMax >= 0) || !(c.retryMin >= 1))) {

@@ -12,7 +12,8 @@ export const fmtDT = (iso: string) =>
 
 // ---------------- fees ----------------
 export function feeFor(fees: any[], prog: string, branch: string, pkg?: string, today = dayKey(new Date())) {
-  return fees.find((f) => f.active && f.prog === prog && f.branch === branch && (!pkg || f.pkg === pkg) && f.from <= today && (!f.to || f.to >= today));
+  return fees.filter((f) => f.active && f.prog === prog && f.branch === branch && (!pkg || f.pkg === pkg) && f.from <= today && (!f.to || f.to >= today))
+    .sort((a, b) => String(b.from).localeCompare(String(a.from)) || String(b.revisionAt || '').localeCompare(String(a.revisionAt || '')) || String(b.id).localeCompare(String(a.id), undefined, { numeric: true }))[0];
 }
 export function calcFee(fee: any, disc: any, isNew: boolean) {
   const base = fee.amt, extra = isNew ? fee.extra.amt : 0;

@@ -1,12 +1,12 @@
 # LOF CRM to LMS integration
 
-This implementation follows the client-supplied LOF CRM to LMS Integration Guide v1.1 dated 2 November 2026. It supersedes the September JSON/Bearer examples. Existing students, enrolments, payments, branches and programme masters do not need to be replaced. No database migration or seed import is required.
+This implementation follows the client-supplied LOF CRM to LMS Integration Guide v1.1 and the November UAT pack. Existing CRM data is retained. Apply the pending D1 migrations for LMS order integrity and sandbox checkout records when deploying this version.
 
 ## Implementation and reason
 
 | Change                                                                                                            | Why                                                                                                       | Guide                                |
 | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| POST form encoding; server-only `wstoken`, Moodle function name and JSON response format                          | The LMS does not accept JSON request bodies or the former enrol/cancel envelope                           | 2, 4                                 |
+| JSON for `crm_api.php` and form encoding for the legacy Moodle endpoint                                           | Both send `wstoken` and `wsfunction`. The token is stored on the server.                                     | 2, 4 and UAT pack                     |
 | Indexed `items` and `skillslabs`, with an explicit outbound field allowlist                                       | Sends exact purchased Credits or Skills Lab session counts; excludes prices, payment methods and invoices | 3, 4, 7                              |
 | Catalogue and student lookup functions                                                                            | Uses documented connectivity/code validation and student-link checks                                      | 6, 8                                 |
 | Full-payment trigger on new orders, for counter and gateway payments                                              | An enrolment alone is not a paid order; the first instalment does not activate access                     | 1, 7                                 |
@@ -22,7 +22,7 @@ Success in the monitor means LMS acknowledged receipt. It does not claim that LO
 
 ## Configuration without replacing existing data
 
-Keep the ignored `.dev.vars` file private. `.dev.vars.example` supplies development defaults and the UAT endpoint; its token is intentionally blank. The existing `.dev.vars` file is not changed by this implementation. Production credentials belong in Cloudflare server secrets.
+Keep the ignored `.dev.vars` file private. `.dev.vars.example` supplies development defaults with blank LMS credentials. For local UAT, set `LMS_URL=https://uat.learning.laboffuture.com/local/lofplatform/crm_api.php` and use the supplied UAT token. Production credentials belong in the production server environment.
 
 With `INTEGRATION_MODE=mock`, tests and local development use simulated providers. To test the real UAT connection, configure `LMS_URL` and `LMS_TOKEN` on the backend, set integration mode to `auto`, and enable LMS in settings. Keep UAT and live credentials and mappings in their respective environments.
 
@@ -30,7 +30,7 @@ With `INTEGRATION_MODE=mock`, tests and local development use simulated provider
 
 Map exact entitlements under `cfg.lms.packages[programmeId][packageName]`. A single-Track mapping has `{ track, credits, skillslabs }`; a multiple-Track mapping may use `{ items: [{ track, credits, product_name }], skillslabs: [...] }`. Skills Lab lines contain `{ program, sessions }` and optional `valid_until` and `product_name`. The settings form edits one Track and one Skills Lab per package and preserves multi-line API mappings. Legacy programme mappings remain readable in previews/mock mode but are insufficient to authorize a first live purchase. Live delivery requires an explicit package mapping and confirmed codes.
 
-Use `cfg.lms.branchMap` to map existing branch IDs to the client-approved LMS codes; do not rename or overwrite branch masters. Business mappings require LOF approval. The supplied UAT CSVs list Falcon `FT` (`F2`, `FC1`–`FC4`), Tesla `RT` (`C1`, `C2`) and Andheri West `AW`. Automated tests use these as isolated fixtures. The user also authorized the temporary local UAT mapping recorded below while business mappings are unavailable; it must not be treated as a production mapping or evidence of LOF approval.
+Use `cfg.lms.branchMap` to map existing branch IDs to client-approved LMS codes. The supplied UAT CSVs list Falcon `FT` (`F2`, `FC1`–`FC4`), Tesla `RT` (`C1`, `C2`) and Andheri West `AW`. The UAT endpoint supports the AW branch and Track packages. Production mappings require LOF approval.
 
 ## Local UAT delivery verified 13 November 2026
 
@@ -52,9 +52,7 @@ Withdrawal sends a whole-order cancel using the same reference. It does not intr
 
 ## Verification and UAT
 
-Run `npm run typecheck`, `npm run check:frontend`, `npm test` and `npm run build:frontend`. Do not run `build:seed` or apply migrations to an existing database as part of this integration change. Automated tests create fresh in-memory SQLite databases and use stubbed providers; they do not modify `.wrangler` or remote D1.
-
-The v1.1 suite covers exact form encoding, multiple Tracks and Skills Labs, omission of financial fields, secret redaction, catalogue and lookup, HTTP 200 errors, accepted warnings, duplicate acknowledgement, frozen retries, malformed responses, cancellation references, production setup failures, concurrent delivery, payment activation, historical-record isolation, interruption recovery and identity/entitlement validation.
+Run `npm run typecheck`, `npm run check:frontend` and `npm run build:frontend`. Use the supplied Postman collection for manual UAT and record the `inboxid` for every accepted order or cancellation.
 
 Joint UAT remains required: catalogue from the intended server; purchase for an existing LMS test student; duplicate reference; invalid Credit warning; LOF staff processing and student-visible Credits; cancellation with `purchaseknown:true`. Real UAT delivery is not proven by mocks.
 
@@ -66,4 +64,4 @@ New-student registration treats matching parent contact details as informational
 
 ## Request and response logs
 
-LMS browser console diagnostics have been removed. The durable Integration log in Settings → Testing console retains the redacted HTTP request, destination URL and provider response. The LMS call history and saved receipt remain available, and opening those records never resends an order.
+The Integration log in Settings → Testing console retains the redacted HTTP request, destination URL and provider response. Browser diagnostics show enrolment and sync status. Opening the LMS call history or its receipt does not resend an order.

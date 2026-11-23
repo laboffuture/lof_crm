@@ -51,6 +51,9 @@ function applyRemaps() {
       });
     });
     if (S.route && S.route.id === m.from) S.route.id = m.to;
+    const pending = S.wiz?.pendingSave;
+    if (pending?.enrollmentId === m.from) pending.enrollmentId = m.to;
+    if (pending?.studentId === m.from) pending.studentId = m.to;
     toast('Number ' + m.from + ' was just taken by a colleague – saved as ' + m.to, 'warn');
   });
 }

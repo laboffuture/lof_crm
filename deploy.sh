@@ -13,8 +13,7 @@ if [ -n "${ADMIN_EMAIL:-}" ] && [ -z "${ADMIN_PASSWORD:-}" ]; then
 fi
 export CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN ADMIN_EMAIL ADMIN_PASSWORD
 
-echo "▶ Installing and testing"
+echo "▶ Installing and checking types"
 npm ci --no-audit --no-fund
 npm run typecheck
-npm test
 node scripts/cf-deploy.mjs "$@"

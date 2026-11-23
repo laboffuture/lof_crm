@@ -48,10 +48,12 @@ WHATSAPP_TEMPLATE_LANG = "en"
 EXOTEL_SUBDOMAIN = "api.exotel.com"        # api.in.exotel.com for the Mumbai cluster
 EXOTEL_SID = ""
 EXOTEL_CALLER_ID = ""
-LMS_URL = ""                               # Moodle REST server.php endpoint (UAT/live configured separately)
+LMS_URL = ""                               # JSON crm_api.php or legacy form server.php endpoint; UAT/live configured separately
 TELR_STORE_ID = ""
 TELR_TEST_MODE = "1"
 RAZORPAY_KEY_ID = ""
+PAYMENTS_INR_PROVIDER = "easebuzz"          # legacy compatibility; new checkouts always use Easebuzz
+EASEBUZZ_ENV = "test"                     # prod requires separately activated live credentials
 ERPNEXT_URL = ""
 ERPNEXT_COMPANY = "Lab of Future"
 ERPNEXT_PAID_TO_AED = ""
@@ -62,7 +64,7 @@ GCAL_CALENDAR_ID = ""
 # JWT_SECRET (≥ 32 random characters), TURNSTILE_SECRET (optional), WEBSITE_FORM_SECRET, META_APP_SECRET, META_VERIFY_TOKEN, META_PAGE_ACCESS_TOKEN,
 # WHATSAPP_ACCESS_TOKEN, WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN, EXOTEL_API_KEY, EXOTEL_API_TOKEN,
 # EXOTEL_WEBHOOK_TOKEN, LMS_TOKEN, TELR_AUTH_KEY, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET,
-# ERPNEXT_API_KEY, ERPNEXT_API_SECRET, GCAL_SERVICE_ACCOUNT_JSON
+# EASEBUZZ_KEY, EASEBUZZ_SALT, ERPNEXT_API_KEY, ERPNEXT_API_SECRET, GCAL_SERVICE_ACCOUNT_JSON
 
 [env.staging]
 name = "lof-crm-staging"

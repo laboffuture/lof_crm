@@ -81,7 +81,7 @@ const enrCols = (act) =>
     {
       h: 'LMS',
       f: (e) => {
-        const m = S.ms.find((x) => x.id === e.ms);
+        const m = lmsCallForEnrolment(e);
         return m ? stB(m.status) : '—';
       },
     },
@@ -99,7 +99,7 @@ const enrCols = (act) =>
       : [],
   );
 PAGES.enrollments = () => {
-  const es = S.enr.filter((e) => inScope(e.branch));
+  const es = S.enr.filter((e) => !e.sandboxSource && inScope(e.branch)).map(paymentEnrolment);
   return (
     ph(
       'Enrollments',
@@ -112,7 +112,8 @@ PAGES.enrollments = () => {
 };
 PAGES.history = () => {
   const es = S.enr
-    .filter((e) => inScope(e.branch))
+    .filter((e) => !e.sandboxSource && inScope(e.branch))
+    .map(paymentEnrolment)
     .sort((a, b) => (a.stu < b.stu ? -1 : a.stu > b.stu ? 1 : new Date(a.date) - new Date(b.date)));
   return (
     ph(

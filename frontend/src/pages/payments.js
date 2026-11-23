@@ -1,9 +1,18 @@
 /* Collect payment, payment records, receipts, CSV export. */
 /* ====== payments ====== */
 PAGES.payCollect = () => {
-  const es = S.enr.filter((e) => inScope(e.branch) && e.status !== 'Withdrawn' && e.total - e.paid > 0.005);
-  const pick = S.payPick && enrById(S.payPick) && es.find((e) => e.id === S.payPick) ? enrById(S.payPick) : null;
-  let right = emptyBox('Select an enrolment', 'Choose an enrolment with an outstanding balance to record a payment.');
+  const es = S.enr
+    .filter((e) => !e.sandboxSource && inScope(e.branch) && e.status !== 'Withdrawn' && (S.paymentSandbox !== false || !e.test))
+    .map(paymentEnrolment)
+    .filter((e) => e.total - e.paid > 0.005);
+  const pick = es.find((e) => e.id === S.payPick);
+  const selected = S.payPick && enrById(S.payPick);
+  const completed = selected && !pick && inScope(selected.branch) && paymentEnrolment(selected).payStatus === 'Paid';
+  let right = completed
+    ? '<div role="status">' +
+      emptyBox('Payment confirmed', 'The enrolment is paid in full. Open Payments → Records for the receipt.') +
+      '</div>'
+    : emptyBox('Select an enrolment', 'Choose an enrolment with an outstanding balance to record a payment.');
   if (pick) {
     const s = stuById(pick.stu),
       out = r2(pick.total - pick.paid);
@@ -37,7 +46,7 @@ PAGES.payCollect = () => {
             { h: 'Method', f: (p) => p.method },
             { h: 'Reference', f: (p) => esc(p.ref) },
           ],
-          S.pay.filter((p) => p.stu === pick.stu),
+          paymentRecordsForView().filter((p) => p.stu === pick.stu),
           { all: 1 },
         ),
         { np: 1 },
@@ -66,7 +75,7 @@ ACT.payPick = (d) => {
 SUB.pay = (d, f) => {
   clearErrs(f);
   const e = enrById(d.id),
-    out = r2(e.total - e.paid),
+    out = r2(e.total - paymentEnrolment(e).paid),
     amt = +d.amt;
   if (!(amt > 0)) {
     setErr(f, 'amt', 'Enter an amount greater than zero');
@@ -104,8 +113,9 @@ SUB.pay = (d, f) => {
   toast('Payment recorded (simulated) – receipt ' + p.rc, 'ok');
 };
 MODALS.receipt = (m) => {
-  const p = S.pay.find((x) => x.id === m.id),
-    e = enrById(p.enr),
+  const p = paymentRecordsForView().find((x) => x.id === m.id);
+  if (!p) return { title: 'Receipt unavailable', size: 'sm2', body: 'The payment record is unavailable.' };
+  const e = paymentEnrolment(enrById(p.enr)),
     s = stuById(p.stu);
   return {
     title: 'Receipt preview',
@@ -130,14 +140,14 @@ ACT.genReceipt = (d) => {
   toast('Receipt ' + p.rc + ' generated (simulated). PDF download is not available in the prototype.', 'ok');
 };
 PAGES.payRecords = () => {
-  const ps = S.pay.filter((p) => inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at)),
+  const ps = paymentRecordsForView().filter((p) => inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at)),
     f = S.payF || '';
   const x = ps.filter((p) => !f || p.method === f);
   const tot = x.reduce((a, p) => a + toAED(p.amt, p.cur), 0);
   return (
     ph(
       'Payment Records',
-      'All recorded payments (simulated)',
+      'All recorded payments',
       `<select data-change="payF" aria-label="Method"><option value="">All methods</option>${S.cfg.pm.map((m) => `<option${f === m ? ' selected' : ''}>${m}</option>`).join('')}</select><button class="btn" data-act="payCsv">Export CSV</button>`,
     ) +
     `<div class="sum"><div class="it"><small>Records</small><b>${x.length}</b></div><div class="it"><small>Total collected (AED equivalent)</small><b>${Math.round(tot).toLocaleString('en-US')}</b></div><div class="it muted xs">INR converted at ${S.fx.INR} (rate pending business confirmation)</div></div>` +
@@ -176,7 +186,7 @@ CHG.payF = (el) => {
   render();
 };
 ACT.payCsv = () => {
-  const ps = S.pay.filter((p) => inScope(p.branch));
+  const ps = paymentRecordsForView().filter((p) => inScope(p.branch));
   openModal('csv', {
     name: 'payment-records',
     head: ['Payment', 'Date', 'Student', 'Branch', 'Enrolment', 'Amount', 'Currency', 'Method', 'Reference', 'Receipt'],
@@ -195,9 +205,9 @@ ACT.payCsv = () => {
   });
 };
 PAGES.receipts = () => {
-  const ps = S.pay.filter((p) => inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at));
+  const ps = paymentRecordsForView().filter((p) => inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at));
   return (
-    ph('Receipts', 'Receipts issued for recorded payments (simulated)') +
+    ph('Receipts', 'Receipts issued for recorded payments') +
     card(
       '',
       table(

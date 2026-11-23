@@ -3,8 +3,8 @@
 The approved LOF CRM prototype, turned into a working system on **Cloudflare Workers + D1**:
 
 - **API** (Hono) with sign-in, branch-scoped data, role permissions and an audit trail
-- **Integrations**: Website form, Meta Lead Ads, WhatsApp Cloud API, Exotel, LMS (LOF booking platform), Telr (AED), Razorpay (INR), ERPNext Accounts, Google Calendar, e-mail (SMTP) – each with a **mock mode** so everything can be tested before credentials exist
-- **Testing module**: an in-app **Testing console** (Settings → Testing console) plus an automated test suite (Vitest + Playwright)
+- **Integrations**: Website form, Meta Lead Ads, WhatsApp Cloud API, Exotel, LMS (LOF booking platform), Easebuzz (sole online gateway; AED multicurrency setup pending), ERPNext Accounts, Google Calendar, e-mail (SMTP) – each with a **mock mode** so everything can be tested before credentials exist
+- **Testing module**: an in-app **Testing console** (Settings → Testing console)
 - **Frontend**: the prototype screens, unchanged in look and workflow, wired to the API by `public/api-client.js`
 
 ```
@@ -15,9 +15,7 @@ src/sync/               bootstrap (scoped state) · sync (permission-guarded wri
 src/domain/             core business rules · workflows (LMS calls, messages, ERPNext, payment links) · terms (instalments, refund rules, LMS payload)
 src/integrations/       one adapter per provider, live + mock
 src/jobs.ts             background jobs and scheduler
-migrations/             0001 schema · 0002 seed (generated) · 0003 reporting views · 0004 security (sessions, MFA, DB triggers)
-test/                   unit · api · integrations · security (Vitest, runs the real Worker code on SQLite)
-e2e/                    browser tests (Playwright)
+migrations/             schema, generated seed, reporting views and data integrity updates
 prototype/              the original approved prototype (source for index.html and the seed)
 ```
 
@@ -69,31 +67,19 @@ Sign in with any demo staff e-mail and the password `Welcome@LOF2026` (you'll be
 For production, generate a seed with masters only (branches, programmes, fees, discounts, staff, settings):
 `node scripts/build-seed.mjs --masters-only` – then replace the example staff with real people before migrating.
 
-## Tests
+## Validation
+
+Run the repository checks with:
 
 ```bash
-npm test                 # 143 tests, ~25 s – no network, no Cloudflare account needed
-npm run test:e2e         # browser tests against `wrangler dev` (CHROME_PATH=/path/to/chrome optional)
 npm run typecheck
+npm run check:frontend
 ```
-
-| Suite | Covers |
-|---|---|
-| `test/unit` | Crypto (HMAC, JWT, passwords), fee maths, template parameters, instalment schedules, refund rules, LMS payload, Exotel/Meta/WhatsApp parsing, log redaction, live/mock switching |
-| `test/api/auth-and-sync` | Login, lockout, password change, role preview, branch-scoped bootstrap, every sync guard above, sequence claims |
-| `test/api/rest` | Lead API with routing and duplicate detection, scoping, student 360, receipts, payment links |
-| `test/integrations/webhooks` | Website (signed / origin / honeypot), Meta (verify + import + retry dedupe), WhatsApp (status + replies), Exotel (screen-pop + call log), Razorpay and Telr (verification, idempotency) |
-| `test/integrations/live-adapters` | Exact requests to the LMS, WhatsApp, Exotel, ERPNext, Telr against stubbed APIs, including provider error formats |
-| `test/integrations/testing-console` | Readiness, connection tests, all four end-to-end scenarios, webhook simulations, cleanup, scheduler |
-| `test/security` | Every finding of three independent security reviews: sync guards, server-issued record numbers, append-only history, fee/discount/refund integrity, sessions, CSRF, two-step verification, rate limits, headers, log redaction |
-| `e2e/` | Sign-in, lead creation saved on server, role restrictions, counter payment + receipt, full new-student enrolment with a payment plan and LMS sync, discount approval, configuration save |
-
-The tests run the real Worker code against an in-memory SQLite database with the same migrations (`test/helpers/d1.ts`).
 
 ### Testing console (Settings → Testing console, System Administrator)
 
 - **Integration readiness** – per integration: configuration toggle, live/mock, missing secrets, webhook URL to register, last result, *Test connection*
-- **End-to-end scenarios** – *UAE enquiry → enrolment → Telr*, *India enquiry → enrolment → Razorpay*, *Meta lead import*, *LMS outage and retry* – step-by-step pass/fail
+- **End-to-end scenarios** – *UAE enquiry → enrolment → counter payment*, *India enquiry → enrolment → counter payment*, *Easebuzz sandbox checkout*, *Meta lead import*, *LMS outage and retry* – step-by-step pass/fail
 - **Webhook simulations** – correctly signed provider events sent through the real endpoints
 - **Failure injection** – simulate an LMS outage
 - **Integration log** – every request/response, secrets redacted
@@ -109,7 +95,7 @@ Everything the console creates is flagged as test data, hidden from other users,
 ./deploy.sh          # macOS / Linux   (Windows: .\deploy.ps1)
 ```
 
-or run the GitHub Actions workflow *Deploy to Cloudflare*. Both run the tests, create the database and queues if
+or run the GitHub Actions workflow *Deploy to Cloudflare*. Both check TypeScript types, create the database and queues if
 missing, apply new migrations, keep existing secrets and data, create the first administrator, and check `/health`.
 Staging: add `--env staging` (forced mock mode, own database). Set `APP_BASE_URL` to the public URL when you use a
 custom domain – webhook and payment return URLs are built from it.
@@ -135,9 +121,10 @@ Set the secrets (`wrangler secret put …`), set the variables in `wrangler.toml
 | **Meta Lead Ads** | `META_APP_SECRET`, `META_VERIFY_TOKEN`, `META_PAGE_ACCESS_TOKEN` (page token with `leads_retrieval`) | App webhook, object *Page*, field *leadgen* → `/webhooks/meta`; subscribe the page. Map form IDs to branch/programme in `cfg.integ.meta.forms` (default branch/programme in Configuration) |
 | **WhatsApp** | `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_ACCESS_TOKEN` (system user), `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` | Webhook `/webhooks/whatsapp`, field *messages*. Get templates approved and enter their names on each CRM template (Configuration → Communication); placeholders are sent as body parameters in order |
 | **Exotel** | `EXOTEL_SID`, `EXOTEL_API_KEY`, `EXOTEL_API_TOKEN`, `EXOTEL_CALLER_ID`, `EXOTEL_WEBHOOK_TOKEN`, `EXOTEL_SUBDOMAIN` | In the incoming-call flow add a *Passthru* applet → `/webhooks/exotel/incoming?token=…` and set the Connect applet's status callback → `/webhooks/exotel/status?token=…`. Each counsellor needs a mobile number on their staff record (click-to-call rings it first) |
-| **LMS** (LOF booking platform) | `LMS_URL` (variable), `LMS_TOKEN` (secret); codes under **Settings → LMS Integration** | Two calls only, both JSON POSTs to `LMS_URL` with `Authorization: Bearer LMS_TOKEN`: **enrol** (once per enrolment: student, parent, branch, valid_until, and per product the Track code and the exact Credit codes) and **cancel** (reference only, on withdrawal). No payment or refund data is sent. Enter LOF's Track/Credit codes per programme and the branch code map, mark the codes confirmed, then use Test connection |
-| **Telr** (AED) | `TELR_STORE_ID`, `TELR_AUTH_KEY`, `TELR_TEST_MODE` (1 = test) | Optional transaction advice → `/webhooks/telr`. Payment is always confirmed with Telr's *check* API before it is recorded; the scheduler also reconciles open orders |
-| **Razorpay** (INR) | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Webhook `/webhooks/razorpay`, events `payment_link.paid`, `payment_link.cancelled`, `payment_link.expired` |
+| **LMS** (LOF booking platform) | `LMS_URL` (variable), `LMS_TOKEN` (secret); codes under **Settings → LMS Integration** | POST to `crm_api.php` with a JSON body containing `wstoken` and `wsfunction`. Legacy `server.php` URLs retain form encoding with `moodlewsrestformat=json`. Supports purchase, cancel, catalogue (connection check) and student lookup. An acknowledgement confirms receipt; LOF staff process orders to create accounts and grant access. See [LMS setup](docs/LMS-Integration.md). |
+| **Easebuzz** | `EASEBUZZ_ENV`, `EASEBUZZ_KEY`, `EASEBUZZ_SALT`; enable Payment gateway in Settings | Notification endpoint `/webhooks/easebuzz`; browser return `/webhooks/easebuzz/return`. Use `test` with sandbox credentials on a non-production CRM and `prod` with live merchant credentials on the public HTTPS CRM. Hosted checkout currently supports INR. |
+| **Telr** (historical links only) | `TELR_STORE_ID`, `TELR_AUTH_KEY`, `TELR_TEST_MODE` (1 = test) | Optional transaction advice → `/webhooks/telr`. Payment is always confirmed with Telr's *check* API before it is recorded; the scheduler also reconciles open orders |
+| **Razorpay** (historical links only) | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Webhook `/webhooks/razorpay`, events `payment_link.paid`, `payment_link.cancelled`, `payment_link.expired` |
 | **ERPNext** | `ERPNEXT_URL`, `ERPNEXT_API_KEY`, `ERPNEXT_API_SECRET`, `ERPNEXT_COMPANY`, `ERPNEXT_PAID_TO_AED`, `ERPNEXT_PAID_TO_INR` | API user with Accounts User role. Payment Entries are created as **drafts** (set `cfg.integ.erp.submit = true` to post); mode-of-payment names in `cfg.integ.erp.modes`; failed pushes retry from the scheduler |
 | **Google Calendar** | `GCAL_SERVICE_ACCOUNT_JSON`, `GCAL_CALENDAR_ID` | Share the calendar with the service account (make changes to events) |
 | **E-mail** | none – set in Configuration → Email Outgoing → SMTP server | Google Workspace: smtp.gmail.com, port 465 (SSL), the mailbox address and an app password |
@@ -186,3 +173,5 @@ These were open in the prototype; the system implements a sensible default that 
 The editable screens are in `frontend/`; see `frontend/README.md`. `npm run build:frontend` generates the served files. The existing VPS `scripts/patch-frontend.mjs` command remains supported and runs the same build.
 
 See `docs/LMS-Integration.md` for the November 2026 LMS contract, package mapping, UAT setup and manual verification. Existing SMTP, password reset, report exports and staff/branch access controls are retained.
+
+Local sandbox checkout uses the existing student and displays confirmed test receipts against the original enrolment. The sandbox balance is isolated from production. See [VPS deployment](DEPLOY-VPS.md) for live configuration.

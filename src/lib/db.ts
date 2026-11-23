@@ -57,11 +57,19 @@ export class Repo {
   }
 
   /** Insert a new server-generated record; fails instead of overwriting if the id is already taken. */
+  async createStmt(type: string, doc: any, relatedBranch?: string) {
+    const c = indexFor(type, doc, () => relatedBranch ?? null);
+    let branch = c.branch;
+    if (relatedBranch === undefined) {
+      if (type === 'task' || type === 'call' || type === 'comm') branch = await this.branchOf('lead', doc.lead);
+      if (type === 'moodle_sync' || type === 'refund') branch = await this.branchOf('enrollment', doc.enr);
+    }
+    return this.db.prepare('INSERT INTO docs (type,id,branch,status,owner,ref1,ref2,at,data,is_test,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(type, doc.id, branch, c.status, c.owner, c.ref1, c.ref2, c.at, JSON.stringify(doc), this.isTest || doc.test ? 1 : 0, this.actor);
+  }
+
   async create(type: string, doc: any) {
-    const c = indexFor(type, doc, () => null);
-    const branchRel = type === 'task' || type === 'call' || type === 'comm' ? await this.branchOf('lead', doc.lead) : type === 'moodle_sync' || type === 'refund' ? await this.branchOf('enrollment', doc.enr) : c.branch;
-    await this.db.prepare('INSERT INTO docs (type,id,branch,status,owner,ref1,ref2,at,data,is_test,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(type, doc.id, branchRel, c.status, c.owner, c.ref1, c.ref2, c.at, JSON.stringify(doc), this.isTest || doc.test ? 1 : 0, this.actor).run();
+    await (await this.createStmt(type, doc)).run();
     return doc;
   }
 
@@ -130,7 +138,7 @@ export class Repo {
 
   /** Test records (Testing Console) get TST- ids so business sequences stay gapless. */
   testId(seq: string): string {
-    return `TST-${seq.toUpperCase()}-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0')}`;
+    return `TST-${seq.toUpperCase()}-${crypto.randomUUID().replace(/-/g, '').toUpperCase()}`;
   }
 
   async newId(seq: keyof typeof ID_FORMAT | string): Promise<string> {
