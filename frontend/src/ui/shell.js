@@ -85,6 +85,7 @@ const visItem = (it) => {
   const r = it[3];
   if (r === null) return true;
   if (r === 'reassignment') return can(r, 'V') || can(r, 'C');
+  if (r === '*plinks') return !!(window.canSeeLinks && window.canSeeLinks());
   if (r === '*appr') return anyApprove();
   if (r === '*any')
     return (
@@ -159,7 +160,7 @@ const ACCESS = {
   admPipeline: ['opportunities', 'V'],
   admDecisions: ['opportunities', 'V'],
   enrollments: ['enrollments', 'V'],
-  wizard: ['enrollments', 'C'],
+  wizard: ['*wiz'],
   students: ['students', 'V'],
   student: ['students', 'V'],
   history: ['enrollments', 'V'],
@@ -180,6 +181,7 @@ const ACCESS = {
   integration: ['*any'],
 };
 function allowed(rt) {
+  if (rt.page === 'wizard' && S.wiz?.viaLink) return !!window.canSeeLinks?.();
   const a = ACCESS[rt.page];
   if (!a) return true;
   if (a[0][0] === '*') return visItem([0, 0, 0, a[0]]);
@@ -224,6 +226,7 @@ function topbar() {
   return `<header class="top"><button class="iconbtn mobtn" data-act="mobSide" aria-label="Open menu">${ic('menu')}</button><button class="iconbtn" data-act="toggleSide" aria-label="Collapse sidebar" style="${innerWidth <= 900 ? 'display:none' : ''}">${ic('menu')}</button>
   <div class="search">${ic('search')}<input id="gs" data-input="gsearch" autocomplete="off" placeholder="Search leads, students, phone, e-mail…" value="${esc(S.search)}">${sr}</div><div class="sp"></div>
   <button class="btn sm" data-act="simCall" title="Prototype: simulate an incoming call">${ic('phone')} Simulate incoming call</button>
+  <button class="iconbtn theme-toggle" data-act="theme" title="Switch between light and dark theme" aria-label="Switch between light and dark theme"><svg class="ico i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a7 7 0 0 0 11 11z"/></svg><svg class="ico i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
   <button class="iconbtn" data-act="go" data-page="notifications" aria-label="Notifications">${ic('bell')}${un ? `<span class="dot">${un}</span>` : ''}</button>
   <div class="pm"><button class="row btn ghost" data-act="menu" style="padding:3px 6px"><span class="avatar">${initials(u.name)}</span><span style="text-align:left;line-height:1.2" class="hide-sm"><b style="font-size:12.5px">${esc(u.name)}</b><br><span class="muted xs">${esc(u.role)}</span></span>${ic('chevD')}</button>
   ${S.menu === 'user' ? `<div class="menu"><div class="mh"><b>${esc(u.name)}</b><div class="muted xs">${esc(u.role)} · ${esc(u.dept)}</div><div class="xs">Branch access: ${myScope().map(branchName).join(', ')}</div></div><div class="lab">Switch demo user (role preview)</div>${users.map((x) => `<div class="mi" data-act="setUser" data-u="${x.id}">${x.id === S.user ? ic('check') : '<span style="width:16px"></span>'}<span>${esc(x.name)}<span class="muted xs"> · ${esc(x.role)}${x.role === 'Admissions Head' ? ' (' + (roleScope(x).includes('BLR') ? 'India' : 'UAE') + ')' : ''}</span></span></div>`).join('')}<div class="lab">Display</div><div class="mi" data-act="theme">${ic('moon')} Toggle light / dark</div></div>` : ''}</div></header>`;
@@ -252,7 +255,7 @@ function shell() {
         card('', `<div class="empty"><b>This screen failed to render</b>${esc(e.message)}</div>`);
     }
   }
-  return `<div class="shell${S.collapsed ? ' collapsed' : ''}${S.shell ? ' mob' : ''}"><aside class="side"><div class="brand"><div class="logo">LOF</div><div><b>Lab of Future</b><small>CRM & Sales</small></div></div><nav class="nav" aria-label="Main">${sidebar()}</nav></aside><div class="main">${topbar()}<main class="content" id="main">${subtabs()}${body}</main></div></div>${modalHtml()}${S.callPop ? callPopHtml() : ''}`;
+  return `<div class="shell${S.collapsed ? ' collapsed' : ''}${S.shell ? ' mob' : ''}"><aside class="side"><div class="brand"><img class="brand-logo" src="/lof-logo.png" alt="Lab of Future – CRM &amp; Sales" width="480" height="135"><span class="brand-mark" aria-hidden="true"></span></div><nav class="nav" aria-label="Main">${sidebar()}</nav></aside><div class="main">${topbar()}<main class="content" id="main">${subtabs()}${body}</main></div></div>${modalHtml()}${S.callPop ? callPopHtml() : ''}`;
 }
 function render() {
   const ae = document.activeElement;

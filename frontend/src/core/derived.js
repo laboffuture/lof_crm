@@ -15,6 +15,7 @@ function load(cid) {
   return o;
 }
 function sla(l) {
+  if (l.src === 'Manual') return { s: 'Not required', k: '' };
   if (l.status !== 'Open' && !l.fc && l.status !== 'Converted') return { s: '—', k: '' };
   if (l.fc) {
     const m = Math.round((new Date(l.fc) - new Date(l.enq)) / 6e4);

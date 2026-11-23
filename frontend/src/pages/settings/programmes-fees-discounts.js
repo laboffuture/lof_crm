@@ -163,7 +163,8 @@ CFG.fees = () => {
             { h: 'Package', f: (f) => esc(f.pkg) },
             { h: 'Sessions', f: (f) => f.sessions, r: 1 },
             { h: 'Fee', f: (f) => money(f.amt, f.cur), r: 1 },
-            { h: 'Tax', f: (f) => f.tax + '%', r: 1 },
+            { h: 'Course ID', f: (f) => esc(f.courseId || '—') },
+            { h: 'Tax', f: (f) => esc(window.feeTaxLabel?.(f) || f.tax + '%'), r: 1 },
             { h: 'Registration', f: (f) => money(f.extra.amt, f.cur), r: 1 },
             { h: 'Effective', f: (f) => fD(f.from) + (f.to ? ' – ' + fD(f.to) : ' →') },
             {
@@ -219,15 +220,39 @@ MODALS.fee = (m) => {
         to: '',
         active: true,
       };
+  if (!f) return { title: 'Fee unavailable', body: 'This fee is no longer available.' };
+  const used = !!m.id && S.enr.some((e) => e.feeId === m.id);
+  const branch = S.branches.find((b) => b.id === f.branch);
   return {
     title: m.id ? 'Edit fee ' + f.id : 'Add fee',
     size: 'lg',
     form: 'fee',
     ok: 'Save fee',
-    body: `<input type="hidden" name="oid" value="${m.id || ''}"><div class="fgrid">${F('Programme', 'prog', { v: f.prog, opts: S.programs.map((p) => [p.id, p.name]), dis: !!m.id })}${F('Branch', 'branch', { v: f.branch, opts: S.branches.map((b) => [b.id, b.name]), dis: !!m.id, help: 'Currency follows the branch' })}${F('Package / enrolment type', 'pkg', { v: f.pkg, req: 1 })}${F('Session count', 'sessions', { t: 'number', min: 1, v: f.sessions })}${F('Fee amount', 'amt', { t: 'number', min: 0, step: '0.01', v: f.amt, req: 1 })}${F('Tax %', 'tax', { t: 'number', min: 0, step: '0.01', v: f.tax })}${F('Additional charge – registration', 'reg', { t: 'number', min: 0, step: '0.01', v: f.extra.amt })}${F('Effective from', 'from', { t: 'date', v: f.from, req: 1 })}${F('Effective to (optional)', 'to', { t: 'date', v: f.to })}${CK('Active', 'active', f.active, { full: 1 })}</div><p class="muted xs">For a fee used by an enrolment, a price change creates a new version effective today or later. An expired end date is cleared for the new version.</p><p data-fee-error role="alert" class="fe" hidden></p>`,
+    body: `<input type="hidden" name="oid" value="${m.id || ''}"><div class="fgrid">${F('Programme', 'prog', { v: f.prog, opts: S.programs.map((p) => [p.id, p.name]), dis: used })}${F('Branch', 'branch', { v: f.branch, opts: S.branches.map((b) => [b.id, b.name]), dis: used, chg: 'feeBranch', help: 'Currency follows the branch' })}${F('Course ID', 'courseId', { v: f.courseId, req: !m.id, max: 80 })}${F('Package / enrolment type', 'pkg', { v: f.pkg, req: 1 })}${F('Session count', 'sessions', { t: 'number', min: 1, v: f.sessions })}${F('Fee amount', 'amt', { t: 'number', min: 0, step: '0.01', v: f.amt, req: 1 })}${'<div data-fee-tax>' + feeTaxFields(branch, f.tax) + '</div>'}${F('Additional charge – registration', 'reg', { t: 'number', min: 0, step: '0.01', v: f.extra.amt })}${F('Effective from', 'from', { t: 'date', v: f.from, req: 1 })}${F('Effective to (optional)', 'to', { t: 'date', v: f.to })}${CK('Active', 'active', f.active, { full: 1 })}</div><p class="muted xs">For a fee used by an enrolment, a price change creates a new version effective today or later. An expired end date is cleared for the new version.</p><p data-fee-error role="alert" class="fe" hidden></p>`,
   };
 };
 // Keep edits out of shared state until the live server confirms the whole fee transaction.
+function feeTaxFields(branch, fallback) {
+  const india = branch?.cur === 'INR' || /^ind/i.test(branch?.country || '');
+  if (!india) return F('VAT %', 'tax', { t: 'number', min: 0, step: '0.01', v: fallback });
+  const configured = window.feeTaxPct?.({ branch: branch.id, tax: fallback }) ?? fallback;
+  return (
+    F('GST %', 'gstPreview', { v: configured + '%', dis: true, help: 'Set CGST and SGST in Settings → Branches' }) +
+    '<input type="hidden" name="tax" value="' +
+    esc(fallback) +
+    '">'
+  );
+}
+CHG.feeBranch = (el) => {
+  const form = el.form;
+  const target = form.querySelector('[data-fee-tax]');
+  const previous = form.elements.tax?.value || 0;
+  target.innerHTML = feeTaxFields(
+    S.branches.find((b) => b.id === el.value),
+    previous,
+  );
+};
+
 const persistFee = (entries, form, what, detail, data) => {
   if (window.saveFeeChanges) return window.saveFeeChanges(entries, form, what, JSON.stringify(data));
   entries.forEach(({ doc }) => {
@@ -241,6 +266,15 @@ const persistFee = (entries, form, what, detail, data) => {
 SUB.fee = (d, f) => {
   if (f._feeSaving) return;
   if (!need(f, d, ['pkg', 'amt', 'from'])) return;
+  const oldFee = d.oid && S.fees.find((row) => row.id === d.oid);
+  if (d.oid && !oldFee) return;
+  d.prog ||= oldFee?.prog;
+  d.branch ||= oldFee?.branch;
+  d.courseId = String(d.courseId || '').trim();
+  if ((!oldFee && !d.courseId) || (d.courseId && !/^[^<>"'`\\\u0000-\u001f\u007f]{1,80}$/.test(d.courseId))) {
+    setErr(f, 'courseId', 'Enter a valid course ID of up to 80 characters');
+    return;
+  }
   if (!(+d.amt > 0)) {
     setErr(f, 'amt', 'Enter an amount above zero');
     return;
@@ -259,9 +293,10 @@ SUB.fee = (d, f) => {
   }
   if (d.oid) {
     const o = S.fees.find((x) => x.id === d.oid);
-    const money = +d.amt !== o.amt || +d.tax !== o.tax || +d.reg !== o.extra.amt;
+    const priceChanged = +d.amt !== o.amt || +d.tax !== o.tax || +d.reg !== o.extra.amt;
+    const branch = S.branches.find((row) => row.id === d.branch);
     const used = (S.enr || []).some((e) => e.feeId === o.id);
-    if (money && used) {
+    if (priceChanged && used) {
       const start = d.from > TODAY ? d.from : TODAY;
       const y = addDays(start, -1);
       const closed = Object.assign({}, o, { to: o.to && o.to < start ? o.to : y < o.from ? o.from : y });
@@ -269,6 +304,7 @@ SUB.fee = (d, f) => {
       const n = Object.assign({}, o, {
         id: 'FEE-' + crypto.randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase(),
         supersedes: o.id,
+        courseId: d.courseId,
         amt: +d.amt,
         tax: +d.tax,
         extra: { name: o.extra.name, amt: +d.reg },
@@ -290,6 +326,10 @@ SUB.fee = (d, f) => {
       );
     }
     const updated = Object.assign({}, o, {
+      prog: d.prog,
+      branch: d.branch,
+      cur: branch.cur,
+      courseId: d.courseId,
       pkg: d.pkg,
       sessions: +d.sessions,
       amt: +d.amt,
@@ -316,6 +356,7 @@ SUB.fee = (d, f) => {
       id: 'FEE-' + crypto.randomUUID().replace(/-/g, '').slice(0, 16).toUpperCase(),
       prog: d.prog,
       branch: d.branch,
+      courseId: d.courseId,
       pkg: d.pkg,
       sessions: +d.sessions,
       cur: b.cur,

@@ -337,8 +337,18 @@ window.topbar = function () {
 };
 var _theme = ACT.theme;
 ACT.theme = function () {
+  // smooth crossfade between light and dark (skipped when the user prefers reduced motion)
+  var root = document.documentElement;
+  if (!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+    root.classList.add('theme-switching');
+    clearTimeout(ACT.theme.t);
+    ACT.theme.t = setTimeout(function () {
+      root.classList.remove('theme-switching');
+    }, 420);
+  }
   _theme();
   LS.set('lof_theme', S.theme);
+  toast((S.theme === 'dark' ? 'Dark' : 'Light') + ' theme on', 'ok');
 };
 var _saveFilter = ACT.saveFilter;
 ACT.saveFilter = function () {

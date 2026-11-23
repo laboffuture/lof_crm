@@ -15,10 +15,13 @@
     "typecheck": "tsc --noEmit",
     "watch:frontend": "node scripts/build-frontend.mjs --watch",
     "check:frontend": "node scripts/check-frontend.mjs",
-    "check:lms": "node scripts/check-lms.mjs"
+    "check:lms": "node scripts/check-lms.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "hono": "^4.9.0"
+    "hono": "^4.9.0",
+    "pdf-lib": "1.17.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261006.1",
@@ -26,6 +29,7 @@
     "esbuild": "^0.28.2",
     "prettier": "^3.3.3",
     "typescript": "^5.6.0",
+    "vitest": "^3.2.0",
     "wrangler": "^4.149.0"
   }
 }

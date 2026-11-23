@@ -60,9 +60,10 @@ export async function confirmEasebuzz(env: Env, txnid: string) {
   if (sandbox && env.APP_ENV === 'production')
     throw new HttpError(409, 'Sandbox payments are restricted to test enrolments outside production');
   const e = await new Repo(env.DB, 'Payment gateway', !!link.is_test).get<any>('enrollment', link.enrollment_id);
-  if (!e || !!e.test !== sandbox || !!link.is_test !== sandbox)
+  const beforeEnrollment = !sandbox && !e && !!link.draft && !!link.opp_id;
+  if ((!e && !beforeEnrollment) || (e && !!e.test !== sandbox) || !!link.is_test !== sandbox)
     throw new HttpError(409, 'Payment enrolment does not match the saved payment mode');
-  if (sandbox && e.uatFlow && !isUatEnrollment(env, e)) throw new HttpError(409, 'This full-flow test can only deliver to the supplied UAT LMS outside production.');
+  if (sandbox && e?.uatFlow && !isUatEnrollment(env, e)) throw new HttpError(409, 'This full-flow test can only deliver to the supplied UAT LMS outside production.');
   const response = await easebuzzRetrieve(env, txnid, !!link.is_test);
   const transaction = easebuzzTransaction(response, txnid);
   if (!transaction) throw new HttpError(502, 'Easebuzz has not confirmed this transaction; retry confirmation later');
@@ -74,7 +75,7 @@ export async function confirmEasebuzz(env: Env, txnid: string) {
     throw new HttpError(409, 'Easebuzz amount or currency does not match the payment link');
   }
   if (transaction.status !== 'success') {
-    return { link, sandbox, status: 'pending', paymentId: undefined as string | undefined };
+    return { link, sandbox, status: 'pending', paymentId: undefined as string | undefined, jobs: [] };
   }
   // Retrieve V2 returns easepayid (verified against the sandbox response).
   const paymentRef = transaction.easepayid || transaction.easebuzz_id;
@@ -91,5 +92,5 @@ export async function confirmEasebuzz(env: Env, txnid: string) {
     txnRef: paymentRef,
     method: methods[transaction.mode] || 'Online',
   });
-  return { link, sandbox, status: 'paid', ...result };
+  return { link, sandbox, status: 'paid', ...result, jobs: result.jobs ?? [] };
 }

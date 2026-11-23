@@ -1,8 +1,67 @@
 /* Collect payment, payment records, receipts, CSV export. */
 /* ====== payments ====== */
+function payOpen(e) {
+  return instStatus(e).filter((r) => r.bal > 0.005);
+}
+
+function payUpto(e) {
+  const un = payOpen(e);
+  if (!un.length) return 0;
+  const s = S.payInst && S.payInst.enr === e.id ? S.payInst.upto : 0;
+  return s >= un[0].n ? s : un[0].n;
+}
+
+function paySum(e, upto) {
+  return r2(
+    payOpen(e)
+      .filter((r) => r.n <= upto)
+      .reduce((a, r) => a + r.bal, 0),
+  );
+}
+
+function payAmtDefault(e) {
+  const un = payOpen(e);
+  return un.length ? paySum(e, payUpto(e)) : r2(e.total - e.paid);
+}
+
+function payInstTable(e) {
+  const rows = instStatus(e),
+    un = rows.filter((r) => r.bal > 0.005);
+  if (rows.length < 2 || !un.length) return schedTable(rows, e.cur);
+  const u = payUpto(e);
+  return `<div class="tbl-wrap"><table class="tbl"><thead><tr><th style="width:56px">Pay</th><th>Instalment</th><th>Due</th><th class="r">Amount</th><th class="r">Paid</th><th class="r">Balance</th><th>Status</th></tr></thead><tbody>${rows
+    .map((r) => {
+      const open = r.bal > 0.005;
+      return `<tr><td>${open ? `<input type="checkbox" data-change="payInst" data-n="${r.n}" aria-label="Pay instalment ${r.n} of ${rows.length}"${r.n <= u ? ' checked' : ''} style="width:18px;height:18px;cursor:pointer">` : ''}</td><td>${r.n} of ${rows.length} <span class="muted xs">(${r.pct}%)</span></td><td>${dayFmt(r.due)}</td><td class="r num">${money(r.amt, e.cur)}</td><td class="r num">${money(r.paid, e.cur)}</td><td class="r num">${money(r.bal, e.cur)}</td><td>${instB(r.st)}</td></tr>`;
+    })
+    .join(
+      '',
+    )}</tbody></table></div><div class="muted xs" style="margin-top:6px">Tick the instalments being paid – the amount below follows. Ticking a later instalment includes the unpaid ones before it.</div>`;
+}
+CHG.payInst = (el) => {
+  const source = enrById(S.payPick);
+  if (!source) return;
+  const e = paymentEnrolment(source);
+  const n = +el.dataset.n,
+    upto = el.checked ? n : n - 1;
+  S.payInst = { enr: e.id, upto };
+  document.querySelectorAll('[data-change="payInst"]').forEach((c) => {
+    c.checked = +c.dataset.n <= upto;
+  });
+  const a = document.querySelector('#payf [name=amt]');
+  if (a) {
+    const v = paySum(e, upto);
+    a.value = v > 0 ? v : '';
+    a.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+};
+
 PAGES.payCollect = () => {
   const es = S.enr
-    .filter((e) => !e.sandboxSource && inScope(e.branch) && e.status !== 'Withdrawn' && (S.paymentSandbox !== false || !e.test))
+    .filter(
+      (e) =>
+        !e.sandboxSource && inScope(e.branch) && e.status !== 'Withdrawn' && (S.paymentSandbox !== false || !e.test),
+    )
     .map(paymentEnrolment)
     .filter((e) => e.total - e.paid > 0.005);
   const pick = es.find((e) => e.id === S.payPick);
@@ -32,7 +91,7 @@ PAGES.payCollect = () => {
       ['Paid so far', money(pick.paid, pick.cur)],
       ['Outstanding', `<b style="color:var(--crit)">${money(out, pick.cur)}</b>`],
       ['Payment term', esc(termName(pick.term))],
-    ])}<div class="sec">Instalments</div>${schedTable(instStatus(pick), pick.cur)}<form id="payf" data-submit="pay" style="margin-top:14px"><input type="hidden" name="id" value="${pick.id}"><div class="fgrid">${F('Amount (' + pick.cur + ')', 'amt', { t: 'number', min: 0.01, step: '0.01', v: out, req: 1 })}${F('Payment method', 'method', { opts: S.cfg.pm, v: 'Card' })}${F('Payment reference', 'ref', { help: 'Card/UPI/bank reference. Required for non-cash.' })}${F('Transaction date', 'date', { t: 'date', v: TODAY, max: TODAY })}${F('Receipt number', 'rc', { v: 'RC-' + pick.branch + '-26-' + String(nr).padStart(4, '0') + ' (auto)', dis: 1 })}${F('Payment status', 'st', { v: 'Recorded (simulated)', dis: 1 })}</div><div class="row" style="margin-top:12px"><button class="btn primary" type="submit">Record payment (simulated)</button></div></form>`;
+    ])}<div class="sec">Instalments</div>${payInstTable(pick)}<form id="payf" data-submit="pay" style="margin-top:14px"><input type="hidden" name="id" value="${pick.id}"><div class="fgrid">${F('Amount (' + pick.cur + ')', 'amt', { t: 'number', min: 0.01, step: '0.01', v: payAmtDefault(pick), req: 1 })}${F('Payment method', 'method', { opts: S.cfg.pm, v: 'Card' })}${F('Payment reference', 'ref', { help: 'Card/UPI/bank reference. Required for non-cash.' })}${F('Transaction date', 'date', { t: 'date', v: TODAY, max: TODAY })}${F('Receipt number', 'rc', { v: 'RC-' + pick.branch + '-26-' + String(nr).padStart(4, '0') + ' (auto)', dis: 1 })}${F('Payment status', 'st', { v: 'Recorded (simulated)', dis: 1 })}</div><div class="row" style="margin-top:12px"><button class="btn primary" type="submit">Record payment (simulated)</button></div></form>`;
   }
   const hist = pick
     ? card(
@@ -46,7 +105,7 @@ PAGES.payCollect = () => {
             { h: 'Method', f: (p) => p.method },
             { h: 'Reference', f: (p) => esc(p.ref) },
           ],
-          paymentRecordsForView().filter((p) => p.stu === pick.stu),
+          paymentRecordsForView().filter((p) => p.stu === pick.stu && p.status !== 'Cancelled'),
           { all: 1 },
         ),
         { np: 1 },
@@ -140,10 +199,12 @@ ACT.genReceipt = (d) => {
   toast('Receipt ' + p.rc + ' generated (simulated). PDF download is not available in the prototype.', 'ok');
 };
 PAGES.payRecords = () => {
-  const ps = paymentRecordsForView().filter((p) => inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at)),
+  const ps = paymentRecordsForView()
+      .filter((p) => p.status !== 'Cancelled' && inScope(p.branch))
+      .sort((a, b) => new Date(b.at) - new Date(a.at)),
     f = S.payF || '';
   const x = ps.filter((p) => !f || p.method === f);
-  const tot = x.reduce((a, p) => a + toAED(p.amt, p.cur), 0);
+  const tot = x.filter((p) => p.status !== 'Cancelled').reduce((a, p) => a + toAED(p.amt, p.cur), 0);
   return (
     ph(
       'Payment Records',
@@ -172,7 +233,13 @@ PAGES.payRecords = () => {
           { h: 'Method', f: (p) => p.method },
           { h: 'Reference', f: (p) => esc(p.ref) },
           { h: 'Receipt', f: (p) => `<a data-act="receipt" data-id="${p.id}" class="mono">${p.rc}</a>` },
-          { h: 'Status', f: (p) => bdg(p.status, 'info') },
+          {
+            h: 'Status',
+            f: (p) =>
+              bdg(p.status, p.status === 'Cancelled' ? 'crit' : 'info') +
+              (p.cancel ? '<div class="muted xs">' + esc(p.cancel.reason) + '</div>' : ''),
+          },
+          { h: '', f: (p) => (window.payCancelBtn ? payCancelBtn(p) : '') },
         ],
         x,
         { ps: 12 },
@@ -181,6 +248,7 @@ PAGES.payRecords = () => {
     )
   );
 };
+
 CHG.payF = (el) => {
   S.payF = el.value;
   render();
@@ -189,7 +257,20 @@ ACT.payCsv = () => {
   const ps = paymentRecordsForView().filter((p) => inScope(p.branch));
   openModal('csv', {
     name: 'payment-records',
-    head: ['Payment', 'Date', 'Student', 'Branch', 'Enrolment', 'Amount', 'Currency', 'Method', 'Reference', 'Receipt'],
+    head: [
+      'Payment',
+      'Date',
+      'Student',
+      'Branch',
+      'Enrolment',
+      'Amount',
+      'Currency',
+      'Method',
+      'Reference',
+      'Receipt',
+      'Status',
+      'Cancellation reason',
+    ],
     rows: ps.map((p) => [
       p.id,
       fDT(p.at),
@@ -201,11 +282,15 @@ ACT.payCsv = () => {
       p.method,
       p.ref,
       p.rc,
+      p.status,
+      p.cancel ? p.cancel.reason : '',
     ]),
   });
 };
 PAGES.receipts = () => {
-  const ps = paymentRecordsForView().filter((p) => inScope(p.branch)).sort((a, b) => new Date(b.at) - new Date(a.at));
+  const ps = paymentRecordsForView()
+    .filter((p) => inScope(p.branch))
+    .sort((a, b) => new Date(b.at) - new Date(a.at));
   return (
     ph('Receipts', 'Receipts issued for recorded payments') +
     card(
@@ -216,7 +301,11 @@ PAGES.receipts = () => {
           { h: 'Receipt no.', f: (p) => `<span class="mono">${p.rc}</span>` },
           { h: 'Date', f: (p) => fDT(p.at) },
           { h: 'Student', f: (p) => esc(stuById(p.stu).first + ' ' + stuById(p.stu).last) },
-          { h: 'Amount', f: (p) => money(p.amt, p.cur), r: 1 },
+          {
+            h: 'Amount',
+            f: (p) => money(p.amt, p.cur) + (p.status === 'Cancelled' ? ' ' + bdg('Cancelled', 'crit') : ''),
+            r: 1,
+          },
           { h: 'Method', f: (p) => p.method },
           { h: '', f: (p) => `<button class="btn sm" data-act="receipt" data-id="${p.id}">Preview</button>` },
         ],

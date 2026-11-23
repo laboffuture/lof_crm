@@ -8,7 +8,8 @@ import { normPhone } from '../lib/indexing';
 import { hmacSha256Hex, safeEqual } from '../lib/crypto';
 import { createLead, addEv, addAudit, notify } from '../domain/core';
 import { allow, clientIp } from '../lib/ratelimit';
-import { logInbound, settleLink } from '../domain/workflows';
+import { logInbound, settleLink, linkExpired, reopenTelrOrder } from '../domain/workflows';
+import { money } from '../domain/core';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
 import { verifyHubSignature, parseWebhook } from '../integrations/whatsapp';
@@ -273,7 +274,7 @@ webhooks.post('/razorpay', async (c) => {
     else {
       const methods: Record<string, string> = { upi: 'UPI', card: 'Card', netbanking: 'Bank transfer', wallet: 'Online' };
       result = await settleLink(c.env, repo, link.id, { amount: pay.amount / 100, txnRef: pay.id, method: methods[pay.method] || 'Online' });
-      if (result.paymentId) await dispatch(c.env, waitOf(c), [{ kind: 'erp_payment', id: result.paymentId }]);
+      await dispatch(c.env, waitOf(c), [...(result.jobs || []), ...(result.paymentId ? [{ kind: 'erp_payment' as const, id: result.paymentId }] : [])]);
     }
   } else if (['payment_link.cancelled', 'payment_link.expired'].includes(body.event)) {
     const pl = body.payload.payment_link.entity;
@@ -281,7 +282,7 @@ webhooks.post('/razorpay', async (c) => {
     result = { updated: body.event };
   }
   await logInbound(c.env, 'razorpay', body.event, true, raw, result, result.paymentId, repo.isTest);
-  return c.json({ ok: true, ...result, payment: undefined });
+  return c.json({ ok: true, ...result, payment: undefined, jobs: undefined });
 });
 
 // ------------------------------------------------------------------ Easebuzz (signed callback + independent transaction check)
@@ -297,7 +298,7 @@ async function easebuzzCallback(c: any, browserReturn: boolean) {
   try {
     const result = await confirmEasebuzz(c.env, fields.txnid);
     await logInbound(c.env, 'easebuzz', 'payment.callback', true, logFields, { status: result.status, paymentId: result.paymentId }, result.link.id, !!result.link.is_test);
-    if (result.paymentId && !result.sandbox) await dispatch(c.env, waitOf(c), [{ kind: 'erp_payment', id: result.paymentId }]);
+    if (!result.sandbox) await dispatch(c.env, waitOf(c), [...result.jobs, ...(result.paymentId ? [{ kind: 'erp_payment' as const, id: result.paymentId }] : [])]);
     if (browserReturn) return c.redirect('/webhooks/pay/return?link=' + encodeURIComponent(result.link.id), 303);
     return c.json({ ok: true, status: result.status });
   } catch (error: any) {
@@ -321,8 +322,8 @@ async function telrVerify(c: any, linkId: string, mockPaid: boolean) {
   const st = await telrCheck({ env: c.env, mode }, link.provider_ref, mockPaid ? { amount: link.amount, currency: link.currency } : undefined);
   if (st.paid) {
     const r = await settleLink(c.env, repo, link.id, { amount: st.amount || link.amount, txnRef: st.txnRef, method: 'Card' });
-    if (r.paymentId) await dispatch(c.env, waitOf(c), [{ kind: 'erp_payment', id: r.paymentId }]);
-    return { link, status: 'paid', ...r };
+    await dispatch(c.env, waitOf(c), [...((r as any).jobs || []), ...(r.paymentId ? [{ kind: 'erp_payment' as const, id: r.paymentId }] : [])]);
+    return { link, status: 'paid', ...r, jobs: undefined };
   }
   if (st.final) await c.env.DB.prepare("UPDATE payment_links SET status=? WHERE id=? AND status='created'").bind(st.status, link.id).run();
   return { link, status: st.status };
@@ -334,6 +335,50 @@ webhooks.post('/telr', async (c) => {
   const r = await telrVerify(c, linkId, isTestReq(c) && p.tran_status === 'A');
   await logInbound(c.env, 'telr', 'transaction.advice', true, p, { status: r.status, paymentId: (r as any).paymentId }, linkId, isTestReq(c));
   return c.text('OK');
+});
+
+/** Small page for parents (same look as the return page). */
+const parentPage = (c: any, title: string, msg: string, status = 200) => {
+  c.header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+  c.header('cache-control', 'no-store');
+  const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[ch]);
+  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><body style="font-family:Arial,sans-serif;display:grid;place-items:center;min-height:90vh;margin:0;background:#f3f5f9;color:#1b2633"><div style="background:#fff;border:1px solid #e1e6ee;border-radius:10px;padding:28px;max-width:420px;text-align:center"><h1 style="font-size:18px;color:#1d3557;margin:0 0 6px">Lab of Future</h1><h2 style="font-size:16px;margin:0 0 10px">${esc(title)}</h2><p style="margin:0;line-height:1.5">${esc(msg)}</p></div></body>`, status);
+};
+
+/**
+ * The payment link parents receive. Paid → "Payment already done"; past its 24 hours, or replaced by the next
+ * reminder → "Payment link expired"; otherwise on to the gateway's payment page.
+ */
+webhooks.get('/pay/l/:id', async (c) => {
+  const id = c.req.param('id');
+  let link = /^(TST-)?PL-[A-Z0-9]{6,20}$/.test(id) ? await c.env.DB.prepare('SELECT * FROM payment_links WHERE id=?').bind(id).first<any>() : null;
+  if (!link) return parentPage(c, 'Payment link not found', 'We could not find this payment link. Please contact the centre.', 404);
+  const repo = new Repo(c.env.DB, 'Payment gateway', !!link.is_test);
+  const paidPage = (l: any) => parentPage(c, 'Payment already done', `A payment of ${money(l.amount, l.currency)} has already been made using this link${l.paid_at ? ` on ${new Date(l.paid_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Dubai' })}` : ''}. Thank you – nothing more is due on this link.`);
+  if (link.status === 'paid') return paidPage(link);
+  if (linkExpired(link)) {
+    await c.env.DB.prepare("UPDATE payment_links SET status='expired' WHERE id=? AND status='created'").bind(link.id).run();
+    link = { ...link, status: 'expired' };
+  }
+  if (link.status !== 'created') {
+    return parentPage(c, 'Payment link expired', link.status === 'replaced'
+      ? 'This payment link is no longer active – a newer link has been sent to you. Please use the latest link, or contact the centre.'
+      : 'This payment link has expired. Please contact the centre for a new link.');
+  }
+  // Telr: confirm the order is still open (it may already be paid, or closed on Telr's side) before sending the parent there
+  if (link.provider === 'telr') {
+    try {
+      const cfg = await repo.setting<any>('cfg');
+      const st = await telrCheck({ env: c.env, mode: modeFor(c.env, cfg, 'telr', !!link.is_test), isTest: !!link.is_test }, link.provider_ref);
+      if (st.paid) {
+        const r: any = await settleLink(c.env, repo, link.id, { amount: st.amount || link.amount, txnRef: st.txnRef, method: 'Card' });
+        await dispatch(c.env, waitOf(c), [...(r.jobs || []), ...(r.paymentId ? [{ kind: 'erp_payment' as const, id: r.paymentId }] : [])]);
+        return paidPage({ ...link, paid_at: nowIso() });
+      }
+      if (st.final) return c.redirect(await reopenTelrOrder(c.env, repo, link), 302);
+    } catch (e) { console.error('pay link check', link.id, e); }
+  }
+  return c.redirect(link.url, 302);
 });
 
 /** Customer lands here after Telr / Razorpay checkout. */

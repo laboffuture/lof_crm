@@ -164,7 +164,7 @@ function createLead(d, by) {
     if (!blocked)
       l.events.push({ at: nowIso(), type: 'msg', text: t.ch + ' "' + t.n + '" queued (simulated)', by: 'System' });
   });
-  if (l.cslr)
+  if (l.cslr && l.src !== 'Manual')
     S.tasks.push({
       id: 'T-' + S.seq.task++,
       lead: id,
@@ -225,6 +225,8 @@ function openTask(l) {
     .filter((t) => t.lead === l.id && t.status === 'Pending')
     .sort((a, b) => new Date(a.due) - new Date(b.due))[0];
 }
+function fuOwner(l) { const u = me(); return u && u.role === 'Counsellor' ? u.id : l.cslr }
+
 function syncNext(l) {
   const t = openTask(l);
   l.nextFU = t ? t.due : null;
@@ -325,7 +327,7 @@ function logCall(l, d) {
       S.tasks.push({
         id: 'T-' + S.seq.task++,
         lead: l.id,
-        cslr: l.cslr,
+        cslr: fuOwner(l),
         due: locIso(d.next),
         type: 'Follow-up call',
         status: 'Pending',

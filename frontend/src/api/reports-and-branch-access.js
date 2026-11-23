@@ -698,7 +698,11 @@ function setupReportExports() {
         var pm = (S && S.cfg && S.cfg.pm) || ['Cash', 'Card', 'Bank Transfer', 'Online'];
         var rangeFilter = (typeof RF === 'function' && RF() ? RF().range : null) || 'all';
         var ps = (S && S.pay ? S.pay : []).filter(function (p) {
-          return p.branch === b && (typeof inRange === 'function' ? inRange(p.at, rangeFilter) : true);
+          return (
+            p.status !== 'Cancelled' &&
+            p.branch === b &&
+            (typeof inRange === 'function' ? inRange(p.at, rangeFilter) : true)
+          );
         });
         ps.forEach(function (p) {
           var k = typeof dayKey === 'function' ? dayKey(p.at) : String(p.at).slice(0, 10);
@@ -1419,7 +1423,17 @@ function setupReportExports() {
         var bName = typeof branchName === 'function' ? branchName(p.branch) : p.branch;
         var amtStr = typeof money === 'function' ? money(p.amt, p.cur) : p.cur + ' ' + p.amt;
         var dateStr = typeof fDT === 'function' ? fDT(p.at) : p.at;
-        return [p.id, dateStr, sName, bName, p.enr, amtStr, p.method, p.ref || '—', p.rc];
+        return [
+          p.id,
+          dateStr,
+          sName,
+          bName,
+          p.enr,
+          amtStr + (p.status === 'Cancelled' ? ' (CANCELLED)' : ''),
+          p.method,
+          p.ref || '—',
+          p.rc,
+        ];
       });
       var isRec = isReceptionStaff();
       var title = isRec ? 'Payment Records – ' + branchName(receptionBranch()) : 'Payment Records';

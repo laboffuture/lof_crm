@@ -47,7 +47,11 @@ const RCs = () =>
   );
 const RP = () =>
   S.pay.filter(
-    (p) => inScope(p.branch) && (!RF().branch || p.branch === RF().branch) && inRange(p.at, RF().range || 'all'),
+    (p) =>
+      p.status !== 'Cancelled' &&
+      inScope(p.branch) &&
+      (!RF().branch || p.branch === RF().branch) &&
+      inRange(p.at, RF().range || 'all'),
   );
 const RE = () =>
   S.enr.filter(
@@ -148,7 +152,7 @@ const REP = {
       .map((b) => {
         const a = S.enr.filter((e) => e.branch === b.id && e.date.startsWith('2026-10')).length,
           r = S.pay
-            .filter((p) => p.branch === b.id && dayKey(p.at).startsWith('2026-10'))
+            .filter((p) => p.status !== 'Cancelled' && p.branch === b.id && dayKey(p.at).startsWith('2026-10'))
             .reduce((x, p) => x + p.amt, 0);
         return [b.name, b.tAdm, a, pct(a, b.tAdm), money(b.tRev, b.cur), money(r, b.cur), pct(r, b.tRev)];
       });

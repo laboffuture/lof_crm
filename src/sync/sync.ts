@@ -20,9 +20,9 @@ import { COLLECTIONS, SETTINGS_KEYS } from '../lib/indexing';
 import { can, ALL_ROLES } from '../lib/auth';
 import type { Env, Job, User } from '../types';
 import { HttpError } from '../types';
-import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify } from '../domain/core';
+import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify, gstProblem } from '../domain/core';
 import { hashPassword } from '../lib/crypto';
-import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, lmsProblem } from '../domain/terms';
+import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, recTargetsProblem, lmsProblem } from '../domain/terms';
 import { checkEmailTemplates } from '../domain/email-templates';
 import { checkMailSettings } from '../domain/mail';
 import { checkMailAuto } from '../domain/mail-send';
@@ -70,7 +70,8 @@ const HISTORY_KEYS = ['events', 'assign', 'hist', 'comm', 'testimonials', 'docs'
 const QUIET_KEYS = ['last', 'nextFU', 'events', 'assign', 'hist', 'comm'];
 const WRITE_ORDER = ['branch', 'program', 'fee', 'discount', 'staff', 'lead', 'opp', 'approval', 'student', 'enrollment', 'payment', 'moodle_sync', 'refund', 'task', 'call', 'comm', 'notification', 'audit'];
 
-export async function applySync(env: Env, repo: Repo, user: User, perms: any, changes: Change[], settings: SettingChange[] = []) {
+/** opts.dryRun: run every check and return the records that would be written, without saving anything. */
+export async function applySync(env: Env, repo: Repo, user: User, perms: any, changes: Change[], settings: SettingChange[] = [], opts: { dryRun?: boolean } = {}) {
   const P = (res: string, cap: string) => can(perms, user, res, cap);
   const inScope = (b: unknown) => typeof b === 'string' && user.scope.includes(b);
   const rejected: Rejection[] = [];
@@ -244,6 +245,14 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           } else if (String(o.email).toLowerCase() !== email) staffAuth.push({ id: d.id, email });
         }
         if (c.coll === 'branches' && !/^[A-Z0-9]{2,5}$/.test(d.id)) { reject(c, 'Branch short ID must be 2–5 capital letters or digits'); break; }
+        if (c.coll === 'branches') {
+          // GST details for the tax invoice (India): GSTIN, PAN, CGST %, SGST %
+          const gp = gstProblem(d);
+          if (gp) { reject(c, `${d.name || d.id}: ${gp}`); break; }
+          d.gstin = String(d.gstin ?? '').trim().toUpperCase();
+          d.pan = String(d.pan ?? '').trim().toUpperCase();
+          for (const k of ['cgst', 'sgst']) d[k] = d[k] === undefined || d[k] === null || d[k] === '' ? null : r2(Number(d[k]));
+        }
         if (c.coll === 'staff' && !!d.archived !== !!o?.archived) {
           // Archive (= "Delete" of a user who has records) and restore
           if (!o) { reject(c, 'A new user cannot be archived'); break; }
@@ -280,6 +289,10 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           }
           if (!(num(d.amt) > 0) || !(num(d.tax) >= 0) || !(num(d.extra?.amt) >= 0)) { reject(c, 'Fee, tax and registration must be valid numbers'); break; }
           if (!/^\d{4}-\d{2}-\d{2}$/.test(d.from || '') || (d.to && (!/^\d{4}-\d{2}-\d{2}$/.test(d.to) || d.to < d.from))) { reject(c, 'Fee end date must be on or after its start date'); break; }
+          // Course ID: required on new fees; older fees may still be empty until someone fills it in
+          d.courseId = String(d.courseId ?? '').trim();
+          if (d.courseId && !/^[^<>"'`\\\u0000-\u001f\u007f]{1,80}$/.test(d.courseId)) { reject(c, 'Course ID: up to 80 characters, without < > " \' ` or \\'); break; }
+          if (!o && !d.supersedes && !d.courseId) { reject(c, 'Enter the course ID for the new fee'); break; }
           if (o && (o.amt !== d.amt || o.tax !== d.tax || o.extra?.amt !== d.extra?.amt || o.prog !== d.prog || o.branch !== d.branch) && o.from <= today) {
             const used = await repo.count('enrollment', "json_extract(data,'$.feeId')=?", [o.id]);
             if (used) { reject(c, 'This fee is used by enrolments – create a new version instead of editing the amount'); break; }
@@ -469,6 +482,8 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             if (!onlyDone) { reject(c, `${user.role} cannot manage follow-ups`); break; }
           }
           if (d.cslr && !isCounsellor(d.cslr)) d.cslr = lead.cslr;
+          // A counsellor's new follow-up goes on their own calendar (or the lead owner's), never on a third colleague's
+          if (!o && user.role === 'Counsellor' && d.cslr !== user.id && d.cslr !== lead.cslr) d.cslr = user.id;
           if (!o && cfg.integ?.cal?.on && d.status === 'Pending' && d.type !== 'First call') jobs.push({ kind: 'calendar_event', taskId: d.id });
         }
         writes.push({ type, doc: d, coll: c.coll });
@@ -496,6 +511,17 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           if (keys.some((k) => ['id', 'reg', 'branch', 'fam'].includes(k))) { reject(c, 'Student ID, branch, family and registration date are permanent'); break; }
           d.moodle = o.moodle; // owned by the Moodle sync
           if (!P('students', 'E') && !(P('enrollments', 'C') && subset(keys, ['status', 'comm', 'moodle']))) { reject(c, `${user.role} cannot edit student profiles`); break; }
+          // Edited personal details and parents / guardians: the same checks as at registration
+          const okEmail = (v: unknown) => /^\S+@\S+\.\S+$/.test(String(v ?? '').trim());
+          if ((keys.includes('first') || keys.includes('last')) && (!String(d.first ?? '').trim() || !String(d.last ?? '').trim())) { reject(c, 'First and last name are required'); break; }
+          if (keys.includes('dob') && !(/^\d{4}-\d{2}-\d{2}$/.test(String(d.dob)) && String(d.dob) <= today)) { reject(c, 'Date of birth is not valid'); break; }
+          if (keys.includes('email') && d.email && !okEmail(d.email)) { reject(c, 'Student e-mail is not valid'); break; }
+          if (keys.includes('mobile') && d.mobile && !/^\+?[\d\s()-]{7,20}$/.test(String(d.mobile))) { reject(c, 'Student mobile is not valid'); break; }
+          if (keys.includes('email') || keys.includes('mobile')) { d.email = str(d.email, 160); d.mobile = str(d.mobile, 20); }
+          if (keys.includes('parents')) {
+            if (!Array.isArray(d.parents) || !d.parents.length || !okEmail(d.parents[0]?.email)) { reject(c, 'The main parent / guardian needs a valid e-mail'); break; }
+            if (d.parents.some((p: any) => !String(p?.name ?? '').trim() || (p?.email && !okEmail(p.email)))) { reject(c, 'Every parent / guardian needs a name and a valid e-mail'); break; }
+          }
         }
         if (!o || keys.includes('email')) {
           d.email = str(d.email, 160).trim();
@@ -563,13 +589,13 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             } else { reject(c, 'Unknown discount kind'); break; }
           }
           const newStu = isNew('students', d.stu);
-          const calc = calcFee(fee, disc, newStu);
+          const calc = calcFee(fee, disc, newStu, branches.find((b) => b.id === d.branch));
           if (Math.abs(calc.total - num(d.total)) > 0.01) { reject(c, `Fee mismatch: server total ${money(calc.total, fee.cur)} vs ${money(d.total, d.cur)}`); break; }
           const terms = Array.isArray(cfg.payTerms) ? cfg.payTerms : [];
           const term = terms.find((t: any) => t.id === d.term && t.active) || (d.term ? null : terms.find((t: any) => t.id === cfg.payTermDefault) || null);
           if (d.term && !term) { reject(c, 'Payment term is not active'); break; }
           const linkedOpp = d.opp ? await getDoc('opps', 'opp', d.opp) : null;
-          Object.assign(d, { cur: fee.cur, fee: calc.base, reg: calc.extra, disc: calc.disc, discInfo: disc, tax: calc.tax, total: calc.total, taxPct: fee.tax, paid: 0, payStatus: 'Unpaid', feeId: fee.id, pkg: fee.pkg, sessions: fee.sessions, credits: program.credits, course, newStu, status: 'Active',
+          Object.assign(d, { cur: fee.cur, fee: calc.base, reg: calc.extra, disc: calc.disc, discInfo: disc, tax: calc.tax, total: calc.total, taxPct: calc.taxPct, paid: 0, payStatus: 'Unpaid', feeId: fee.id, pkg: fee.pkg, sessions: fee.sessions, credits: program.credits, course, newStu, status: 'Active',
             term: term?.id || null, sched: buildSched(term, calc.total, d.date), cslr: linkedOpp?.cslr || null, lmsContract: LMS_CONTRACT,
             lmsValidUntil: fee.validUntil || undefined });
           if (fee.id === UAT_FEE_ID || fee.uatFeeStructure === 'AW-DOC-UAT-v1') {
@@ -611,7 +637,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         if (!e || !inScope(e.branch) || e.status === 'Withdrawn') { reject(c, 'Enrolment not found, withdrawn or outside your branch access'); break; }
         if (e.sandboxSource) { reject(c, 'Use the Easebuzz sandbox to pay this test enrolment'); break; }
         const amt = r2(num(d.amt));
-        const dbPaid = isNew('enr', d.enr) ? 0 : (await repo.many<any>('payment', 'ref1=?', [d.enr])).reduce((a, p) => a + p.amt, 0);
+        const dbPaid = isNew('enr', d.enr) ? 0 : (await repo.many<any>('payment', 'ref1=?', [d.enr])).filter((p) => p.status !== 'Cancelled').reduce((a, p) => a + p.amt, 0);
         const batchPaid = receiptFor.filter((p) => p.enr === d.enr).reduce((a, p) => a + p.amt, 0);
         const outstanding = r2((isNew('enr', d.enr) ? effDoc('enr', d.enr)?.total : e.total) - dbPaid - batchPaid);
         if (!(amt > 0) || amt > outstanding + 0.005) { reject(c, `Amount must be between 0 and the outstanding ${money(outstanding, e.cur)}`); break; }
@@ -784,6 +810,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         || (doc.refund !== undefined && refundProblem(doc.refund))
         || (doc.refund && !ALL_ROLES.includes(doc.refund.approver) ? 'Refund approver must be a role' : '')
         || (doc.targets !== undefined && targetsProblem(doc.targets, counsellors))
+        || (doc.recTargets !== undefined && recTargetsProblem(doc.recTargets, new Set(staffList.filter((x) => x.role === 'Reception').map((x) => x.id as string))))
         || (doc.lms !== undefined && lmsProblem(doc.lms));
       if (problem) { rejected.push({ coll: 'settings', id: 'cfg', reason: problem }); continue; }
       if (doc.emailTpls !== undefined) {
@@ -806,6 +833,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   }
 
   if (rejected.length) return { ok: false as const, rejected };
+  if (opts.dryRun) return { ok: true as const, dryRun: true as const, docs: writes.map((w) => ({ coll: w.coll, doc: w.doc })), notices: [], jobs: [] as Job[], settings: [] as string[] };
 
   const feeWrites = writes.filter((w) => w.coll === 'fees' && !w.doc.__delete);
   if (feeWrites.length && !writes.some((w) => w.coll === 'audit')) {

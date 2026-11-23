@@ -315,7 +315,9 @@ MODALS.etPreview = function (m) {
       '</b></div>' +
       '<div class="sm" style="padding:14px;white-space:pre-wrap;line-height:1.55">' +
       esc(etSample(t.body || '')) +
-      '</div></div>',
+      '</div>' +
+      etReceiptExtras(t) +
+      '</div>',
   };
 };
 
@@ -640,17 +642,57 @@ CFG.mailIn = function () {
   var progs = (S.programs || []).map(function (p) {
     return [p.id, p.name];
   });
+  // Mailbox connection: the mailbox signed in under Email Outgoing (same username and app password), read over IMAP
+  var inc = (ready && MAIL.status.incoming) || {};
+  var incState = !inc.on
+    ? bdg('Off – switch on “Import incoming e-mail” below', 'warn')
+    : inc.mode !== 'live'
+      ? bdg('Mock – the mailbox is not read on this server', 'warn')
+      : inc.lastError
+        ? bdg('Cannot read the mailbox', 'crit')
+        : inc.connected
+          ? bdg('Connected – checked every 5 minutes', 'ok')
+          : bdg('Not checked yet – click Check now', 'info');
+  var connBody = !ready
+    ? emptyBox(MAIL.error ? 'Could not load' : 'Loading…', MAIL.error || '')
+    : mailKV(
+        [
+          [
+            'Mailbox',
+            inc.mailbox
+              ? '<span class="mono sm">' +
+                esc(inc.mailbox) +
+                '</span><div class="muted xs">The mailbox signed in under Email Outgoing (same app password)</div>'
+              : '<span class="sm" style="color:var(--crit)">Set up the SMTP server under Email Outgoing first</span>',
+          ],
+          ['Server', inc.host ? '<span class="mono sm">' + esc(inc.host) + ':993</span> · IMAP over SSL' : '—'],
+          ['Status', incState],
+          ['Last check', inc.lastCheck ? fDT(inc.lastCheck) : '—'],
+          [
+            'Imported',
+            inc.since ? inc.imported + ' e-mail' + (inc.imported === 1 ? '' : 's') + ' since ' + fDT(inc.since) : '—',
+          ],
+        ].concat(
+          inc.lastError
+            ? [['Last error', '<span class="sm" style="color:var(--crit)">' + esc(inc.lastError) + '</span>']]
+            : [],
+        ),
+      );
   var conn =
-    '<div class="banner">' +
-    ic('mail') +
-    '<span>' +
-    (ready && MAIL.status.incoming.connected
-      ? 'Mailbox connected – new e-mails are imported every 5 minutes.'
-      : '<b>Mailbox not connected yet.</b> Automatic import starts when the Gmail connection is set up. You can set the rules now and test them with the simulation below.') +
-    '</span></div>';
+    card('Mailbox connection', connBody, {
+      act:
+        edit && inc.on && inc.mailbox
+          ? '<button class="btn sm" data-act="mailInCheck">' + ic('mail') + ' Check now</button>'
+          : '',
+    }) + '<div style="height:14px"></div>';
   var form = cfgForm(
     'mailIn',
-    swRow('Import incoming e-mail', 'on', !!r.on, 'Read new e-mails from the mailbox and file them in the CRM') +
+    swRow(
+      'Import incoming e-mail',
+      'on',
+      !!r.on,
+      'Read new e-mails from the mailbox every 5 minutes and file them in the CRM',
+    ) +
       swRow(
         'Notify staff when an e-mail arrives',
         'notify',
@@ -658,7 +700,9 @@ CFG.mailIn = function () {
         'The counsellor (leads) or the branch team (students) gets a CRM notification',
       ) +
       '<div class="fgrid" style="margin-top:12px">' +
-      F('Mailbox', 'mailbox', { v: r.mailbox, ph: 'ranjith@laboffuture.com' }) +
+      '<input type="hidden" name="mailbox" value="' +
+      esc(inc.mailbox || r.mailbox || '') +
+      '">' +
       F('E-mail from an unknown sender', 'unknown', {
         v: r.unknown || 'review',
         opts: [
@@ -684,12 +728,6 @@ CFG.mailIn = function () {
       }) +
       '</div>',
   );
-  var how =
-    '<ol class="sm" style="margin:0;padding-left:18px;line-height:1.7">' +
-    '<li>Sender is a <b>parent on a student record</b> → filed on that student (on each sibling) and the branch team is notified.</li>' +
-    '<li>Sender is a <b>lead’s e-mail</b> → filed on the newest open lead and its counsellor is notified.</li>' +
-    '<li><b>Unknown sender</b> → held for review, a new lead is created, or ignored (rule above).</li>' +
-    '<li>Blocked senders, auto-replies and bounce messages are skipped. The same e-mail is never filed twice.</li></ol>';
   var sim =
     '<form data-submit="mailSim" novalidate><div class="fgrid">' +
     F('From (e-mail)', 'from', { req: 1, ph: 'parent@example.com', id: 'ms_from' }) +
@@ -781,10 +819,7 @@ CFG.mailIn = function () {
             ['Unknown sender', esc(r.unknown || 'review')],
           ]),
     ) +
-    '<div style="height:14px"></div><div class="grid g2" style="align-items:start">' +
-    card('How e-mails are filed', how) +
-    (edit ? card('Simulate an incoming e-mail', sim) : '') +
-    '</div>' +
+    (edit ? '<div style="height:14px"></div>' + card('Simulate an incoming e-mail', sim) : '') +
     '<div style="height:14px"></div>' +
     card('Recent incoming e-mails', inbox, {
       np: rows.length ? 1 : 0,
@@ -1540,7 +1575,7 @@ MODALS.mailSend = function () {
       (r.recs.length === 1
         ? esc(recName(r.recs[0])) +
           ' <span class="muted">· ' +
-          esc(msAddress(r.recs[0].type, r.recs[0].rec) || 'no e-mail address') +
+          esc((MS.reply && MS.replyTo) || msAddress(r.recs[0].type, r.recs[0].rec) || 'no e-mail address') +
           '</span>'
         : r.recs.length + ' selected ' + (r.recs[0] && r.recs[0].type === 'lead' ? 'leads' : 'records')) +
       '</div></div>';
@@ -1624,7 +1659,7 @@ MODALS.mailSend = function () {
     })
     .join('');
   return {
-    title: MS.fixed && r.recs.length === 1 ? 'Send e-mail' : 'Bulk e-mail',
+    title: MS.reply ? 'Reply' : MS.fixed && r.recs.length === 1 ? 'Send e-mail' : 'Bulk e-mail',
     size: 'lg',
     form: 'mailSend',
     foot:
@@ -1686,6 +1721,7 @@ SUB.mailSend = function (d, f) {
         template: t ? t.n : 'Composed e-mail',
         subject: d.subject,
         body: d.body,
+        reply: MS.reply || undefined,
       });
     })
     .then(function (res) {
@@ -1798,7 +1834,7 @@ var MA_KINDS = [
   [
     'receipt',
     'Receipt confirmations',
-    'Confirms each payment with the receipt number, amount and balance; the tax invoice follows from accounts.',
+    'Confirms each payment with the receipt in the e-mail and the invoice and receipt attached as PDFs (Lab of Future layout).',
   ],
 ];
 function maLoad() {
@@ -2017,3 +2053,55 @@ ACT.mailAutoRun = function () {
       toast(e.message, 'err');
     });
 };
+
+function etReceiptExtras(t) {
+  var a = S.cfg.mailAuto || {}, tpl = (a.receipt && a.receipt.tpl) || 'Fee receipt';
+  if (t.n !== tpl) return '';
+  var rc = etSample('{receipt_no}'), inv = 'INV-26-0042';
+  var chip = function (n) { return '<span class="badge" style="display:inline-flex;gap:6px;align-items:center;padding:5px 10px">' + ic('download') + esc(n) + '</span>'; };
+  return '<div style="padding:12px 14px;border-top:1px solid var(--bd);background:var(--bg2,rgba(127,127,127,.06))">' +
+    '<div class="sm" style="margin-bottom:8px"><b>Sent with this message</b> <span class="muted xs">– automatically, after each payment (Email Automation → Receipt confirmations' + (a.receipt && a.receipt.on ? ', on' : ', currently off') + ')</span></div>' +
+    '<div class="xs muted" style="margin-bottom:8px">Below the message: the receipt in the Lab of Future layout – amount paid, items, VAT, totals and payment history.</div>' +
+    '<div class="row" style="gap:8px;flex-wrap:wrap">' + chip('Invoice-' + inv + '.pdf') + chip('Receipt-' + rc + '.pdf') + '</div></div>';
+}
+
+ACT.mailInCheck = function () {
+  toast('Checking the mailbox…');
+  req('POST', '/mail/inbound/check', {})
+    .then(function (r) {
+      toast(r.message, r.status === 'error' ? 'err' : (r.status === 'ok' || r.status === 'started') ? 'ok' : 'warn');
+      MAIL.inbox = null; MAIL.status = null; mailLoad();
+      return r.imported ? reload(false) : null;
+    })
+    .catch(function (e) { toast(e.message, 'err'); });
+};
+
+window.mailReplyBtn = function (type, id, c, i) {
+  if (!c || !c.inbound || c.ch !== 'Email' || !canMail(MAIL_RES[type])) return '';
+  return '<div style="margin-top:6px"><button class="btn sm" type="button" data-act="mailReply" data-t="' + type + '" data-id="' + esc(id) + '"' +
+    (type === 'student' ? ' data-i="' + i + '"' : ' data-c="' + esc(c.id) + '"') + '>' + ic('mail') + ' Reply</button>' +
+    (c.repliedAt ? ' <span class="muted xs">Replied ' + fDT(c.repliedAt) + (c.repliedBy ? ' by ' + esc(c.repliedBy) : '') + '</span>' : '') + '</div>';
+};
+ACT.mailReply = function (d) {
+  var c = null;
+  if (d.t === 'student') { var s = (S.students || []).find(function (x) { return x.id === d.id; }); c = s && (s.comm || [])[+d.i]; }
+  else c = (S.comms || []).find(function (x) { return x.id === d.c; });
+  if (!c) { toast('That e-mail was not found – refresh the page', 'err'); return; }
+  // braces would be read as placeholders, so the parent's own text keeps them as ( )
+  var safe = function (x) { return String(x || '').replace(/[{}]/g, function (m) { return m === '{' ? '(' : ')'; }); };
+  var subj = safe(c.subject || c.subj || '');
+  var quoted = safe(c.text).split('\n').map(function (l) { return '> ' + l; }).join('\n');
+  msOpen({
+    fixed: [{ type: d.t, id: d.id }], subject: /^re:/i.test(subj) ? subj : 'Re: ' + subj,
+    body: '\n\n\nOn ' + fDT(c.at) + ', ' + safe(c.from || '') + ' wrote:\n' + quoted,
+    reply: { type: d.t, id: d.id, comm: d.t === 'lead' ? d.c : undefined, index: d.t === 'student' ? +d.i : undefined }, replyTo: c.from || '',
+  });
+};
+CHG.msAud = function (el) { MS[el.name] = el.value; if (el.name === 'src') { MS.status = MS_SRC[el.value].def; MS.prog = ''; } render(); };
+CHG.msTpl = function (el) {
+  var t = (S.cfg.emailTpls || []).find(function (x) { return x.id === el.value; });
+  MS.tpl = el.value; if (t) { MS.subject = t.subject; MS.body = t.body; }
+  render();
+};
+INP.msSubj = function (el) { MS.subject = el.value; };
+INP.msBody = function (el) { MS.body = el.value; };

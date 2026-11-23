@@ -19,7 +19,10 @@ function wizReconcileStudent() {
   return false;
 }
 // A shared parent contact identifies a family, not necessarily the same child.
-const wizStudentEmail = (value) => String(value || '').trim().toLowerCase();
+const wizStudentEmail = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase();
 function wizStudentMatches(d) {
   const text = (value) =>
     String(value || '')
@@ -30,8 +33,8 @@ function wizStudentMatches(d) {
     email = wizStudentEmail(d.semail);
   return S.students.filter(
     (s) =>
-      ((email && wizStudentEmail(s.email) === email) ||
-        (d.first && d.last && d.dob && text(s.first + ' ' + s.last) === name && s.dob === d.dob)),
+      (email && wizStudentEmail(s.email) === email) ||
+      (d.first && d.last && d.dob && text(s.first + ' ' + s.last) === name && s.dob === d.dob),
   );
 }
 ACT.enrollOpp = (d) => {
@@ -41,6 +44,7 @@ ACT.enrollOpp = (d) => {
   const matches = wizStudentMatches({ first: nm[0], last: nm.slice(1).join(' '), dob: l.dob });
   const m = (o.stu && stuById(o.stu)) || (matches.length === 1 ? matches[0] : null);
   S.wiz = {
+    viaLink: !!d.viaLink,
     mode: m ? 'existing' : 'new',
     step: 1,
     opp: o.id,
@@ -188,7 +192,15 @@ PAGES.wizard = (rt) => {
     ph(w.mode === 'new' ? 'New Student Registration' : 'Existing Student Enrolment', flow) +
     `<div class="seg" style="margin-bottom:14px"><a class="${w.mode === 'new' ? 'on' : ''}" data-act="wizMode" data-m="new" tabindex="0">New student</a><a class="${w.mode === 'existing' ? 'on' : ''}" data-act="wizMode" data-m="existing" tabindex="0">Existing student</a></div>` +
     steps +
-    card('', status + body + '<div id="wiz-order-status" class="muted sm" role="status">' + (w.pendingSave ? 'Saving enrolment…' : w.checking ? 'Checking the order…' : '') + '</div>' + nav)
+    card(
+      '',
+      status +
+        body +
+        '<div id="wiz-order-status" class="muted sm" role="status">' +
+        (w.pendingSave ? 'Saving enrolment…' : w.checking ? 'Checking the order…' : '') +
+        '</div>' +
+        nav,
+    )
   );
 };
 Object.assign(ACT, {
@@ -357,11 +369,19 @@ SUB.wizStep2 = async () => {
       branch: c.br,
       prog: c.prog,
       pkg: c.f.pkg,
+      opportunityId: w.viaLink ? w.opp : undefined,
       studentId: w.mode === 'existing' ? w.stu : undefined,
-      student: w.mode === 'new'
-        ? { first: w.d.first, last: w.d.last, email: w.d.semail, mobile: w.d.smob, dob: w.d.dob,
-            parents: [{ name: w.d.pname, email: w.d.pemail, mobile: w.d.pmob }] }
-        : undefined,
+      student:
+        w.mode === 'new'
+          ? {
+              first: w.d.first,
+              last: w.d.last,
+              email: w.d.semail,
+              mobile: w.d.smob,
+              dob: w.d.dob,
+              parents: [{ name: w.d.pname, email: w.d.pemail, mobile: w.d.pmob }],
+            }
+          : undefined,
     });
   } catch (error) {
     if (S.wiz !== w || w.checking !== check || S.route.page !== 'wizard' || error.message === 'Signed out') return;
@@ -382,7 +402,7 @@ SUB.wizStep2 = async () => {
   w.step = 3;
   render();
 };
-SUB.wizFinish = (d, f) => {
+SUB.wizFinish = (d, f, { draft = false } = {}) => {
   const w = S.wiz;
   if (!w || w.pendingSave) return;
   if (!wizReconcileStudent()) {
@@ -401,8 +421,10 @@ SUB.wizFinish = (d, f) => {
     setErr(f, 'ref', 'Reference is required for ' + d.method);
     return;
   }
-  w.paymentDraft = d;
-  delete w.orderProblem;
+  if (!draft) {
+    w.paymentDraft = d;
+    delete w.orderProblem;
+  }
   const dd = w.d,
     isNew = w.mode === 'new';
   let s;
@@ -462,7 +484,7 @@ SUB.wizFinish = (d, f) => {
     discInfo: w.disc,
     tax: c.tax,
     total: c.total,
-    taxPct: fee.tax,
+    taxPct: c.taxPct,
     paid: 0,
     payStatus: 'Unpaid',
     opp: w.opp,
@@ -549,6 +571,7 @@ SUB.wizFinish = (d, f) => {
     e.id,
     (isNew ? 'New student ' + s.id + ' registered; ' : 'Existing student ' + s.id + ' reused; ') + prog.name,
   );
+  if (draft) return;
   w.pendingSave = { enrollmentId: e.id, studentId: s.id, isNew };
   if (!window.LOF_API) {
     wizSaved(w);

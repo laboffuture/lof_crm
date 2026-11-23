@@ -11,7 +11,16 @@ import { decryptSecret } from '../lib/totp';
 
 export type SmtpSecurity = 'ssl' | 'starttls';
 export interface SmtpServer { host: string; port: number; security: SmtpSecurity; user: string; pass: string }
-export interface SmtpMessage { from: string; fromName?: string; to: string; replyTo?: string; bcc?: string; subject: string; text: string; html?: string }
+export interface SmtpMessage {
+  from: string; fromName?: string; to: string; replyTo?: string; bcc?: string; subject: string; text: string; html?: string;
+  /** Replies: the received e-mail's Message-ID and thread, so mail programs keep the conversation together */
+  inReplyTo?: string; references?: string;
+  /** Files sent with the e-mail (e.g. invoice and receipt PDFs) */
+  attachments?: MailAttachment[];
+}
+export interface MailAttachment { filename: string; contentType: string; content: Uint8Array }
+/** Only well-formed "<id@host>" tokens reach a header (they come from received e-mails). */
+const msgIds = (v?: string) => (String(v || '').match(/<[^<>\s"]{3,250}>/g) || []).slice(-20).join(' ');
 export interface SmtpSocket {
   readable: ReadableStream<Uint8Array>;
   writable: WritableStream<Uint8Array>;
@@ -57,12 +66,25 @@ export function buildMime(m: SmtpMessage, messageId: string, date = new Date()):
     `Subject: ${encodeHeader(m.subject)}`,
     `Date: ${date.toUTCString().replace('GMT', '+0000')}`,
     `Message-ID: <${messageId}>`,
+    ...(msgIds(m.inReplyTo) ? [`In-Reply-To: ${msgIds(m.inReplyTo).split(' ')[0]}`] : []),
+    ...(msgIds(m.references) ? [`References: ${msgIds(m.references)}`] : []),
     'MIME-Version: 1.0',
-    `Content-Type: multipart/alternative; boundary="${boundary}"`,
   ];
   const part = (type: string, body: string) =>
     `--${boundary}\r\nContent-Type: ${type}; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${wrap76(b64utf8(body))}`;
-  return head.join('\r\n') + '\r\n\r\n' + part('text/plain', m.text.replace(/\r?\n/g, '\r\n')) + (m.html ? part('text/html', m.html) : '') + `--${boundary}--\r\n`;
+  const alternative = part('text/plain', m.text.replace(/\r?\n/g, '\r\n')) + (m.html ? part('text/html', m.html) : '') + `--${boundary}--\r\n`;
+  const files = (m.attachments || []).filter((a) => a && a.content?.length);
+  if (!files.length) return [...head, `Content-Type: multipart/alternative; boundary="${boundary}"`].join('\r\n') + '\r\n\r\n' + alternative;
+  // With attachments: multipart/mixed = [the text/HTML alternative, each file]
+  const outer = 'lofx_' + crypto.randomUUID().replace(/-/g, '');
+  const fileName = (n: string) => String(n).replace(/[\r\n"\\/]+/g, '_').slice(0, 120) || 'attachment';
+  const fileType = (t: string) => (/^[\w.+-]+\/[\w.+-]+$/.test(t) ? t : 'application/octet-stream');
+  const attached = files.map((a) => {
+    const n = fileName(a.filename), name = ascii(n) ? `"${n}"` : `"${encodeHeader(n)}"`;
+    return `--${outer}\r\nContent-Type: ${fileType(a.contentType)}; name=${name}\r\nContent-Disposition: attachment; filename=${name}\r\nContent-Transfer-Encoding: base64\r\n\r\n${wrap76(b64(a.content))}`;
+  }).join('');
+  return [...head, `Content-Type: multipart/mixed; boundary="${outer}"`].join('\r\n') + '\r\n\r\n' +
+    `--${outer}\r\nContent-Type: multipart/alternative; boundary="${boundary}"\r\n\r\n${alternative}` + attached + `--${outer}--\r\n`;
 }
 
 class SmtpError extends Error {}

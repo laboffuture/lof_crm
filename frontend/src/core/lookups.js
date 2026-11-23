@@ -78,8 +78,9 @@ function calcFee(fee, disc, isNew) {
     d = disc.type === '%' ? r2((base * disc.value) / 100) : Math.min(Number(disc.value), base);
   }
   const net = base - d + extra,
-    tax = r2((net * fee.tax) / 100);
-  return { base, extra, disc: d, net, tax, total: r2(net + tax) };
+    taxPct = window.feeTaxPct ? window.feeTaxPct(fee) : fee.tax,
+    tax = r2((net * taxPct) / 100);
+  return { base, extra, disc: d, net, taxPct, tax, total: r2(net + tax) };
 }
 function addPay(st, e, amt, method, ref, date, by) {
   const k = e.branch;

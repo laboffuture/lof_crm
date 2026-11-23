@@ -1,5 +1,12 @@
 {
-  "styles": ["reset.css", "tokens.css", "base.css", "layout.css", "components.css", "responsive.css"],
+  "styles": [
+    "reset.css",
+    "tokens.css",
+    "base.css",
+    "layout.css",
+    "components.css",
+    "responsive.css"
+  ],
   "app": [
     "config.js",
     "core/helpers.js",
@@ -58,6 +65,14 @@
     "api/qa-fixes.js",
     "api/database.js",
     "api/email-and-administration.js",
+    "api/live/opportunity-payments.js",
+    "api/live/branch-tax.js",
+    "api/live/student-edit.js",
+    "api/live/payment-tracking.js",
+    "api/live/conversation-log.js",
+    "api/live/lead-import.js",
+    "api/live/payment-cancellation.js",
+    "api/live/activity-feedback.js",
     "api/start.js"
   ]
 }

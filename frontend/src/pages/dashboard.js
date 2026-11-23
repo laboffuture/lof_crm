@@ -287,7 +287,7 @@ function pageDashboard() {
           v:
             Math.round(
               S.pay
-                .filter((p) => p.branch === b[0] && dayKey(p.at).startsWith('2026-10'))
+                .filter((p) => p.status !== 'Cancelled' && p.branch === b[0] && dayKey(p.at).startsWith('2026-10'))
                 .reduce((a, p) => a + toAED(p.amt, p.cur), 0) / 100,
             ) / 10,
           c: 'var(--c2)',

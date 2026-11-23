@@ -2,5 +2,5 @@
 DELETE FROM staff_auth WHERE email='ranjith@laboffuture.com' AND staff_id<>'S16';
 INSERT INTO docs (type,id,branch,status,owner,ref1,ref2,at,data,updated_by) VALUES ('staff','S16','KRM','Active','System Administrator','ranjith@laboffuture.com',NULL,NULL,'{"id":"S16","name":"Ranjith","emp":"LOF-E016","role":"System Administrator","branch":"KRM","dept":"Management","email":"ranjith@laboffuture.com","mobile":"","programs":[],"status":"Active","access":"Enabled","avail":"Available","max":0,"leave":null,"backup":""}','create-admin')
   ON CONFLICT(type,id) DO UPDATE SET branch=excluded.branch,status=excluded.status,owner=excluded.owner,ref1=excluded.ref1,data=excluded.data,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),updated_by=excluded.updated_by;
-INSERT INTO staff_auth (staff_id,email,password_hash,must_change) VALUES ('S16','ranjith@laboffuture.com','pbkdf2_sha256$100000$Mod9RUk0+dSW2vQoTLamtg==$rFyElFYf0NxohZGC3BpO9XW1ZPyPnAZa+SMo60XvWmA=',1)
+INSERT INTO staff_auth (staff_id,email,password_hash,must_change) VALUES ('S16','ranjith@laboffuture.com','pbkdf2_sha256$100000$3MPUNJTYtqz1D5zYxLlhGQ==$R9LFTZkzoDkebe5Yph+IkiFWrdqtx1qcDJSYOPwb1YQ=',1)
   ON CONFLICT(staff_id) DO UPDATE SET email=excluded.email,password_hash=excluded.password_hash,must_change=excluded.must_change,failed_count=0,locked_until=NULL;

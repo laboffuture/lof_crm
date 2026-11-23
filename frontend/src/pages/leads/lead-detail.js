@@ -93,6 +93,7 @@ function leadTab(l, tab) {
     )}${S.cfg.fields.length ? card('Custom fields', dl(S.cfg.fields.map((f) => [f.n, esc((l.custom || {})[f.n])]))) : ''}</div>`;
   if (tab === 'activity')
     return (
+      (window.convCard ? window.convCard(l) : '') +
       card(
         'Call log',
         table(
@@ -106,6 +107,7 @@ function leadTab(l, tab) {
             { h: 'Outcome', f: (c) => esc(c.outcome) + (c.first ? ' ' + bdg('First call', 'info') : '') },
             { h: 'Notes', f: (c) => esc(c.notes) + (c.sim ? ' ' + SIMTAG : '') },
             { h: 'Recording', f: (c) => (c.rec ? esc(c.rec) : '<span class="faint">—</span>') },
+            { h: 'Remarks', f: (c) => (window.remarkCell ? window.remarkCell('call', c) : '') },
           ],
           calls,
           { all: 1, et: 'No calls logged', ed: 'Use Call to log an attempt.' },
@@ -183,27 +185,38 @@ function leadTab(l, tab) {
     );
   if (tab === 'comms') {
     const av = l.avail;
-    return `<div class="grid g2"><div>${card(
+    return `<div class="grid"><div>${card(
       'Communication history',
-      table(
-        'lcomm',
-        [
-          { h: 'Time', f: (c) => fDT(c.at) },
-          { h: 'Channel', f: (c) => esc(c.ch) },
-          { h: 'Template', f: (c) => esc(c.tpl) },
-          { h: 'Message', f: (c) => esc(c.text) },
-          { h: 'Delivery', f: (c) => bdg(c.status, c.status.startsWith('Blocked') ? 'crit' : 'info') },
-        ],
-        comms,
-        { all: 1 },
-      ),
+      window.commTable
+        ? window.commTable(l)
+        : table(
+            'lcomm',
+            [
+              { h: 'Time', f: (c) => fDT(c.at) },
+              { h: 'Channel', f: (c) => esc(c.ch) },
+              { h: 'Template', f: (c) => esc(c.tpl) },
+              {
+                h: 'Message',
+                f: (c) =>
+                  (c.subj || c.subject
+                    ? '<b class="sm">' + esc(c.subj || c.subject) + '</b><div>' + esc(c.text) + '</div>'
+                    : esc(c.text)) + (window.mailReplyBtn ? window.mailReplyBtn('lead', l.id, c) : ''),
+              },
+              {
+                h: 'Delivery',
+                f: (c) => bdg(c.status, c.status.startsWith('Blocked') ? 'crit' : c.inbound ? 'ok' : 'info'),
+              },
+            ],
+            comms,
+            { all: 1 },
+          ),
       {
         np: 1,
         act: edit
-          ? `<button class="btn sm" data-act="mWa" data-id="${l.id}">WhatsApp</button><button class="btn sm" data-act="mMail" data-id="${l.id}">Email</button>`
+          ? `<button class="btn sm" data-act="mCall" data-id="${l.id}">Log call</button><button class="btn sm" data-act="mWa" data-id="${l.id}">WhatsApp</button><button class="btn sm" data-act="mMail" data-id="${l.id}">Email</button>`
           : '',
       },
-    )}</div><div class="grid">${card('Parent call availability', `${!av ? `<p class="muted sm" style="margin:0">${l.wa ? 'No availability request sent yet.' : 'No WhatsApp consent – the automated request was not sent.'}</p>` : av.s === 'Requested' ? `<p class="sm" style="margin:0 0 10px">WhatsApp request sent. Waiting for the parent’s preferred time.</p>${edit ? `<button class="btn sm" data-act="mAvail" data-id="${l.id}">Simulate parent reply</button>` : ''}` : `<p class="sm" style="margin:0 0 8px">Parent prefers <b>${fDT(av.slot)}</b>. ${av.s === 'Scheduled' ? bdg('Added to follow-ups', 'ok') : ''}</p>${av.s === 'Received' && edit ? `<button class="btn primary sm" data-act="schedSlot" data-id="${l.id}">Schedule requested slot</button>` : ''}<p class="muted xs">Calendar sync (Google/Outlook) is a configurable placeholder and is not connected. The slot is added to the CRM follow-up calendar.</p>`}`)}${card(
+    )}</div><div class="grid g2">${card('Parent call availability', `${!av ? `<p class="muted sm" style="margin:0">${l.wa ? 'No availability request sent yet.' : 'No WhatsApp consent – the automated request was not sent.'}</p>` : av.s === 'Requested' ? `<p class="sm" style="margin:0 0 10px">WhatsApp request sent. Waiting for the parent’s preferred time.</p>${edit ? `<button class="btn sm" data-act="mAvail" data-id="${l.id}">Simulate parent reply</button>` : ''}` : `<p class="sm" style="margin:0 0 8px">Parent prefers <b>${fDT(av.slot)}</b>. ${av.s === 'Scheduled' ? bdg('Added to follow-ups', 'ok') : ''}</p>${av.s === 'Received' && edit ? `<button class="btn primary sm" data-act="schedSlot" data-id="${l.id}">Schedule requested slot</button>` : ''}<p class="muted xs">Calendar sync (Google/Outlook) is a configurable placeholder and is not connected. The slot is added to the CRM follow-up calendar.</p>`}`)}${card(
       'Consent status',
       dl([
         ['WhatsApp', l.wa ? bdg('Granted', 'ok') : bdg('Not granted', 'crit')],
@@ -504,7 +517,7 @@ MODALS.fu = (m) => {
     title: 'Schedule follow-up – ' + l.student,
     form: 'fu',
     ok: 'Schedule',
-    body: `<input type="hidden" name="id" value="${l.id}"><div class="fgrid">${F('Follow-up type', 'type', { opts: ['Follow-up call', 'WhatsApp follow-up', 'Email follow-up', 'Centre visit', 'Trial class'], v: 'Follow-up call' })}${F('Due date / time', 'due', { t: 'datetime-local', v: locVal(due.toISOString()), req: 1 })}${F('Assigned counsellor', 'cs', { v: l.cslr || '', opts: optCslr(l.branch), blank: 'Unassigned', dis: 1 })}${F('Remarks', 'remarks', { t: 'textarea', full: 1 })}</div>`,
+    body: `<input type="hidden" name="id" value="${l.id}"><div class="fgrid">${F('Follow-up type', 'type', { opts: ['Follow-up call', 'WhatsApp follow-up', 'Email follow-up', 'Centre visit', 'Trial class'], v: 'Follow-up call' })}${F('Due date / time', 'due', { t: 'datetime-local', v: locVal(due.toISOString()), req: 1 })}${F('On the calendar of', 'cs', { v: fuOwner(l) || '', opts: optCslr(), blank: 'Unassigned', dis: 1 })}${F('Remarks', 'remarks', { t: 'textarea', full: 1 })}</div>`,
   };
 };
 SUB.fu = (d, f) => {
@@ -518,7 +531,7 @@ SUB.fu = (d, f) => {
   S.tasks.push({
     id: 'T-' + S.seq.task++,
     lead: l.id,
-    cslr: l.cslr,
+    cslr: fuOwner(l),
     due,
     type: d.type,
     status: 'Pending',
@@ -590,7 +603,7 @@ MODALS.convert = (m) => {
 };
 function feeBox(f, disc, isNew) {
   const c = calcFee(f, disc, isNew);
-  return `<div class="card"><div class="bd"><dl class="kv"><dt>Package fee</dt><dd class="num">${money(c.base, f.cur)}</dd><dt>Registration (new students)</dt><dd class="num">${money(c.extra, f.cur)}</dd><dt>Discount</dt><dd class="num">− ${money(c.disc, f.cur)}</dd><dt>Tax (${f.tax}%)</dt><dd class="num">${money(c.tax, f.cur)}</dd><dt><b>Total payable</b></dt><dd class="num"><b>${money(c.total, f.cur)}</b></dd></dl></div></div>`;
+  return `<div class="card"><div class="bd"><dl class="kv"><dt>Package fee</dt><dd class="num">${money(c.base, f.cur)}</dd><dt>Registration (new students)</dt><dd class="num">${money(c.extra, f.cur)}</dd><dt>Discount</dt><dd class="num">− ${money(c.disc, f.cur)}</dd><dt>${window.feeTaxLabel ? esc(window.feeTaxLabel(f)) : 'Tax (' + f.tax + '%)'}</dt><dd class="num">${money(c.tax, f.cur)}</dd><dt><b>Total payable</b></dt><dd class="num"><b>${money(c.total, f.cur)}</b></dd></dl></div></div>`;
 }
 CHG.convFee = (el) => {
   const l = leadById(el.form.querySelector('[name=id]').value);

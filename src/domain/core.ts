@@ -15,12 +15,36 @@ export function feeFor(fees: any[], prog: string, branch: string, pkg?: string, 
   return fees.filter((f) => f.active && f.prog === prog && f.branch === branch && (!pkg || f.pkg === pkg) && f.from <= today && (!f.to || f.to >= today))
     .sort((a, b) => String(b.from).localeCompare(String(a.from)) || String(b.revisionAt || '').localeCompare(String(a.revisionAt || '')) || String(b.id).localeCompare(String(a.id), undefined, { numeric: true }))[0];
 }
-export function calcFee(fee: any, disc: any, isNew: boolean) {
+/** GST set on a branch (India): CGST and SGST percentages. Null when the branch has none. */
+export function branchGst(b: any): { cgst: number; sgst: number } | null {
+  const has = (v: unknown) => v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v));
+  if (!b || !has(b.cgst) || !has(b.sgst) || Number(b.cgst) + Number(b.sgst) <= 0) return null;
+  return { cgst: Number(b.cgst), sgst: Number(b.sgst) };
+}
+/** Tax % for a fee: the branch's CGST + SGST when set, otherwise the fee's own tax %. */
+export const taxPct = (fee: any, branch?: any) => { const g = branchGst(branch); return g ? r2(g.cgst + g.sgst) : Number(fee.tax) || 0; };
+/** Why a branch's GST details are not valid ('' when they are). */
+export function gstProblem(b: any): string {
+  const gstin = String(b?.gstin ?? '').trim().toUpperCase(), pan = String(b?.pan ?? '').trim().toUpperCase();
+  if (gstin && !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(gstin)) return 'GSTIN must be 15 characters, e.g. 29ABCDE1234F1Z5';
+  if (pan && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) return 'PAN must be 10 characters, e.g. ABCDE1234F';
+  if (gstin && pan && gstin.slice(2, 12) !== pan) return 'The PAN does not match the PAN inside the GSTIN (characters 3–12)';
+  for (const k of ['cgst', 'sgst']) {
+    const v = b?.[k];
+    if (v !== undefined && v !== null && v !== '' && !(Number(v) >= 0 && Number(v) <= 50)) return `${k.toUpperCase()} must be a percentage from 0 to 50`;
+  }
+  const one = [b?.cgst, b?.sgst].filter((v) => v !== undefined && v !== null && v !== '').length;
+  if (one === 1) return 'Enter both CGST and SGST, or neither';
+  return '';
+}
+
+export function calcFee(fee: any, disc: any, isNew: boolean, branch?: any) {
   const base = fee.amt, extra = isNew ? fee.extra.amt : 0;
   let d = 0;
   if (disc) d = disc.type === '%' ? r2((base * disc.value) / 100) : Math.min(Number(disc.value), base);
-  const net = base - d + extra, tax = r2((net * fee.tax) / 100);
-  return { base, extra, disc: d, net, tax, total: r2(net + tax) };
+  const pct = taxPct(fee, branch);
+  const net = base - d + extra, tax = r2((net * pct) / 100);
+  return { base, extra, disc: d, net, tax, total: r2(net + tax), taxPct: pct };
 }
 
 // ---------------- audit & notifications ----------------
@@ -34,6 +58,10 @@ export async function notify(repo: Repo, n: { type: string; sev: string; text: s
   await repo.create('notification', doc);
   return doc;
 }
+/** Lead sources with no first-call SLA: a Manual lead is created by staff while the family is at the lab. Other follow-ups are unchanged. */
+export const SLA_EXEMPT_SOURCES = ['Manual'];
+export const needsFirstCall = (l: any) => !SLA_EXEMPT_SOURCES.includes(l?.src);
+
 export const addEv = (l: any, type: string, text: string, by = 'System') => {
   l.events = l.events || [];
   l.events.push({ at: nowIso(), type, text, by });
@@ -132,7 +160,8 @@ export interface NewLeadInput {
   wa?: boolean; em?: boolean; notes?: string; cslr?: string; enq?: string; external?: Record<string, unknown>;
 }
 
-export async function createLead(repo: Repo, input: NewLeadInput, by = 'System') {
+/** opts.quiet: no per-lead notification (bulk import sends one summary); opts.noAutoMessages: no automatic welcome WhatsApp / e-mail. */
+export async function createLead(repo: Repo, input: NewLeadInput, by = 'System', opts: { quiet?: boolean; noAutoMessages?: boolean } = {}) {
   const cfg = await repo.setting<any>('cfg');
   const branch = await repo.get<any>('branch', input.branch);
   if (!branch) throw new Error(`Unknown branch ${input.branch}`);
@@ -178,7 +207,7 @@ export async function createLead(repo: Repo, input: NewLeadInput, by = 'System')
   const queuedComms: string[] = [];
   for (const [tid, key] of [['T1', 'wa'], ['T2', 'wa'], ['T3', 'em']] as const) {
     const t = (cfg.comms || []).find((x: any) => x.id === tid);
-    if (!t || !t.auto) continue;
+    if (!t || !t.auto || opts.noAutoMessages) continue;
     const blocked = cfg.consentReq?.[key] && !l[key];
     const cid = await repo.newId('cm');
     await repo.create('comm', {
@@ -193,11 +222,13 @@ export async function createLead(repo: Repo, input: NewLeadInput, by = 'System')
     }
   }
   if (l.cslr) {
-    const tid = await repo.newId('task');
-    await repo.create('task', { id: tid, lead: id, cslr: l.cslr, due: new Date(Date.now() + cfg.sla.mins * 6e4).toISOString(), type: 'First call', status: 'Pending', remarks: 'First-call SLA task', outcome: '', next: '', test: repo.isTest || undefined });
-    await notify(repo, { type: 'new', sev: 'info', text: `New lead created: ${l.student} (${l.src}) – assigned to ${cslrName}`, route: { page: 'lead', id }, roles: ['Counsellor', 'Centre Administrator'], branch: l.branch, cslr: l.cslr });
+    if (needsFirstCall(l)) {
+      const tid = await repo.newId('task');
+      await repo.create('task', { id: tid, lead: id, cslr: l.cslr, due: new Date(Date.now() + cfg.sla.mins * 6e4).toISOString(), type: 'First call', status: 'Pending', remarks: 'First-call SLA task', outcome: '', next: '', test: repo.isTest || undefined });
+    }
+    if (!opts.quiet) await notify(repo, { type: 'new', sev: 'info', text: `New lead created: ${l.student} (${l.src}) – assigned to ${cslrName}`, route: { page: 'lead', id }, roles: ['Counsellor', 'Centre Administrator'], branch: l.branch, cslr: l.cslr });
   } else {
-    await notify(repo, { type: 'none', sev: 'crit', text: `No counsellor available: ${l.student} (${branch.name} · ${progName}) – lead in Unassigned queue`, route: { page: 'leads', preset: 'unassigned' }, roles: ['Admissions Head', 'Centre Administrator', 'System Administrator'], branch: l.branch });
+    if (!opts.quiet) await notify(repo, { type: 'none', sev: 'crit', text: `No counsellor available: ${l.student} (${branch.name} · ${progName}) – lead in Unassigned queue`, route: { page: 'leads', preset: 'unassigned' }, roles: ['Admissions Head', 'Centre Administrator', 'System Administrator'], branch: l.branch });
   }
   await repo.put('lead', l);
   await addAudit(repo, 'Lead created', id, `Source ${l.src}; assigned to ${cslrName === 'our team' ? 'Unassigned' : cslrName}`, by);
@@ -230,7 +261,8 @@ export async function recordPayment(
 export async function recalcEnrollment(repo: Repo, enrId: string) {
   const e = await repo.get<any>('enrollment', enrId);
   if (!e) return null;
-  const pays = await repo.many<any>('payment', 'ref1=?', [enrId]);
+  // Cancelled payments keep their receipt number but no longer count towards what was paid
+  const pays = (await repo.many<any>('payment', 'ref1=?', [enrId])).filter((p) => p.status !== 'Cancelled');
   e.paid = r2(pays.reduce((a, p) => a + Number(p.amt || 0), 0));
   e.payStatus = e.paid >= e.total - 0.005 ? 'Paid' : e.paid > 0 ? 'Partially paid' : 'Unpaid';
   await repo.put('enrollment', e);

@@ -30,7 +30,7 @@ export function runPrototypeSeed(code = frontendAppScript()) {
     parseInt, parseFloat, isNaN, setTimeout, clearTimeout,
     document: { ...el, documentElement: el, activeElement: null, createElement: () => el },
     navigator: {}, matchMedia: () => ({ matches: false }), innerWidth: 1280,
-    window: { LOF_API: null }, // demo mode: the sample data's fixed "today" (9 Oct 2026)
+    window: { LOF_API: null, addEventListener: noop }, // demo mode: the sample data's fixed "today" (9 Oct 2026)
   });
   vm.runInContext(code + '\n;globalThis.__seed = seed;', ctx, { filename: 'prototype.js' });
   // Sample data must not carry the prototype's "(simulated …)" wording: the screens strip it, and history would then look rewritten

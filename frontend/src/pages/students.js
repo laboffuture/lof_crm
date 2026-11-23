@@ -96,7 +96,10 @@ PAGES.student = (rt) => {
         ['Grade', esc(s.grade)],
         ['Curriculum', esc(s.curr)],
         ['Address', esc(s.address)],
+        ['Student e-mail', esc(s.email || '—')],
+        ['Student mobile', esc(s.mobile || '—')],
       ]),
+      { act: E ? `<button class="btn sm" data-act="mStuEdit" data-id="${s.id}">Edit</button>` : '' },
     )}${card(
       'Enrolment information',
       dl([
@@ -119,6 +122,13 @@ PAGES.student = (rt) => {
           { h: 'Mobile', f: (p) => `<span class="mono">${esc(p.mobile)}</span>` },
           { h: 'Email', f: (p) => esc(p.email) },
           { h: 'Profession', f: (p) => esc(p.job) },
+          {
+            h: '',
+            f: (p) =>
+              E
+                ? `<button class="btn sm" data-act="mParentEdit" data-id="${s.id}" data-i="${s.parents.indexOf(p)}">Edit</button>`
+                : '',
+          },
         ],
         s.parents,
         { all: 1 },
@@ -150,7 +160,9 @@ PAGES.student = (rt) => {
           {
             h: 'LMS mapping',
             f: (e) => {
-              const course = [e.course?.moodleId, e.course?.name].filter((value) => value != null && value !== '').join(' · ');
+              const course = [e.course?.moodleId, e.course?.name]
+                .filter((value) => value != null && value !== '')
+                .join(' · ');
               if (course) return esc(course);
               const purchase = S.ms.find((call) => call.enr === e.id && call.op !== 'cancel' && call.payload);
               return lmsAccessLines(purchase?.payload || lmsAccess(e)).join('<br>') || '—';
@@ -288,8 +300,13 @@ PAGES.student = (rt) => {
           { h: 'When', f: (c) => fDT(c.at) },
           { h: 'Channel', f: (c) => c.ch },
           { h: 'Template', f: (c) => esc(c.tpl) },
-          { h: 'Message', f: (c) => esc(c.text) },
-          { h: 'Status', f: (c) => bdg(c.status, 'info') },
+          {
+            h: 'Message',
+            f: (c) =>
+              (c.subject ? '<b class="sm">' + esc(c.subject) + '</b><div>' + esc(c.text) + '</div>' : esc(c.text)) +
+              (window.mailReplyBtn ? window.mailReplyBtn('student', s.id, c, s.comm.indexOf(c)) : ''),
+          },
+          { h: 'Status', f: (c) => bdg(c.status, c.inbound ? 'ok' : 'info') },
         ],
         s.comm,
         { all: 1, et: 'No messages recorded' },

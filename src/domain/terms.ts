@@ -97,6 +97,20 @@ export function targetsProblem(T: any, staffIds: Set<string>): string {
   return '';
 }
 
+/** Reception targets: per month and receptionist, the collections they should record (in their branch currency). */
+export function recTargetsProblem(T: any, staffIds: Set<string>): string {
+  if (!Array.isArray(T) || T.length > 5000) return 'Reception targets are invalid';
+  const seen = new Set<string>();
+  for (const t of T) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(t?.m)) || !staffIds.has(t.c)) return 'Each reception target needs a month (YYYY-MM) and an existing receptionist';
+    if (typeof t.col !== 'number' || !(t.col >= 0) || t.col > 1e9) return 'Reception targets: collections must be 0 or more';
+    const k = t.m + '|' + t.c;
+    if (seen.has(k)) return 'A receptionist has two targets for the same month';
+    seen.add(k);
+  }
+  return '';
+}
+
 const CODE = /^[A-Za-z0-9._-]{1,64}$/;
 const isLmsCode = (value: unknown): value is string => typeof value === 'string' && CODE.test(value);
 export function lmsProblem(L: any): string {

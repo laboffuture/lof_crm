@@ -39,12 +39,16 @@ ACT.tTab = (d) => {
   S.route.tab = d.k;
   render();
 };
+CHG.calCs = el => { S.calCs = el.value; render() };
+
 PAGES.calendar = () => {
   const [y, m] = S.calMonth.split('-').map(Number);
   const first = new Date(Date.UTC(y, m - 1, 1)),
     dow = (first.getUTCDay() + 6) % 7,
     dim = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  const tasks = visTasks().filter((t) => t.status !== 'Cancelled');
+  const tasks = visTasks().filter(
+    (t) => t.status !== 'Cancelled' && (!S.calCs || me().role === 'Counsellor' || t.cslr === S.calCs),
+  );
   const cells = [];
   for (let i = 0; i < dow; i++) cells.push(null);
   for (let d = 1; d <= dim; d++) cells.push(`${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
@@ -53,8 +57,16 @@ PAGES.calendar = () => {
   return (
     ph(
       'Follow-up Calendar',
-      'Scheduled calls, follow-ups and parent-requested slots',
-      `<button class="btn sm" data-act="calNav" data-n="-1">‹ Prev</button><b>${new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' })}</b><button class="btn sm" data-act="calNav" data-n="1">Next ›</button>`,
+      me().role === 'Counsellor'
+        ? 'Your scheduled calls, follow-ups and parent-requested slots'
+        : 'Scheduled calls, follow-ups and parent-requested slots',
+      `${
+        me().role === 'Counsellor'
+          ? ''
+          : `<select data-change="calCs" aria-label="Counsellor"><option value="">All counsellors</option>${optCslr()
+              .map(([v, n]) => `<option value="${esc(v)}"${S.calCs === v ? ' selected' : ''}>${esc(n)}</option>`)
+              .join('')}</select>`
+      }<button class="btn sm" data-act="calNav" data-n="-1">‹ Prev</button><b>${new Date(Date.UTC(y, m - 1, 1)).toLocaleString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' })}</b><button class="btn sm" data-act="calNav" data-n="1">Next ›</button>`,
     ) +
     `<div class="grid" style="grid-template-columns:minmax(0,2fr) minmax(260px,1fr)"><div class="card"><div class="bd"><div class="cal">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((x) => `<div class="dh">${x}</div>`).join('')}${cells
       .map((k) =>
