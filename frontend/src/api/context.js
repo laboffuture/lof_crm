@@ -77,7 +77,6 @@ var INTEG_LABEL = {
   lms: 'LMS',
   telr: 'Telr',
   razorpay: 'Razorpay',
-  easebuzz: 'Easebuzz',
   erpnext: 'ERPNext',
   gcal: 'Google Calendar',
   email: 'E-mail',

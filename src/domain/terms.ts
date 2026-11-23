@@ -98,7 +98,6 @@ export function targetsProblem(T: any, staffIds: Set<string>): string {
 }
 
 const CODE = /^[A-Za-z0-9._-]{1,64}$/;
-const isLmsCode = (value: unknown): value is string => typeof value === 'string' && CODE.test(value);
 export function lmsProblem(L: any): string {
   if (!L || typeof L !== 'object') return 'LMS settings are missing';
   if (!(+L.validMonths >= 1 && +L.validMonths <= 60)) return 'LMS access validity must be 1–60 months';
@@ -133,16 +132,16 @@ export function validLmsDate(value: unknown): boolean {
 /** November v1.1 purchase body. Legacy programme mappings remain readable, never rewritten. */
 export function lmsEnrolPayload(e: any, s: any, program: any, L: any): Purchase {
   const p = s?.parents?.[0] || {};
-  const code = e.lmsAccess || L?.packages?.[e.prog]?.[e.pkg] || L?.programmes?.[e.prog] || {};
+  const code = L?.packages?.[e.prog]?.[e.pkg] || L?.programmes?.[e.prog] || {};
   const product_name = `${program?.name || e.prog} – ${e.pkg}`;
   const items: TrackItem[] = code.items || (code.track ? [{ product_name, track: code.track, credits: code.credits || [] }] : []);
   const skillslabs: SkillsLabItem[] = code.skillslabs || [];
   return {
     reference: e.id,
     student_id: s.id,
-    student_first_name: String(s.first || '').trim(),
-    student_last_name: String(s.last || '').trim(),
-    student_email: String(s.email || '').trim(),
+    student_first_name: s.first || '',
+    student_last_name: s.last || '',
+    student_email: s.email || '',
     student_phone: s.mobile || p.mobile || '',
     student_dob: s.dob || '',
     parent_id: s.fam || '',
@@ -150,7 +149,7 @@ export function lmsEnrolPayload(e: any, s: any, program: any, L: any): Purchase 
     parent_email: p.email || '',
     parent_phone: p.mobile || '',
     branch: L?.branchMap?.[e.branch] || '',
-    valid_until: e.lmsValidUntil || addDays(addMonthsDay(e.date, +(L?.validMonths || 12)), -1),
+    valid_until: addDays(addMonthsDay(e.date, +(L?.validMonths || 12)), -1),
     items: structuredClone(items),
     skillslabs: structuredClone(skillslabs),
   };
@@ -163,28 +162,13 @@ export function lmsMissing(pl: ReturnType<typeof lmsEnrolPayload>): string[] {
   if (pl.student_email && pl.parent_email && pl.student_email.trim().toLowerCase() === pl.parent_email.trim().toLowerCase()) m.push('student_email must differ from parent_email');
   if (pl.student_phone && !/^\+[1-9][\d\s()-]{6,19}$/.test(pl.student_phone)) m.push('student_phone with country code');
   for (const k of ['student_dob', 'valid_until'] as const) if (pl[k] && !validLmsDate(pl[k])) m.push(`valid ${k} (YYYY-MM-DD)`);
-  if (pl.branch && !isLmsCode(pl.branch)) m.push('valid branch code');
-  if (!Array.isArray(pl.items) || !Array.isArray(pl.skillslabs)) return [...m, 'valid Track and Skills Lab lists'];
   if (!pl.items.length && !pl.skillslabs.length) m.push('at least one Track or Skills Lab line');
-  const seen = new Map<string, Set<string>>();
   pl.items.forEach((x, i) => {
-    if (!isLmsCode(x?.track)) m.push(`items[${i}].track`);
-    if (!Array.isArray(x?.credits) || !x.credits.length || x.credits.some((c) => !isLmsCode(c))) {
-      m.push(`items[${i}].credits`);
-      return;
-    }
-    const codes = seen.get(x.track) || new Set<string>();
-    for (const credit of x.credits) {
-      if (codes.has(credit)) m.push(`Credit ${x.track}/${credit} appears more than once`);
-      codes.add(credit);
-    }
-    seen.set(x.track, codes);
+    if (!CODE.test(x.track)) m.push(`items[${i}].track`);
+    if (!x.credits.length || x.credits.some((c) => !CODE.test(c)) || new Set(x.credits).size !== x.credits.length) m.push(`items[${i}].credits`);
   });
   pl.skillslabs.forEach((x, i) => {
-    if (!isLmsCode(x?.program)) {
-      m.push(`skillslabs[${i}].program`);
-      return;
-    }
+    if (!CODE.test(x.program)) m.push(`skillslabs[${i}].program`);
     if (!Number.isInteger(x.sessions) || x.sessions <= 0) m.push(`skillslabs[${i}].sessions`);
     if (x.valid_until && !validLmsDate(x.valid_until)) m.push(`skillslabs[${i}].valid_until`);
   });

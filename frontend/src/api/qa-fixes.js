@@ -132,7 +132,7 @@ window.addAudit = function (act, ref, det, by) {
 var _integPage = PAGES.integration;
 PAGES.integration = function (rt) {
   var h = _integPage(rt);
-  var rows = Object.keys(SERVER.integrations || {})
+  var rows = Object.keys(INTEG_LABEL)
     .filter(function (k) {
       return k !== 'lms';
     })

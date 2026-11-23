@@ -2,8 +2,6 @@
 
 Lab of Future CRM · Cloudflare Workers + D1 · release prepared 12 October 2026
 
-> Historical report: automated tests, browser tests and their runners were removed on 18 November 2026. Test results below describe the original release; the old test commands are no longer available. Use `npm run typecheck` and `npm run check:frontend` for current code checks.
-
 This one document covers everything needed to proceed:
 
 1. Status at a glance
@@ -42,6 +40,8 @@ This one document covers everything needed to proceed:
 - **Playwright** drives the real CRM screens in Chromium against `wrangler dev`, using a local D1 database freshly migrated from the seed.
 
 ```bash
+npm test             # 120 tests, ~20 s
+npm run test:e2e     # 10 browser tests, ~40 s
 npm run typecheck
 ```
 

@@ -2218,7 +2218,8 @@
         { h: 'ms', f: function (l) { return l.duration_ms == null ? '—' : l.duration_ms; }, r: 1 },
         { h: 'Reference', f: function (l) { return '<span class="mono xs">' + esc(l.ref || '') + '</span>' + (l.is_test ? ' ' + bdg('test', 'info') : ''); } },
       ], TC.logs || [], { ps: 15, row: function (l) { return 'data-act="tcLog" data-id="' + l.id + '"'; }, et: 'No integration calls yet' }), { np: 1 });
-    return head + info + integ + '<div style="height:14px"></div>' + scen + '<div style="height:14px"></div>' + sims + '<div style="height:14px"></div>' + flags + '<div style="height:14px"></div>' + logs;
+    var suite = card('Automated test suite', '<p class="sm" style="margin-top:0">Run before every deployment: <span class="mono">npm test</span> (78 tests: unit, API & permission guard, webhooks, live adapters against stubbed provider APIs, testing console scenarios) and <span class="mono">npm run test:e2e</span> (browser tests of the screens against a local server).</p>');
+    return head + info + integ + '<div style="height:14px"></div>' + scen + '<div style="height:14px"></div>' + sims + '<div style="height:14px"></div><div class="grid g2">' + flags + suite + '</div><div style="height:14px"></div>' + logs;
   };
   ACT.tcRefresh = function () { TC.status = null; TC.error = null; render(); };
   ACT.tcTest = function (d) {

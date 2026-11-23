@@ -1,4 +1,4 @@
-// Quick checks for the frontend sources:
+// Quick checks for the frontend sources (run by the tests and before deploys):
 //   • every file in frontend/ is listed in manifest.json once, and every listed file exists
 //   • each JavaScript file is valid on its own (syntax), so an error points at the right file
 //   • the same top-level name is not declared in two files (they share one scope, so that would break the page)

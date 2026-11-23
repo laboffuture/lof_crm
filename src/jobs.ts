@@ -5,7 +5,6 @@ import { addAudit, addEv, notify, money, recalcEnrollment } from './domain/core'
 import { instStatus } from './domain/terms';
 import { modeFor } from './integrations/base';
 import { telrCheck } from './integrations/payments';
-import { confirmEasebuzz } from './domain/easebuzz-payments';
 import { runMailAutomations } from './domain/mail-send';
 import { LMS_CONTRACT, activatePaidLms } from './domain/lms-orders';
 
@@ -141,17 +140,6 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
       if (st.paid) await settleLink(env, repo, link.id, { amount: st.amount, txnRef: st.txnRef, method: 'Card' });
       else if (st.final) await env.DB.prepare('UPDATE payment_links SET status=? WHERE id=?').bind(st.status, link.id).run();
     } catch (e) { console.error('telr reconcile', link.id, e); }
-  }
-
-  // Recover missed Easebuzz callbacks against the original transaction and environment.
-  const easebuzzProvider = env.EASEBUZZ_ENV === 'prod' ? 'easebuzz' : 'easebuzz-test';
-  const easebuzzLinks = await env.DB.prepare("SELECT provider_ref FROM payment_links WHERE status='created' AND provider=? AND created_at > ? AND (? <> 'production' OR provider='easebuzz') ORDER BY COALESCE((SELECT MAX(id) FROM integration_logs WHERE integration='easebuzz' AND operation='transaction.retrieve' AND ref=payment_links.provider_ref),0) ASC LIMIT 25")
-    .bind(easebuzzProvider, new Date(now - 3 * 864e5).toISOString(), env.APP_ENV).all<any>();
-  for (const link of easebuzzLinks.results || []) {
-    try {
-      const r = await confirmEasebuzz(env, link.provider_ref);
-      if (r.paymentId && !r.sandbox) jobs.push({ kind: 'erp_payment', id: r.paymentId });
-    } catch (e) { console.error('easebuzz reconcile', link.provider_ref, e instanceof Error ? e.message : 'Confirmation failed'); }
   }
 
   // Data retention: integration logs 30 days, webhook ids 90 days, sessions and rate counters when expired

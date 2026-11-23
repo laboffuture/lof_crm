@@ -56,8 +56,8 @@ Open `/?demo=1` (or `dist/lof-crm-demo.html`, no server needed) for the offline 
 2. Add it to `manifest.json` (after `ui/` and before `boot.js`).
 3. Add it to the sidebar (`GROUPS` in `ui/shell.js`) and to `ACCESS` (which permission it needs).
 4. If it saves data, the records go through `PUT /api/v1/sync`, where the server checks the same permission.
-   Add the rule to `src/sync/sync.ts`.
-5. `npm run check:frontend && npm run typecheck && npm run build:frontend`, then verify the screen in the browser.
+   Add the rule to `src/sync/sync.ts` and a test under `test/api/`.
+5. `npm run check:frontend && npm test && npm run test:e2e`.
 
 ## Next steps (planned)
 

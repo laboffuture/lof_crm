@@ -1,25 +1,7 @@
 /* Three-step registration and enrolment wizard. */
 /* ====== enrolment wizard ====== */
 const WSTEPS = ['Student', 'Programme & fees', 'Payment & confirm'];
-// A background refresh can remove a student while their enrolment draft is open.
-function wizReconcileStudent() {
-  const w = S.wiz;
-  if (!w || w.mode !== 'existing') return true;
-  if (w.stu && stuById(w.stu)) return true;
-  if (w.stu || w.step > 1) {
-    w.stu = null;
-    w.step = 1;
-    w.studentUnavailable = true;
-    S.wizQ = '';
-    delete w.calc;
-    delete w.fee;
-    delete w.disc;
-    delete w.term;
-  }
-  return false;
-}
 // A shared parent contact identifies a family, not necessarily the same child.
-const wizStudentEmail = (value) => String(value || '').trim().toLowerCase();
 function wizStudentMatches(d) {
   const text = (value) =>
     String(value || '')
@@ -27,19 +9,20 @@ function wizStudentMatches(d) {
       .replace(/\s+/g, ' ')
       .toLowerCase();
   const name = text(d.first + ' ' + d.last),
-    email = wizStudentEmail(d.semail);
+    email = text(d.semail);
   return S.students.filter(
     (s) =>
-      ((email && wizStudentEmail(s.email) === email) ||
-        (d.first && d.last && d.dob && text(s.first + ' ' + s.last) === name && s.dob === d.dob)),
+      (email && text(s.email) === email) ||
+      (d.first && d.last && d.dob && text(s.first + ' ' + s.last) === name && s.dob === d.dob),
   );
 }
 ACT.enrollOpp = (d) => {
   const o = oppById(d.id),
     l = leadById(o.lead);
+  const m = S.students.find((s) =>
+    s.parents.some((p) => normPh(p.mobile) === normPh(l.phone) || p.email.toLowerCase() === l.email.toLowerCase()),
+  );
   const nm = o.student.split(' ');
-  const matches = wizStudentMatches({ first: nm[0], last: nm.slice(1).join(' '), dob: l.dob });
-  const m = (o.stu && stuById(o.stu)) || (matches.length === 1 ? matches[0] : null);
   S.wiz = {
     mode: m ? 'existing' : 'new',
     step: 1,
@@ -73,7 +56,6 @@ PAGES.wizard = (rt) => {
       d: { branch: optBranches()[0][0], prel: 'Father', pkg: 'Term (24 sessions)' },
     };
   }
-  wizReconcileStudent();
   const w = S.wiz,
     d = w.d;
   const steps = `<div class="step">${WSTEPS.map((s, i) => `<div class="${w.step === i + 1 ? 'on' : w.step > i + 1 ? 'dn' : ''}">${i + 1}. ${s}</div>`).join('')}</div>`;
@@ -97,9 +79,6 @@ PAGES.wizard = (rt) => {
           : [];
       const st = w.stu && stuById(w.stu);
       body =
-        (w.studentUnavailable
-          ? '<div class="banner" role="status">The selected student is no longer available. Select the student again to continue this enrolment.</div>'
-          : '') +
         link +
         `<div class="sec" style="margin-top:14px">Identify existing student</div><div class="f"><label for="wsq">Search by Student ID, student name, parent name, mobile or email</label><input id="wsq" data-input="wsq" value="${esc(S.wizQ || '')}" placeholder="e.g. LOF-26-000001 or +971 50 555 0311"></div>${res.length ? `<div class="card" style="margin-top:10px"><div class="list">${res.map((s) => `<div><span><b>${esc(s.first + ' ' + s.last)}</b> <span class="mono muted">${s.id}</span><br><span class="muted xs">${esc(s.parents.map((p) => p.name).join(', '))} · ${esc(branchName(s.branch))}</span></span><button class="btn sm ${w.stu === s.id ? 'primary' : ''}" data-act="wizPick" data-id="${s.id}">${w.stu === s.id ? 'Selected' : 'Select'}</button></div>`).join('')}</div></div>` : q.length >= 2 ? emptyBox('No student found', 'Check the spelling or switch to New student.') : ''}${st ? `<div class="banner" style="margin-top:12px;background:var(--ok-bg);color:var(--ok)">${ic('check')}<span>Existing student <b>${esc(st.first + ' ' + st.last)}</b> selected. Student ID <b class="mono">${st.id}</b> will be reused; the LMS matches the student by this ID.</span></div>` : ''}`;
     } else
@@ -113,15 +92,7 @@ PAGES.wizard = (rt) => {
     const br = d.branch || bs[0][0];
     const progs = S.programs.filter((p) => p.active && S.branches.find((b) => b.id === br).programs.includes(p.id));
     const prog = d.prog && progs.find((p) => p.id === d.prog) ? d.prog : progs[0].id;
-    const fees = S.fees
-      .filter((f) => f.active && f.prog === prog && f.branch === br && f.from <= TODAY && (!f.to || f.to >= TODAY))
-      .sort(
-        (a, b) =>
-          String(b.from).localeCompare(String(a.from)) ||
-          String(b.revisionAt || '').localeCompare(String(a.revisionAt || '')) ||
-          String(b.id).localeCompare(String(a.id), undefined, { numeric: true }),
-      )
-      .filter((f, i, rows) => rows.findIndex((x) => x.pkg === f.pkg) === i);
+    const fees = S.fees.filter((f) => f.active && f.prog === prog && f.branch === br);
     const f = fees.find((x) => x.pkg === d.pkg) || fees[0];
     const opp = w.opp && oppById(w.opp);
     const avail = S.discounts.filter(
@@ -163,9 +134,8 @@ PAGES.wizard = (rt) => {
   if (w.step === 3) {
     const f = w.fee,
       c = calcFee(f, w.disc, w.mode === 'new'),
-      sch = buildSched(termById(w.term), c.total, TODAY),
-      payment = w.paymentDraft || {};
-    body = `<div class="grid g2"><div>${feeBox(f, w.disc, w.mode === 'new')}</div><div><form id="wf3" data-submit="wizFinish"><div class="fgrid">${F('Amount paid now (' + f.cur + ')', 'amt', { t: 'number', min: 0, step: '0.01', v: payment.amt ?? 0, req: 1, help: 'Leave 0 for online payment or pay later. Enter an amount only if payment has already been received. First instalment: ' + money(sch[0].amt, f.cur) + '.' })}${F('Payment method', 'method', { opts: S.cfg.pm, v: payment.method || 'Card' })}${F('Payment reference', 'ref', { v: payment.ref, help: 'Required only when recording a received non-cash payment. Leave blank when amount paid now is 0.' })}</div></form><div class="banner" style="margin-top:12px">${ic('alert')}Payment gateway is not connected. The payment is recorded manually and marked simulated.</div></div></div><div class="card" style="margin-top:14px"><div class="hd"><h3>Payment schedule – ${esc(termName(w.term))}</h3></div><div class="bd">${schedTable(sch, f.cur)}</div></div><div class="card" style="margin-top:14px"><div class="bd">${dl(
+      sch = buildSched(termById(w.term), c.total, TODAY);
+    body = `<div class="grid g2"><div>${feeBox(f, w.disc, w.mode === 'new')}</div><div><form id="wf3" data-submit="wizFinish"><div class="fgrid">${F('Amount paid now (' + f.cur + ')', 'amt', { t: 'number', min: 0, step: '0.01', v: sch[0].amt, req: 1, help: 'First instalment: ' + money(sch[0].amt, f.cur) + '. Enter 0 to enrol now and pay later.' })}${F('Payment method', 'method', { opts: S.cfg.pm, v: 'Card' })}${F('Payment reference', 'ref', { help: 'Required for non-cash methods.' })}</div></form><div class="banner" style="margin-top:12px">${ic('alert')}Payment gateway is not connected. The payment is recorded manually and marked simulated.</div></div></div><div class="card" style="margin-top:14px"><div class="hd"><h3>Payment schedule – ${esc(termName(w.term))}</h3></div><div class="bd">${schedTable(sch, f.cur)}</div></div><div class="card" style="margin-top:14px"><div class="bd">${dl(
       [
         [
           'Student',
@@ -175,43 +145,31 @@ PAGES.wizard = (rt) => {
         ],
         ['Programme', esc(PNAME(w.calc.prog)) + ' · ' + esc(f.pkg)],
         ['Branch', esc(branchName(w.calc.br))],
-        ['LMS', lmsEnrolmentSummary({ prog: w.calc.prog, pkg: f.pkg, date: TODAY, lmsValidUntil: f.validUntil })],
+        ['LMS', lmsEnrolmentSummary({ prog: w.calc.prog, pkg: f.pkg, date: TODAY })],
       ],
     )}</div></div>`;
   }
-  const pending = w.checking || w.pendingSave;
-  const nav = `<div class="row" style="margin-top:16px;justify-content:space-between"><span>${w.step > 1 ? `<button class="btn" data-act="wizBack"${w.pendingSave ? ' disabled' : ''}>Back</button>` : ''}</span><span class="row"><button class="btn ghost" data-act="wizCancel"${w.pendingSave ? ' disabled' : ''}>Cancel</button><button class="btn primary" data-act="wizNext"${pending ? ' disabled' : ''}>${w.step === 3 ? 'Complete enrolment' : 'Continue'}</button></span></div>`;
-  const status = w.orderProblem
-    ? `<div class="banner" id="wiz-order-error" role="alert" tabindex="-1">${esc(w.orderProblem)}</div>`
-    : '';
+  const nav = `<div class="row" style="margin-top:16px;justify-content:space-between"><span>${w.step > 1 ? `<button class="btn" data-act="wizBack">Back</button>` : ''}</span><span class="row"><button class="btn ghost" data-act="wizCancel">Cancel</button><button class="btn primary" data-act="wizNext">${w.step === 3 ? 'Complete enrolment' : 'Continue'}</button></span></div>`;
   return (
     ph(w.mode === 'new' ? 'New Student Registration' : 'Existing Student Enrolment', flow) +
     `<div class="seg" style="margin-bottom:14px"><a class="${w.mode === 'new' ? 'on' : ''}" data-act="wizMode" data-m="new" tabindex="0">New student</a><a class="${w.mode === 'existing' ? 'on' : ''}" data-act="wizMode" data-m="existing" tabindex="0">Existing student</a></div>` +
     steps +
-    card('', status + body + '<div id="wiz-order-status" class="muted sm" role="status">' + (w.pendingSave ? 'Saving enrolment…' : w.checking ? 'Checking the order…' : '') + '</div>' + nav)
+    card('', body + nav)
   );
 };
 Object.assign(ACT, {
   wizMode(d) {
-    if (S.wiz.pendingSave) return;
     S.wiz = { mode: d.m, step: 1, opp: S.wiz.opp, stu: null, d: Object.assign({}, S.wiz.d) };
     S.route.mode = d.m;
     render();
   },
   wizPick(d) {
     S.wiz.stu = d.id;
-    if (!wizReconcileStudent()) {
-      render();
-      return;
-    }
-    S.wiz.studentUnavailable = false;
     const s = stuById(d.id);
     S.wiz.d.branch = S.wiz.d.branch || s.branch;
     render();
   },
   wizBack() {
-    delete S.wiz.checking;
-    delete S.wiz.orderProblem;
     S.wiz.step--;
     render();
   },
@@ -222,12 +180,6 @@ Object.assign(ACT, {
   },
   wizNext() {
     const w = S.wiz;
-    if (w.checking || w.pendingSave) return;
-    if (!wizReconcileStudent()) {
-      render();
-      toast('Select an existing student first', 'warn');
-      return;
-    }
     if (w.step === 1) {
       if (w.mode === 'existing') {
         if (!w.stu) {
@@ -275,11 +227,10 @@ CHG.wizDup = (el) => {
   const f = el.form,
     values = fd(f),
     children = wizStudentMatches(values),
-    emailMatch = values.semail && children.some((s) => wizStudentEmail(s.email) === wizStudentEmail(values.semail)),
     parents = findDup(values.pmob, values.pemail).filter((x) => x.kind === 'Student'),
     matches = children.length ? children.map((s) => ({ id: s.id, name: s.first + ' ' + s.last })) : parents;
   $('#dupbox').innerHTML = matches.length
-    ? `<div class="banner" style="display:block;${children.length ? 'background:var(--warn-bg)' : ''}"><b>${children.length ? 'Possible existing student.' : 'Parent contact already on file.'}</b> ${emailMatch ? 'This student email is already registered. Select the existing student, or enter a different student email for another child.' : children.length ? 'The full name and date of birth match a saved student. Select their profile, or verify the details and click Continue again for a different child.' : 'This parent phone or email is linked to the student(s) below. You can keep these parent details and continue registering a different child.'}${matches.map((x) => `<div class="row" style="margin-top:6px;color:var(--fg)"><span>${esc(x.name)} · <span class="mono">${x.id}</span></span><button type="button" class="btn sm" data-act="wizUse" data-id="${x.id}">Use existing student</button></div>`).join('')}</div>`
+    ? `<div class="banner" style="display:block;${children.length ? 'background:var(--warn-bg)' : ''}"><b>${children.length ? 'Possible existing student.' : 'Parent contact already on file.'}</b> ${children.length ? 'The student email or full name and date of birth match a saved student. Use their existing profile if this is the same child. For a different child, verify the details and click Continue again.' : 'This parent phone or email is linked to the student(s) below. You can keep these parent details and continue registering a different child.'}${matches.map((x) => `<div class="row" style="margin-top:6px;color:var(--fg)"><span>${esc(x.name)} · <span class="mono">${x.id}</span></span><button type="button" class="btn sm" data-act="wizUse" data-id="${x.id}">Use existing student</button></div>`).join('')}</div>`
     : '';
 };
 ACT.wizUse = (d) => {
@@ -290,8 +241,6 @@ ACT.wizUse = (d) => {
   render();
 };
 CHG.wizFee = (el) => {
-  delete S.wiz.orderProblem;
-  delete S.wiz.checking;
   const f = $('#wf2'),
     d = S.wiz.d;
   ['branch', 'prog', 'pkg', 'disc', 'term'].forEach((k) => {
@@ -320,11 +269,6 @@ SUB.wizStep1 = (d, f) => {
   const matches = wizStudentMatches(d);
   const matchKey = JSON.stringify([d.first, d.last, d.dob, d.semail, matches.map((s) => s.id)]);
   CHG.wizDup(f.querySelector('[name=pmob]'));
-  if (d.semail && matches.some((s) => wizStudentEmail(s.email) === wizStudentEmail(d.semail))) {
-    setErr(f, 'semail', 'Use the existing student profile for this email.');
-    f.elements.semail.focus();
-    return;
-  }
   if (matches.length && S.wiz.studentMatchAck !== matchKey) {
     S.wiz.studentMatchAck = matchKey;
     toast(
@@ -336,43 +280,14 @@ SUB.wizStep1 = (d, f) => {
   S.wiz.step = 2;
   render();
 };
-// The server adapter runs the preflight when this wizard is connected to the CRM.
-let wizCheckOrder = () => Promise.resolve();
-SUB.wizStep2 = async () => {
+SUB.wizStep2 = () => {
   const w = S.wiz,
     c = w.calc;
   if (!c.f) {
     toast('No active fee record for this selection', 'err');
     return;
   }
-  if (w.checking) return;
-  const check = {};
-  w.checking = check;
-  delete w.orderProblem;
-  $('#wiz-order-error')?.remove();
-  $('#wiz-order-status').textContent = 'Checking the order…';
-  $('[data-act="wizNext"]').disabled = true;
-  try {
-    await wizCheckOrder({
-      branch: c.br,
-      prog: c.prog,
-      pkg: c.f.pkg,
-      studentId: w.mode === 'existing' ? w.stu : undefined,
-      student: w.mode === 'new'
-        ? { first: w.d.first, last: w.d.last, email: w.d.semail, mobile: w.d.smob, dob: w.d.dob,
-            parents: [{ name: w.d.pname, email: w.d.pemail, mobile: w.d.pmob }] }
-        : undefined,
-    });
-  } catch (error) {
-    if (S.wiz !== w || w.checking !== check || S.route.page !== 'wizard' || error.message === 'Signed out') return;
-    delete w.checking;
-    w.orderProblem = error.status ? error.message : 'Could not check the order. Try again.';
-    render();
-    $('#wiz-order-error')?.focus();
-    return;
-  }
-  if (S.wiz !== w || w.checking !== check || S.route.page !== 'wizard') return;
-  delete w.checking;
+  const fl = $('#wf2');
   w.d.branch = c.br;
   w.d.prog = c.prog;
   w.d.pkg = c.f.pkg;
@@ -383,13 +298,8 @@ SUB.wizStep2 = async () => {
   render();
 };
 SUB.wizFinish = (d, f) => {
-  const w = S.wiz;
-  if (!w || w.pendingSave) return;
-  if (!wizReconcileStudent()) {
-    render();
-    return;
-  }
-  const fee = w.fee;
+  const w = S.wiz,
+    fee = w.fee;
   clearErrs(f);
   const amt = +d.amt || 0,
     tot = calcFee(fee, w.disc, w.mode === 'new').total;
@@ -401,8 +311,6 @@ SUB.wizFinish = (d, f) => {
     setErr(f, 'ref', 'Reference is required for ' + d.method);
     return;
   }
-  w.paymentDraft = d;
-  delete w.orderProblem;
   const dd = w.d,
     isNew = w.mode === 'new';
   let s;
@@ -549,25 +457,13 @@ SUB.wizFinish = (d, f) => {
     e.id,
     (isNew ? 'New student ' + s.id + ' registered; ' : 'Existing student ' + s.id + ' reused; ') + prog.name,
   );
-  w.pendingSave = { enrollmentId: e.id, studentId: s.id, isNew };
-  if (!window.LOF_API) {
-    wizSaved(w);
-    runSync(m.id);
-    return;
-  }
-  render();
-};
-
-function wizSaved(w) {
-  const { studentId, isNew } = w.pendingSave;
-  if (S.wiz === w) {
-    S.wiz = null;
-    S.wizQ = '';
-    if (S.route.page === 'wizard') go('student', { id: studentId });
-  }
+  S.wiz = null;
+  S.wizQ = '';
+  go('student', { id: s.id });
+  runSync(m.id);
   toast(
-    (isNew ? 'Student ' + studentId + ' registered and ' : 'Additional programme ') +
+    (isNew ? 'Student ' + s.id + ' registered and ' : 'Additional programme ') +
       'enrolled. LMS purchase is sent after full payment.',
     'ok',
   );
-}
+};

@@ -7,7 +7,7 @@ ACT.testInteg = function (d) {
     wa: ['whatsapp'],
     tel: ['exotel'],
     lms: ['lms'],
-    pay: ['easebuzz'],
+    pay: ['telr', 'razorpay'],
     erp: ['erpnext'],
     cal: ['gcal'],
   };
@@ -25,7 +25,7 @@ function testIntegration(k) {
           ': ' +
           (r.ok ? 'connection OK' : 'failed – ' + r.error) +
           ' (' +
-          (r.sandbox ? 'sandbox' : r.mode) +
+          r.mode +
           ')' +
           (r.note ? ' · ' + r.note : ''),
         r.ok ? (r.mode === 'live' ? 'ok' : 'warn') : 'err',

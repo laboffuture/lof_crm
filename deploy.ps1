@@ -10,8 +10,9 @@ if (-not $env:CLOUDFLARE_API_TOKEN)  { $env:CLOUDFLARE_API_TOKEN = Read-Secret '
 if (-not $env:ADMIN_EMAIL) { $env:ADMIN_EMAIL = Read-Host 'Administrator e-mail (blank to skip on updates)' }
 if ($env:ADMIN_EMAIL -and -not $env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD = Read-Secret 'Administrator password (10+ characters, letters and numbers; changed at first sign-in)' }
 
-Write-Host '> Installing and checking types'
+Write-Host '> Installing and testing'
 npm ci --no-audit --no-fund; if ($LASTEXITCODE) { exit $LASTEXITCODE }
 npm run typecheck;          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+npm test;                   if ($LASTEXITCODE) { exit $LASTEXITCODE }
 node scripts/cf-deploy.mjs @args
 exit $LASTEXITCODE

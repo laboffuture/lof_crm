@@ -11,7 +11,7 @@ emulated locally. The database is a SQLite file in `/var/lib/lof-crm/state`. **n
 ```
 Internet ─▶ nginx :443 (HTTPS) ─▶ 127.0.0.1:8787 wrangler/workerd (pm2) ─▶ SQLite  /var/lib/lof-crm/state
                                          ▲ cron every 5 min
-GitHub push ─▶ Actions: typecheck ─▶ ssh lofcrm@server  deploy/vps/remote-deploy.sh <commit>
+GitHub push ─▶ Actions: tests ─▶ ssh lofcrm@server  deploy/vps/remote-deploy.sh <commit>
 ```
 
 | Where | What |
@@ -87,7 +87,7 @@ Then delete the private key from the server: `sudo rm /home/lofcrm/.ssh/github_a
 `authorized_keys`.
 
 The workflow is [.github/workflows/deploy-vps.yml](.github/workflows/deploy-vps.yml). It runs on every push to
-`main`, and you can also start it from *Actions → Deploy to VPS → Run workflow*. If the type check fails,
+`main`, and you can also start it from *Actions → Deploy to VPS → Run workflow*. If the type check or tests fail,
 nothing is deployed. The older *Deploy to Cloudflare* workflow is manual-only and is not affected.
 
 ## 3. First sign-in
@@ -102,8 +102,6 @@ restart: `sudo -u lofcrm pm2 restart lof-crm`. Non-secret settings (`LMS_URL`, `
 can also be added to the same file. It overrides `[vars]` in `wrangler.toml`. An integration runs live only when
 it is enabled in *Settings → Integrations* **and** its secrets are set. Otherwise it stays in mock mode.
 
-For production Easebuzz payments, set `EASEBUZZ_ENV=prod`, `EASEBUZZ_KEY` and `EASEBUZZ_SALT` in the server environment with the live merchant credentials. Set `APP_BASE_URL` to the public HTTPS CRM URL and register `/webhooks/easebuzz` on that host as the notification endpoint. The hosted checkout uses `/webhooks/easebuzz/return` for browser returns. Keep the sandbox credentials and database separate from production.
-
 Never change `JWT_SECRET` once people use the CRM. Changing it signs everyone out and breaks two-step codes.
 
 ### UAT copy (uat.crm.laboffuture.com)
@@ -113,7 +111,7 @@ listens on port 8788 under the pm2 name `lof-crm-uat`. It follows the `uat` bran
 
 1. GitHub → *Settings → Secrets and variables → Actions*: add `UAT_ADMIN_PASSWORD`, the first password for the
    UAT administrator (ranjith@laboffuture.com). It needs 10+ characters with letters and numbers.
-2. Push to the `uat` branch. The *Deploy to VPS* workflow checks TypeScript types, then
+2. Push to the `uat` branch. The *Deploy to VPS* workflow runs the tests, then
    [deploy/vps/uat-setup.sh](deploy/vps/uat-setup.sh) on the server as `lofcrm`. The first run creates UAT under
    `/home/lofcrm/lof-crm-uat` (code) and `/home/lofcrm/lof-crm-uat-data` (database and `env` settings). Later
    runs update it. No root access or server terminal is needed.

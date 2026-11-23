@@ -6,14 +6,12 @@ import { EXACT_SEQS, BLOCK_SEQS } from '../lib/indexing';
 import { HttpError } from '../types';
 import { bootstrap } from '../sync/bootstrap';
 import { applySync } from '../sync/sync';
-import { createLead, findDup, addAudit, addEv, money, r2, dayKey, feeFor } from '../domain/core';
+import { createLead, findDup, addAudit, addEv, money, r2, dayKey } from '../domain/core';
 import { instStatus, refundCalc, daysBetween, lmsEnrolPayload, lmsMissing } from '../domain/terms';
 import { createPaymentLink, processSync } from '../domain/workflows';
-import { catalogue, LmsError, studentLookup } from '../integrations/lms';
-import { prepareLmsOrder, studentEmailKey } from '../domain/lms-orders';
+import { catalogue, studentLookup } from '../integrations/lms';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
-import { sandboxPaymentRecords } from '../domain/easebuzz-payments';
 import { clickToCall } from '../integrations/exotel';
 import { receiptHtml } from './receipt';
 import { sendToParent } from '../domain/workflows';
@@ -209,13 +207,12 @@ api.get('/students/:id', async (c) => {
   const repo = c.get('repo');
   const s = await repo.get<any>('student', c.req.param('id'));
   if (!s) throw new HttpError(404, 'Student not found');
-  const enrollments = await repo.many<any>('enrollment', "ref1=? AND json_extract(data,'$.sandboxSource') IS NULL", [s.id], 'at');
+  const enrollments = await repo.many<any>('enrollment', 'ref1=?', [s.id], 'at');
   if (!c.get('user').scope.includes(s.branch) && !enrollments.some((e) => c.get('user').scope.includes(e.branch))) throw new HttpError(403, 'Outside your branch access');
   const u = c.get('user'), perms = c.get('perms');
   const canEnr = can(perms, u, 'enrollments', 'V');
-  const studentOrder = "ref2=? AND NOT EXISTS (SELECT 1 FROM docs checkout WHERE checkout.type='enrollment' AND checkout.id=docs.ref1 AND json_extract(checkout.data,'$.sandboxSource') IS NOT NULL)";
-  const payments = can(perms, u, 'payments', 'V') ? (await repo.many<any>('payment', studentOrder, [s.id], 'at')).filter((p) => u.scope.includes(p.branch)) : [];
-  const syncs = canEnr ? await repo.many('moodle_sync', studentOrder, [s.id], 'at') : [];
+  const payments = can(perms, u, 'payments', 'V') ? (await repo.many<any>('payment', 'ref2=?', [s.id], 'at')).filter((p) => u.scope.includes(p.branch)) : [];
+  const syncs = canEnr ? await repo.many('moodle_sync', 'ref2=?', [s.id], 'at') : [];
   return c.json({ student: s, enrollments: canEnr ? enrollments.filter((e) => u.scope.includes(e.branch)) : [], payments, moodle: syncs });
 });
 api.get('/enrollments', async (c) => {
@@ -237,19 +234,7 @@ api.get('/payments/:id/receipt', async (c) => {
   const p = await repo.get<any>('payment', c.req.param('id'));
   if (!p) throw new HttpError(404, 'Payment not found');
   needScope(c, p.branch);
-  let e = await repo.get<any>('enrollment', p.enr);
-  if (p.test && e?.sandboxSource) {
-    const source = await repo.get<any>('enrollment', e.sandboxSource);
-    if (!source) throw new HttpError(404, 'Enrollment not found');
-    needScope(c, source.branch);
-    const projected = await sandboxPaymentRecords(c.env, c.get('user').scope, source.id);
-    const receipt = projected.find((row) => row.id === p.id);
-    if (!receipt) throw new HttpError(404, 'Payment not found');
-    Object.assign(p, receipt);
-    const paid = r2(projected.reduce((total, row) => total + row.amt, source.paid || 0));
-    e = { ...source, paid };
-  }
-  const [s, b, programs] = await Promise.all([repo.get<any>('student', p.stu), repo.get<any>('branch', p.branch), repo.many<any>('program')]);
+  const [e, s, b, programs] = await Promise.all([repo.get<any>('enrollment', p.enr), repo.get<any>('student', p.stu), repo.get<any>('branch', p.branch), repo.many<any>('program')]);
   await addAudit(repo, 'Receipt generated', p.id, p.rc);
   c.header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   c.header('cache-control', 'no-store');
@@ -264,11 +249,8 @@ api.post('/payments/links', async (c) => {
   if (!e) throw new HttpError(404, 'Enrollment not found');
   needScope(c, e.branch);
   try {
-    if (e.test && c.get('user').role !== 'System Administrator')
-      throw new HttpError(404, 'Enrollment not found');
     return c.json(await createPaymentLink(c.env, repo, enrollmentId, amount, c.get('user').name), 201);
   } catch (err: any) {
-    if (err instanceof HttpError && err.status === 404) throw err;
     throw new HttpError(422, err.message);
   }
 });
@@ -280,21 +262,6 @@ api.get('/payments/links', async (c) => {
   return c.json({ items: r.results || [] });
 });
 
-api.get('/payments/links/:id/status', async (c) => {
-  const user = c.get('user');
-  if (!can(c.get('perms'), user, 'payments', 'C')) need(c, 'payments', 'V');
-  const link = await c.env.DB.prepare(
-    "SELECT l.status, l.payment_id, l.is_test, e.branch, original.branch AS source_branch, json_extract(e.data, '$.payStatus') AS pay_status FROM payment_links l JOIN docs e ON e.type='enrollment' AND e.id=l.enrollment_id LEFT JOIN docs original ON original.type='enrollment' AND original.is_test=0 AND original.id=json_extract(e.data, '$.sandboxSource') WHERE l.id=?",
-  ).bind(c.req.param('id')).first<{ status: string; payment_id: string | null; is_test: number; branch: string; source_branch: string | null; pay_status: string }>();
-  if (!link || (link.is_test && !link.source_branch && user.role !== 'System Administrator')) throw new HttpError(404, 'Link not found');
-  needScope(c, link.branch);
-  if (link.source_branch) needScope(c, link.source_branch);
-  return c.json({
-    status: link.status === 'paid' && !link.payment_id ? 'confirming' : link.status,
-    paymentStatus: link.pay_status,
-  });
-});
-
 /** Send a payment link to the parent over WhatsApp or e-mail (respects consent). */
 api.post('/payments/links/:id/send', async (c) => {
   need(c, 'payments', 'C');
@@ -303,9 +270,7 @@ api.post('/payments/links/:id/send', async (c) => {
   if (!link) throw new HttpError(404, 'Link not found');
   const repo = c.get('repo');
   const e = await repo.get<any>('enrollment', link.enrollment_id);
-  if (!e) throw new HttpError(404, 'Enrollment not found');
   needScope(c, e.branch);
-  if (link.is_test || link.provider === 'easebuzz-test') throw new HttpError(409, 'Sandbox payment links are for internal testing.');
   if (link.status !== 'created') throw new HttpError(409, `This link is ${link.status}`);
   if (!['WhatsApp', 'Email'].includes(channel)) throw new HttpError(400, 'Choose WhatsApp or Email');
   const s = await repo.get<any>('student', e.stu);
@@ -371,40 +336,6 @@ api.get('/lms/preview/:enrollmentId', async (c) => {
   const frozen = calls.find((m) => m.op !== 'cancel' && m.payload)?.payload;
   const payload = frozen || lmsEnrolPayload(e, s, program, cfg.lms || {});
   return c.json({ enrol: { wsfunction: 'local_lofplatform_erp_purchase', ...payload }, cancel: { wsfunction: 'local_lofplatform_erp_cancel', reference: e.id }, missing: lmsMissing(payload), mode: modeFor(c.env, cfg, 'lms') });
-});
-
-// Run the same pre-payment checks before the wizard opens its payment step.
-api.post('/lms/enrolment-check', async (c) => {
-  need(c, 'enrollments', 'C');
-  const { branch, prog, pkg, studentId, student } = await c.req.json();
-  if (![branch, prog, pkg].every((value) => typeof value === 'string' && value.trim()))
-    throw new HttpError(400, 'Select a branch, programme and package.');
-  needScope(c, branch);
-  const repo = c.get('repo');
-  const date = dayKey(new Date());
-  const fee = feeFor(await repo.many('fee', 'branch=?', [branch]), prog, branch, pkg, date);
-  if (!fee) throw new HttpError(409, 'No active fee record for this programme, branch and package.');
-  let profile;
-  if (studentId) {
-    profile = await repo.get('student', studentId);
-    const { scope } = c.get('user');
-    if (!profile || (!scope.includes(profile.branch) && !(await repo.count('enrollment', `ref1=? AND branch IN (${inList(scope)})`, [studentId, ...scope]))))
-      throw new HttpError(404, 'Select an available student before continuing.');
-  } else {
-    profile = { ...student, id: 'preview' };
-    const email = studentEmailKey(profile.email);
-    if (email && await repo.count('student', "lower(trim(json_extract(data,'$.email')))=?", [email]))
-      throw new HttpError(409, 'This student email already belongs to a CRM profile. Go back and select Existing student.');
-  }
-  const cfg = await repo.setting('cfg');
-  try {
-    await prepareLmsOrder(c.env, repo, cfg, { id: 'preview', branch, prog, pkg, date, lmsValidUntil: fee.validUntil },
-      profile, await repo.get('program', prog));
-  } catch (error) {
-    if (!(error instanceof LmsError)) throw error;
-    throw new HttpError(error.retryable ? 503 : 409, error.message);
-  }
-  return c.json({ ok: true });
 });
 
 // Read-only Moodle operations. Tokens stay on the server; student lookups require branch access.

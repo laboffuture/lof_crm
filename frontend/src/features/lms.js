@@ -5,9 +5,9 @@ function lmsAccess(e) {
     prog = S.programs.find((x) => x.id === e.prog) || { name: e.prog },
     pkg = L.packages && L.packages[e.prog] && L.packages[e.prog][e.pkg],
     legacy = (L.programmes || {})[e.prog],
-    code = e.lmsAccess || pkg || legacy || {};
+    code = pkg || legacy || {};
   return {
-    source: e.lmsAccess || pkg ? 'package' : legacy ? 'legacy' : 'missing',
+    source: pkg ? 'package' : legacy ? 'legacy' : 'missing',
     items:
       code.items ||
       (code.track
@@ -16,21 +16,17 @@ function lmsAccess(e) {
     skillslabs: code.skillslabs || [],
   };
 }
-function lmsAccessLines(access) {
-  const lines = (access.items || []).map((item) => {
-    const credits = item.credits || [];
-    return `Track <span class="mono">${esc(item.track)}</span> · ${credits.length} ${credits.length === 1 ? 'Credit' : 'Credits'}${credits.length ? ': <span class="mono">' + esc(credits.join(', ')) + '</span>' : ' (Credit codes not configured)'}`;
-  });
-  (access.skillslabs || []).forEach((lab) => {
+function lmsEnrolmentSummary(e) {
+  const access = lmsAccess(e),
+    lines = access.items.map((item) => {
+      const credits = item.credits || [];
+      return `Track <span class="mono">${esc(item.track)}</span> · ${credits.length} ${credits.length === 1 ? 'Credit' : 'Credits'}${credits.length ? ': <span class="mono">' + esc(credits.join(', ')) + '</span>' : ' (Credit codes not configured)'}`;
+    });
+  access.skillslabs.forEach((lab) => {
     lines.push(
       `Skills Lab <span class="mono">${esc(lab.program)}</span> · ${esc(lab.sessions)} ${lab.sessions === 1 ? 'session' : 'sessions'}${lab.valid_until ? ' · valid until ' + esc(dayFmt(lab.valid_until)) : ''}`,
     );
   });
-  return lines;
-}
-function lmsEnrolmentSummary(e) {
-  const access = lmsAccess(e),
-    lines = lmsAccessLines(access);
   if (!lines.length)
     lines.push('LMS access is not mapped for this package. Configure it under Settings → LMS Integration.');
   else if (access.source === 'legacy')
@@ -39,9 +35,7 @@ function lmsEnrolmentSummary(e) {
     );
   else if (!S.cfg.lms.confirmed) lines.unshift('Package codes are awaiting LOF confirmation before live delivery.');
   lines.push(
-    'Access valid until ' +
-      esc(dayFmt(e.lmsValidUntil || addDays(addMonthsDay(e.date, +S.cfg.lms.validMonths || 12), -1))) +
-      '.',
+    'Access valid until ' + esc(dayFmt(addDays(addMonthsDay(e.date, +S.cfg.lms.validMonths || 12), -1))) + '.',
     'Purchase after full payment. No payment data is sent.',
   );
   return lines.join('<br>');
@@ -66,7 +60,7 @@ function lmsPayload(e) {
     parent_email: p.email || '',
     parent_phone: p.mobile || '',
     branch: L.branchMap[e.branch] || '',
-    valid_until: e.lmsValidUntil || addDays(addMonthsDay(e.date, +L.validMonths || 12), -1),
+    valid_until: addDays(addMonthsDay(e.date, +L.validMonths || 12), -1),
     items: access.items,
     skillslabs: access.skillslabs,
   };
@@ -460,7 +454,7 @@ function runSync(id) {
 const msCall = (m) => ((m.op || 'enrol') === 'cancel' ? 'Cancel' : 'Enrol');
 PAGES.integration = () => {
   const I = S.cfg.integ,
-    ms = lmsCallsForView().filter((m) => inScope(enrById(m.enr)?.branch));
+    ms = S.ms.filter((m) => inScope(enrById(m.enr).branch));
   const cnt = (k) => ms.filter((m) => m.status === k).length;
   const adm = can('configuration', 'V');
   const others = [
@@ -544,7 +538,7 @@ PAGES.integration = () => {
   );
 };
 MODALS.msHist = (m) => {
-  const x = lmsCallById(m.id);
+  const x = S.ms.find((y) => y.id === m.id);
   return {
     title: 'LMS call history – ' + x.id,
     body: `<p class="sm">${msCall(x)} call · enrolment ${x.enr} · Track ${esc(x.cid || '—')}${x.credits && x.credits.length ? ' · credits ' + esc(x.credits.join(', ')) : ''}</p>${timeline(x.hist.map((h) => ({ at: h.at, text: h.s + ' – ' + h.msg, type: h.s === 'Failed' || h.s === 'Retry Required' ? 'crit' : h.s === 'Success' ? 'msg' : 'sys', by: 'LMS connector' })))}`,

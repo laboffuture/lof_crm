@@ -4,7 +4,7 @@ var modeOf = function (k) {
 };
 
 window.simBanner = function () {
-  var mock = Object.keys(SERVER.integrations || {}).filter(function (k) {
+  var mock = Object.keys(INTEG_LABEL).filter(function (k) {
     return modeOf(k) !== 'live';
   });
   if (!mock.length) return '';
@@ -49,9 +49,11 @@ window.addPay = function (st, e, amt, method, ref, date, by) {
 };
 
 window.runSync = function (id) {
-  var m = lmsCallById(id);
+  var m = S.ms.find(function (x) {
+    return x.id === id;
+  });
   if (!m) return;
-  if ((snap.ms?.has(id) || S.checkoutLms?.some(({ call }) => call.id === id)) && ['Failed', 'Retry Required', 'Awaiting Setup'].includes(m.status)) {
+  if (snap.ms && snap.ms.has(id) && ['Failed', 'Retry Required', 'Awaiting Setup'].includes(m.status)) {
     req('POST', '/lms/calls/' + encodeURIComponent(id) + '/retry')
       .then(function (result) {
         mergeDocs([{ coll: 'ms', doc: result }]);
@@ -70,55 +72,6 @@ window.runSync = function (id) {
 
 // One read-only watcher per queued call, shared by registration, payments and retries.
 var lmsPolls = new Map();
-
-function logLmsCallChange(call, previousJson) {
-  if (!canLogEnrolment()) return;
-  const previous = previousJson ? JSON.parse(previousJson) : null;
-  if (previous?.status === call.status && previous.attempts === call.attempts &&
-    previous.requestUrl === call.requestUrl && Boolean(previous.payload) === Boolean(call.payload)) return;
-
-  const details = {
-    orderReference: call.enr,
-    callId: call.id,
-    operation: call.op === 'cancel' ? 'cancel' : 'purchase',
-    status: call.status,
-    attempt: call.attempts,
-  };
-  const payload = call.payload;
-  // Log the LMS identifiers and field presence. Contact details and raw provider messages stay in the protected records.
-  if (payload) {
-    details.request = {
-      reference: payload.reference,
-      student_id: payload.student_id,
-      branch: payload.branch,
-      valid_until: payload.valid_until,
-      items: (Array.isArray(payload.items) ? payload.items : []).filter(Boolean).map(({ track, credits }) => ({
-        track,
-        credits: Array.isArray(credits) ? [...credits] : [],
-      })),
-      fieldsPresent: Object.fromEntries([
-        'student_first_name', 'student_last_name', 'student_email', 'student_phone', 'student_dob',
-        'parent_id', 'parent_name', 'parent_email', 'parent_phone',
-      ].map((name) => [name, Boolean(String(payload[name] ?? '').trim())])),
-    };
-  } else if (call.requestUrl && call.op === 'cancel') {
-    details.request = { reference: call.enr };
-  }
-  if (call.deliveryMode) details.deliveryMode = call.deliveryMode;
-  if (call.response) {
-    const { accepted, duplicate, inboxid, purchaseknown, warnings } = call.response;
-    details.response = {
-      accepted: typeof accepted === 'boolean' ? accepted : null,
-      duplicate: typeof duplicate === 'boolean' ? duplicate : null,
-      inboxid: Number.isSafeInteger(inboxid) ? inboxid : null,
-      ...(typeof purchaseknown === 'boolean' ? { purchaseknown } : {}),
-      warningCount: Array.isArray(warnings) ? warnings.length : 0,
-    };
-  }
-  if (call.lastErrorCode) details.errorCode = call.lastErrorCode;
-  enrolmentConsoleLog('LMS ' + details.operation + ' ' + call.status.toLowerCase(), details,
-    ['Failed', 'Retry Required', 'Awaiting Setup', 'Warnings'].includes(call.status));
-}
 
 function showLmsResult(m) {
   var op = m.op === 'cancel' ? 'cancel' : 'enrol';
@@ -145,21 +98,14 @@ function stopLmsPolling(id) {
   if (poll) clearTimeout(poll.timer);
   lmsPolls.delete(id);
 }
-function watchLmsCall(m, waitForPayment = false) {
+function watchLmsCall(m) {
   var id = m.id;
-  const pending = (status) => status === 'Pending' || status === 'Processing' ||
-    ((waitForPayment || lmsPolls.get(id)?.waitForPayment) && status === 'Awaiting Payment');
-  if (!pending(m.status)) {
+  if (m.status !== 'Pending' && m.status !== 'Processing') {
     stopLmsPolling(id);
     return;
   }
-  if (!S) return;
-  const existing = lmsPolls.get(id);
-  if (existing) {
-    if (waitForPayment) existing.waitForPayment = true;
-    return;
-  }
-  var poll = { user: S.user, attempts: 0, timer: null, waitForPayment };
+  if (!S || lmsPolls.has(id)) return;
+  var poll = { user: S.user, attempts: 0, timer: null };
   lmsPolls.set(id, poll);
   function current() {
     return S && S.user === poll.user && lmsPolls.get(id) === poll;
@@ -189,7 +135,7 @@ function watchLmsCall(m, waitForPayment = false) {
             mergeDocs([{ coll: 'ms', doc: result }]);
             // Update status even if a secondary refresh fails; keep open forms intact.
             if (changed) safeRender();
-            if (pending(result.status)) {
+            if (result.status === 'Pending' || result.status === 'Processing') {
               schedule();
               return;
             }

@@ -1,6 +1,5 @@
 /* GET /bootstrap: branch-scoped data and settings into the screens. */
 function applyBootstrap(b, keepUi) {
-  const previousCalls = keepUi ? snap.ms : null;
   SERVER = b.server;
   if (!keepUi) {
     stopLmsPolling();
@@ -11,18 +10,9 @@ function applyBootstrap(b, keepUi) {
   Object.keys(COLL).forEach(function (c) {
     S[c] = b.data[c] || [];
   });
-  S.paymentSandbox = b.server.payments?.easebuzzSandbox ?? true;
-  S.checkoutPayments = b.data.checkoutPayments || [];
-  S.checkoutLms = b.data.checkoutLms || [];
-  S.checkoutOrderIds = new Set(S.enr.filter((enrollment) => enrollment.sandboxSource).map((enrollment) => enrollment.id));
-  S.checkoutPaid = new Map();
-  for (const payment of S.checkoutPayments) {
-    S.checkoutPaid.set(payment.enr, (S.checkoutPaid.get(payment.enr) || 0) + payment.amt);
-  }
   SETTINGS.forEach(function (k) {
     S[k] = b.data[k] || {};
   });
-  if (S.wiz) wizReconcileStudent();
   S.user = b.me.id;
   if (b.me && b.me.role === 'Reception' && S.perms && S.perms.reports) {
     S.perms.reports.Reception = 'V';
@@ -48,18 +38,13 @@ function applyBootstrap(b, keepUi) {
     S.calMonth = TODAY.slice(0, 7);
   }
   takeSnap();
-  S.ms.forEach(function (call) {
-    const previous = previousCalls?.get(call.id);
-    if (previous) logLmsCallChange(call, previous);
-    watchLmsCall(call);
-  });
+  S.ms.forEach(watchLmsCall);
 }
 function reload(force) {
-  if (!force && (busy || (S.modal?.t !== 'plink' && (S.modal || userIsTyping())))) return Promise.resolve();
+  if (!force && (busy || S.modal || userIsTyping())) return Promise.resolve();
   return req('GET', '/bootstrap').then(function (b) {
     NOW = new Date();
     applyBootstrap(b, true);
-    refreshPaymentLinkProgress();
     safeRender();
   });
 }
@@ -70,9 +55,6 @@ function start() {
   return req('GET', '/bootstrap')
     .then(function (b) {
       applyBootstrap(b, false);
-      const restored = routeFromUrl();
-      lastRouteHash = window.location.hash;
-      if (restored) setRoute(restored.page, restored.p);
       render();
       startTimers();
     })
@@ -82,51 +64,37 @@ function start() {
     });
 }
 var timers = [];
-const backgroundRefreshMs = 20_000;
 function startTimers() {
   timers.forEach(clearInterval);
-  let refreshing = false;
   timers = [
     setInterval(function () {
       NOW = new Date();
       TODAY = dayKey(NOW.toISOString());
       BASE = Date.parse(TODAY + 'T00:00:00+04:00');
     }, 30000),
-    setInterval(async function () {
-      if (!S || refreshing || document.visibilityState !== 'visible') return;
-      const session = S;
-      refreshing = true;
-      try {
-        await flush();
-        if (S === session && document.visibilityState === 'visible') await reload(false);
-      } catch {
-        // A later refresh can recover a temporary connection failure.
-      } finally {
-        refreshing = false;
-      }
-    }, backgroundRefreshMs),
-    setInterval(pollIncoming, backgroundRefreshMs),
+    setInterval(function () {
+      if (document.visibilityState === 'visible')
+        flush().then(function () {
+          return reload(false);
+        });
+    }, 45000),
+    setInterval(pollIncoming, 8000),
   ];
 }
 var callSince = new Date().toISOString();
-let checkingIncoming = false;
-async function pollIncoming() {
-  if (!S || document.visibilityState !== 'visible' || S.callPop || checkingIncoming) return;
-  const session = S;
-  checkingIncoming = true;
-  try {
-    const r = await req('GET', '/calls/incoming?since=' + encodeURIComponent(callSince));
-    if (S !== session) return;
-    callSince = r.now;
-    const ev = (r.events || []).find((e) => e.lead_id && leadById(e.lead_id));
-    if (ev) {
-      S.callPop = ev.lead_id;
-      S.callPopReal = true;
-      render();
-    }
-  } catch {
-    // Keep the last cursor so the next check can recover any missed calls.
-  } finally {
-    checkingIncoming = false;
-  }
+function pollIncoming() {
+  if (!S || document.visibilityState !== 'visible' || S.callPop) return;
+  req('GET', '/calls/incoming?since=' + encodeURIComponent(callSince))
+    .then(function (r) {
+      callSince = r.now;
+      var ev = (r.events || []).find(function (e) {
+        return e.lead_id && leadById(e.lead_id);
+      });
+      if (ev) {
+        S.callPop = ev.lead_id;
+        S.callPopReal = true;
+        render();
+      }
+    })
+    .catch(function () {});
 }

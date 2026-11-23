@@ -18,12 +18,10 @@ if (!url || !token) {
 try {
   const parsed = new URL(url);
   if (parsed.protocol !== 'https:') throw new Error('HTTPS is required');
-  const json = parsed.pathname.endsWith('/crm_api.php');
-  const body = { wstoken: token, wsfunction: 'local_lofplatform_erp_catalogue' };
   const response = await fetch(url, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30000),
-    headers: { 'content-type': json ? 'application/json' : 'application/x-www-form-urlencoded', accept: 'application/json' },
-    body: json ? JSON.stringify(body) : new URLSearchParams({ ...body, moodlewsrestformat: 'json' }),
+    headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+    body: new URLSearchParams({ wstoken: token, wsfunction: 'local_lofplatform_erp_catalogue', moodlewsrestformat: 'json' }),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   const data = await response.json();

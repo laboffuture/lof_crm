@@ -11,7 +11,7 @@ RDEF.find((r) => r[0] === 'r17')[1] = 'LMS Sync Status Report';
 RDEF.find((r) => r[0] === 'r18')[1] = 'LMS Integration Failure Report';
 RDEF.push(['r21', 'Counsellor Target vs Achievement'], ['r22', 'Instalment Status Report']);
 REP.r17 = () => {
-  const ms = lmsCallsForView().filter((m) => inScope(enrById(m.enr)?.branch));
+  const ms = S.ms.filter((m) => inScope(enrById(m.enr).branch));
   const st = ['Success', 'Processing', 'Pending', 'Failed', 'Retry Required'];
   return {
     cols: ['Call', 'Type', 'Student', 'Enrolment', 'Track', 'Credits', 'Status', 'Last attempt', 'Attempts'],
@@ -31,8 +31,8 @@ REP.r17 = () => {
 };
 REP.r18 = () => ({
   cols: ['Call', 'Type', 'Student', 'Enrolment', 'Status', 'Attempts', 'Last attempt', 'Error'],
-  rows: lmsCallsForView()
-    .filter((m) => ['Failed', 'Retry Required'].includes(m.status) && inScope(enrById(m.enr)?.branch))
+  rows: S.ms
+    .filter((m) => ['Failed', 'Retry Required'].includes(m.status) && inScope(enrById(m.enr).branch))
     .map((m) => [
       m.id,
       msCall(m),

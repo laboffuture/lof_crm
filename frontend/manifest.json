@@ -50,7 +50,6 @@
     "api/live/simulators.js",
     "api/live/telephony.js",
     "api/live/payments.js",
-    "api/live/fees.js",
     "api/live/lms-and-integrations.js",
     "api/live/staff-logins.js",
     "api/live/templates.js",

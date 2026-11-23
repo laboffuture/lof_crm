@@ -1,4 +1,4 @@
-// New checkouts use Easebuzz only. Legacy adapters remain for outstanding links.
+// Payment gateways: Telr hosted payment page (AED branches) and Razorpay Payment Links (INR branches)
 import type { Env } from '../types';
 import { basicAuth, callApi, logMock, type Mode } from './base';
 import { hmacSha256Hex, safeEqual } from '../lib/crypto';
@@ -9,9 +9,9 @@ export interface LinkInput {
   customer: { name: string; email?: string; phone?: string };
   returnUrl: string; callbackUrl: string;
 }
-export interface LinkResult { providerRef: string; url: string; provider: 'telr' | 'razorpay' | 'easebuzz' }
+export interface LinkResult { providerRef: string; url: string; provider: 'telr' | 'razorpay' }
 
-export const gatewayFor = (_currency: string, _env?: Env): 'easebuzz' => 'easebuzz';
+export const gatewayFor = (currency: string): 'telr' | 'razorpay' => (currency === 'INR' ? 'razorpay' : 'telr');
 
 // ---------------- Telr ----------------
 const TELR_URL = 'https://secure.telr.com/gateway/order.json';

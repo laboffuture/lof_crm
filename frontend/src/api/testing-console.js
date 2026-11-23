@@ -44,18 +44,20 @@ var SIMS = [
   ['whatsapp-inbound', 'WhatsApp reply', 'Parent reply threads onto the test lead'],
   ['exotel-incoming', 'Incoming call', 'Caller identified, screen-pop raised'],
   ['exotel-status', 'Call completed', 'Call logged, first-call SLA stopped'],
+  ['telr-paid', 'Telr payment', 'Transaction advice → verified → receipt (needs an open test link)'],
+  ['razorpay-paid', 'Razorpay payment', 'payment_link.paid → receipt (needs an open test link)'],
   ['bad-signature', 'Forged webhook', 'Invalid signature must be rejected with 401'],
 ];
 var SCEN = [
   [
     'uae-lead-to-enrolment',
-    'UAE: enquiry → enrolment → counter payment',
-    'Mock counter payment, receipt, paid-order LMS purchase, ERPNext and withdrawal. Use Easebuzz sandbox checkout separately to test online payments.',
+    'UAE: enquiry → enrolment → Telr payment',
+    'Website lead, routing, messages, Exotel call, conversion, enrolment, LMS enrol call, Telr, receipt, ERPNext, idempotency, withdrawal with refund suggestion and LMS cancel call',
   ],
   [
     'india-lead-to-enrolment',
-    'India: enquiry → enrolment → counter payment',
-    'Same mock counter-payment flow for Bengaluru with INR. Use Easebuzz sandbox checkout separately to test online payments.',
+    'India: enquiry → enrolment → Razorpay payment',
+    'Same flow for Bengaluru with INR and Razorpay',
   ],
   ['meta-lead', 'Meta Lead Ads import', 'Signed leadgen webhook and forged-signature rejection'],
   [
@@ -68,10 +70,7 @@ var resBadge = function (r) {
   if (!r) return '<span class="faint">—</span>';
   if (r.running) return bdg('Running…', 'info');
   return r.ok
-    ? bdg(
-        'Passed' + (r.sandbox ? ' · sandbox' : r.mode ? ' · ' + r.mode : ''),
-        r.mode === 'mock' || r.sandbox ? 'warn' : 'ok',
-      )
+    ? bdg('Passed' + (r.mode ? ' · ' + r.mode : ''), r.mode === 'mock' ? 'warn' : 'ok')
     : bdg('Failed', 'crit');
 };
 PAGES.testing = function () {
@@ -127,9 +126,7 @@ PAGES.testing = function () {
         {
           h: 'Mode',
           f: function (i) {
-            return i.mode === 'live'
-              ? bdg(i.sandbox ? 'Sandbox API' : 'Live', i.sandbox ? 'warn' : 'ok')
-              : bdg('Mock', 'warn');
+            return i.mode === 'live' ? bdg('Live', 'ok') : bdg('Mock', 'warn');
           },
         },
         {
@@ -172,11 +169,6 @@ PAGES.testing = function () {
               i.key +
               '">Test</button>' +
               resBadge(r) +
-              (i.key === 'easebuzz' && i.sandbox && st.env !== 'production'
-                ? '<button class="btn sm" data-act="tcEasebuzz"' +
-                  (TC.easebuzzLoading ? ' disabled aria-busy="true"' : '') +
-                  '>Sandbox checkout</button>'
-                : '') +
               '</div>' +
               (r && !r.running
                 ? '<div class="xs ' +
@@ -355,6 +347,10 @@ PAGES.testing = function () {
       ),
     { np: 1 },
   );
+  var suite = card(
+    'Automated test suite',
+    '<p class="sm" style="margin-top:0">Run before every deployment: <span class="mono">npm test</span> (78 tests: unit, API & permission guard, webhooks, live adapters against stubbed provider APIs, testing console scenarios) and <span class="mono">npm run test:e2e</span> (browser tests of the screens against a local server).</p>',
+  );
   return (
     head +
     info +
@@ -363,9 +359,10 @@ PAGES.testing = function () {
     scen +
     '<div style="height:14px"></div>' +
     sims +
-    '<div style="height:14px"></div>' +
+    '<div style="height:14px"></div><div class="grid g2">' +
     flags +
-    '<div style="height:14px"></div>' +
+    suite +
+    '</div><div style="height:14px"></div>' +
     logs
   );
 };
@@ -390,22 +387,6 @@ ACT.tcTest = function (d) {
         TC.status = s;
         safeRender();
       });
-    });
-};
-ACT.tcEasebuzz = function () {
-  if (TC.easebuzzLoading) return;
-  TC.easebuzzLoading = true;
-  render();
-  req('POST', '/testing/easebuzz/link', {})
-    .then(function (link) {
-      openModal('plink', { link: link });
-    })
-    .catch(function (e) {
-      toast(e.message, 'err');
-    })
-    .finally(function () {
-      TC.easebuzzLoading = false;
-      tcLogs().then(safeRender);
     });
 };
 ACT.tcTestAll = function () {

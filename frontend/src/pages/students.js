@@ -1,7 +1,6 @@
 /* Student list and student record. */
 /* ====== students ====== */
-const studentEnrolments = (id) => S.enr.filter((e) => e.stu === id && !e.sandboxSource);
-const stuVisible = (s) => inScope(s.branch) || studentEnrolments(s.id).some((e) => inScope(e.branch));
+const stuVisible = (s) => inScope(s.branch) || S.enr.some((e) => e.stu === s.id && inScope(e.branch));
 PAGES.students = () => {
   const q = (S.stuQ || '').toLowerCase();
   const ss = S.students.filter(
@@ -28,8 +27,8 @@ PAGES.students = () => {
               h: 'Current programme(s)',
               f: (s) =>
                 esc(
-                  studentEnrolments(s.id)
-                    .filter((e) => e.status === 'Active')
+                  S.enr
+                    .filter((e) => e.stu === s.id && e.status === 'Active')
                     .map((e) => PNAME(e.prog))
                     .join(', ') || '—',
                 ),
@@ -75,12 +74,12 @@ PAGES.student = (rt) => {
   const s = stuById(rt.id);
   if (!s || !stuVisible(s))
     return ph('Student not found', '') + card('', emptyBox('Not found or outside your branch access'));
-  const es = studentEnrolments(s.id).map(paymentEnrolment),
+  const es = S.enr.filter((e) => e.stu === s.id),
     cur = es.filter((e) => e.status === 'Active'),
     tab = S.stuTab,
     E = can('students', 'E'),
     pay = can('payments', 'V'),
-    pays = paymentRecordsForView().filter((p) => p.stu === s.id);
+    pays = S.pay.filter((p) => p.stu === s.id);
   const head = `<div class="sum"><span class="avatar" style="width:54px;height:54px;font-size:18px">${initials(s.first + ' ' + s.last)}</span><div class="it"><small>Student ID (permanent)</small><b class="mono" style="font-size:15px">${s.id}</b> ${ic('shield')}</div><div class="it"><small>Name</small><b style="font-size:16px">${esc(s.first + ' ' + s.last)}</b></div><div class="it"><small>Age</small>${age(s.dob)}</div><div class="it"><small>Branch</small>${esc(branchName(s.branch))}</div><div class="it"><small>Current programme</small>${esc(cur.map((e) => PNAME(e.prog)).join(', ') || '—')}</div><div class="it"><small>Membership</small>${E ? `<select data-change="stuStatus" data-id="${s.id}" aria-label="Membership status">${['Active', 'Inactive', 'On Hold'].map((x) => `<option${s.status === x ? ' selected' : ''}>${x}</option>`).join('')}</select>` : stB(s.status)}</div><div class="it"><small>LMS ID</small>${s.moodle || '—'}</div><div class="it"><small>Family ID</small>${s.fam}</div></div>`;
   let b = '';
   if (tab === 'overview')
@@ -147,15 +146,7 @@ PAGES.student = (rt) => {
             },
           },
           { h: 'Paid', f: (e) => (pay ? money(e.paid, e.cur) : '—'), r: 1 },
-          {
-            h: 'LMS mapping',
-            f: (e) => {
-              const course = [e.course?.moodleId, e.course?.name].filter((value) => value != null && value !== '').join(' · ');
-              if (course) return esc(course);
-              const purchase = S.ms.find((call) => call.enr === e.id && call.op !== 'cancel' && call.payload);
-              return lmsAccessLines(purchase?.payload || lmsAccess(e)).join('<br>') || '—';
-            },
-          },
+          { h: 'LMS course', f: (e) => esc(e.course.moodleId) + ' · ' + esc(e.course.name) },
         ],
         es,
         { all: 1 },
@@ -239,7 +230,7 @@ PAGES.student = (rt) => {
           { h: 'Last attempt', f: (m) => fDT(m.last) },
           { h: 'Error', f: (m) => esc(m.err) },
         ],
-        lmsCallsForView().filter((m) => m.stu === s.id),
+        S.ms.filter((m) => m.stu === s.id),
         { all: 1 },
       ),
       { np: 1, act: `<button class="btn sm" data-act="go" data-page="integration">Open integration monitor</button>` },
