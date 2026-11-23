@@ -3,6 +3,7 @@ GROUPS.find(function (g) {
   return g.id === 'set';
 }).tabs.push(['testing', 'Testing console', 'target', 'configuration']);
 ACCESS.testing = ['configuration', 'V'];
+var logTimeLabel = 'Time (' + TZ + ')';
 var TC = {
   status: null,
   loading: false,
@@ -293,7 +294,7 @@ PAGES.testing = function () {
         'tcl',
         [
           {
-            h: 'Time',
+            h: logTimeLabel,
             f: function (l) {
               return fDT(l.at);
             },
@@ -525,17 +526,25 @@ ACT.tcLog = function (d) {
 };
 MODALS.tcLog = function (m) {
   var l = m.l;
-  var pretty = function (s) {
+  var pretty = function (s, isRequest) {
     try {
-      return JSON.stringify(JSON.parse(s), null, 2);
+      var json = JSON.parse(s);
+      if (isRequest && typeof json?.body === 'string') {
+        try {
+          json.body = JSON.parse(json.body);
+        } catch {
+          // Form-encoded and plain text bodies are displayed as recorded.
+        }
+      }
+      return JSON.stringify(json, null, 2);
     } catch (e) {
       return s || '';
     }
   };
-  var pre = function (s) {
+  var pre = function (s, isRequest) {
     return (
       '<pre style="white-space:pre-wrap;overflow-wrap:anywhere;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:10px;font-family:var(--f-mono);font-size:11.5px;max-height:260px;overflow:auto">' +
-      esc(pretty(s)) +
+      esc(pretty(s, isRequest)) +
       '</pre>'
     );
   };
@@ -545,10 +554,10 @@ MODALS.tcLog = function (m) {
     foot: '<button class="btn" data-act="closeModal">Close</button>',
     body:
       dl([
-        ['Time', fDT(l.at)],
+        [logTimeLabel, fDT(l.at)],
         ['Direction', l.direction === 'in' ? 'Inbound webhook' : 'Outbound API call'],
         ['Mode', l.mode],
-        ['Request', esc((l.method || '') + ' ' + (l.url || ''))],
+        ['Endpoint', esc((l.method || '') + ' ' + (l.url || ''))],
         [
           'Result',
           (l.ok ? 'OK' : 'Failed') +
@@ -559,7 +568,7 @@ MODALS.tcLog = function (m) {
         ['Reference', esc(l.ref || '')],
       ]) +
       '<div class="sec">Request</div>' +
-      pre(l.request) +
+      pre(l.request, true) +
       '<div class="sec">Response</div>' +
       pre(l.response),
   };

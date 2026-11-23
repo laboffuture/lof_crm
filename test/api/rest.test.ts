@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { setup, setupEasebuzz, useInrFixtures, USERS, doc, type TestCtx } from '../helpers/app';
+import { setup, setupEasebuzz, stubFetch, useInrFixtures, USERS, doc, type TestCtx } from '../helpers/app';
 import { cron } from '../../src/jobs';
+import { Repo } from '../../src/lib/db';
 
 let t: TestCtx;
 afterEach(() => vi.unstubAllGlobals());
@@ -51,6 +52,51 @@ describe('REST resources', () => {
   it('returns notifications filtered for the role', async () => {
     const r = await t.call('GET', '/api/v1/notifications', { token: await t.login(USERS.layla) });
     expect(r.body.items.every((n: any) => !n.roles || n.roles.includes('Reception'))).toBe(true);
+  });
+  it('appends the programme code and fee Course ID to the LMS product label', async () => {
+    t.env.INTEGRATION_MODE = 'auto';
+    t.env.LMS_URL = 'https://lms.test/crm_api.php';
+    const repo = new Repo(t.env.DB);
+    const order = await doc(t, 'enrollment', 'EN-26-0002');
+    const program = await doc(t, 'program', order.prog);
+    const student = await doc(t, 'student', order.stu);
+    student.email = 'lms-student@example.com';
+    student.dob = '2014-05-14';
+    student.mobile = '+919876543210';
+    await repo.put('student', student);
+    await repo.put('fee', { id: 'FEE-LMS-TEST', courseId: 'TERM-042' });
+    Object.assign(order, {
+      feeId: 'FEE-LMS-TEST',
+      payStatus: 'Paid',
+      lmsAccess: { items: [{ track: 'FT', credits: ['FC1'] }] },
+    });
+    await repo.put('enrollment', order);
+    await repo.put('moodle_sync', { id: 'MS-LMS-TEST', enr: order.id, stu: student.id, status: 'Retry Required', op: 'enrol' });
+    await t.setCfg((cfg) => {
+      cfg.integ.lms.on = true;
+      cfg.lms.branchMap[order.branch] = 'AW';
+    });
+    const fetch = stubFetch([[/^https:\/\/lms\.test\/crm_api\.php$/, ({ body }) => {
+      const request = JSON.parse(body);
+      return request.wsfunction === 'local_lofplatform_erp_catalogue'
+        ? { json: { tracks: [{ code: 'FT', credits: [{ code: 'FC1' }] }] } }
+        : { json: { accepted: true, inboxid: 42, warnings: [] } };
+    }]]);
+    const token = await t.login(USERS.admin);
+    const item = {
+      track: 'FT',
+      credits: ['FC1'],
+      product_name: `${program.name} – ${order.pkg} (Unique programme code: ${program.code}, Course ID: TERM-042)`,
+    };
+    const preview = await t.call('GET', `/api/v1/lms/preview/${order.id}`, { token });
+    expect(preview.body.enrol.items).toEqual([item]);
+    expect(fetch.calls).toHaveLength(0);
+
+    const result = await t.call('POST', '/api/v1/lms/calls/MS-LMS-TEST/retry', { token });
+    expect(result.body.status).toBe('Success');
+    const sent = fetch.calls.map((call) => JSON.parse(call.body)).find((body) => body.wsfunction === 'local_lofplatform_erp_purchase');
+    expect(sent).toMatchObject({ student_id: student.id, items: [item] });
+    expect(sent).not.toHaveProperty('course_id');
   });
 });
 

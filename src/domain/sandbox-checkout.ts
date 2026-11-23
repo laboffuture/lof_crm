@@ -52,14 +52,17 @@ export async function sandboxOrder(env: Env, repo: Repo, cfg: any, original: any
   if (original.branch === 'AW' && cfg.lms?.branchMap?.AW === 'AW' && uatEnvironment(env) &&
       modeFor(env, cfg, 'lms', true) === 'live' &&
       (original.lmsAccess || cfg.lms?.packages?.[original.prog]?.[original.pkg])) {
-    const program = await repo.get('program', original.prog);
+    const [program, fee] = await Promise.all([
+      repo.get('program', original.prog),
+      original.feeId ? repo.get<{ courseId?: string }>('fee', original.feeId) : null,
+    ]);
     const identity = sandboxIdentity(order);
     order.uatFlow = UAT_FLOW;
     order.lmsContract = LMS_CONTRACT;
     order.lmsAccess = original.lmsAccess;
     order.lmsAccess = await prepareLmsOrder(env, repo, cfg, order, identity, program);
     order.ms = 'TST-MS-SANDBOX-' + key;
-    const payload = lmsEnrolPayload(order, identity, program, cfg.lms);
+    const payload = lmsEnrolPayload(order, identity, program, cfg.lms, { programmeCode: program?.code, courseId: fee?.courseId });
     entries.push(await repo.createStmt('moodle_sync', {
       id: order.ms, enr: id, stu: original.stu, op: 'enrol', status: 'Awaiting Payment', test: true,
       payload, cid: payload.items[0]?.track, credits: payload.items.flatMap((item) => item.credits),

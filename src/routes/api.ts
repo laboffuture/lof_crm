@@ -570,10 +570,15 @@ api.get('/lms/preview/:enrollmentId', async (c) => {
   const e = await repo.get<any>('enrollment', c.req.param('enrollmentId'));
   if (!e) throw new HttpError(404, 'Enrolment not found');
   needScope(c, e.branch);
-  const [s, program, cfg] = await Promise.all([repo.get<any>('student', e.stu), repo.get<any>('program', e.prog), repo.setting<any>('cfg')]);
+  const [s, program, cfg, fee] = await Promise.all([
+    repo.get('student', e.stu),
+    repo.get('program', e.prog),
+    repo.setting('cfg'),
+    e.feeId ? repo.get<{ courseId?: string }>('fee', e.feeId) : null,
+  ]);
   const calls = await repo.many<any>('moodle_sync', 'ref1=?', [e.id]);
   const frozen = calls.find((m) => m.op !== 'cancel' && m.payload)?.payload;
-  const payload = frozen || lmsEnrolPayload(e, s, program, cfg.lms || {});
+  const payload = frozen || lmsEnrolPayload(e, s, program, cfg.lms, { programmeCode: program?.code, courseId: fee?.courseId });
   return c.json({ enrol: { wsfunction: 'local_lofplatform_erp_purchase', ...payload }, cancel: { wsfunction: 'local_lofplatform_erp_cancel', reference: e.id }, missing: lmsMissing(payload), mode: modeFor(c.env, cfg, 'lms') });
 });
 

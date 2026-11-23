@@ -88,9 +88,15 @@ export async function processSync(env: Env, repo: Repo, syncId: string, options:
       await repo.put('moodle_sync', m);
       result = await lms.cancel(lc, e.id, m.id, m.reason);
     } else {
-      const program = await repo.get<any>('program', e.prog);
       const identity = e.sandboxSource ? sandboxIdentity(e) : s;
-      const payload: lms.Purchase = m.payload || lmsEnrolPayload(e, identity, program, cfg.lms || {});
+      let payload: lms.Purchase = m.payload;
+      if (!payload) {
+        const [program, fee] = await Promise.all([
+          repo.get('program', e.prog),
+          e.feeId ? repo.get<{ courseId?: string }>('fee', e.feeId) : null,
+        ]);
+        payload = lmsEnrolPayload(e, identity, program, cfg.lms, { programmeCode: program?.code, courseId: fee?.courseId });
+      }
       const problems = lmsPayloadProblems(payload, e, identity);
       if (problems.length) throw new lms.LmsError('Not sent – missing or invalid ' + problems.join(', '), false, 'localvalidation');
       if (lc.mode === 'live' && !m.payload) {

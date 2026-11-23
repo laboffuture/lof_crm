@@ -145,12 +145,26 @@ export function validLmsDate(value: unknown): boolean {
 }
 
 /** November v1.1 purchase body. Legacy programme mappings remain readable, never rewritten. */
-export function lmsEnrolPayload(e: any, s: any, program: any, L: any): Purchase {
+export function lmsEnrolPayload(
+  e: any, s: any, program: any, L: any,
+  productCodes: { programmeCode?: string; courseId?: string } = {},
+): Purchase {
   const p = s?.parents?.[0] || {};
   const code = e.lmsAccess || L?.packages?.[e.prog]?.[e.pkg] || L?.programmes?.[e.prog] || {};
   const product_name = `${program?.name || e.prog} – ${e.pkg}`;
-  const items: TrackItem[] = code.items || (code.track ? [{ product_name, track: code.track, credits: code.credits || [] }] : []);
-  const skillslabs: SkillsLabItem[] = code.skillslabs || [];
+  const items = structuredClone<TrackItem[]>(code.items || (code.track ? [{ product_name, track: code.track, credits: code.credits || [] }] : []));
+  const skillslabs = structuredClone<SkillsLabItem[]>(code.skillslabs || []);
+  const programmeCode = String(productCodes.programmeCode ?? '').trim();
+  const courseId = String(productCodes.courseId ?? '').trim();
+  const codes = [
+    programmeCode && `Unique programme code: ${programmeCode}`,
+    courseId && `Course ID: ${courseId}`,
+  ].filter(Boolean).join(', ');
+  if (codes) {
+    for (const line of [...items, ...skillslabs]) {
+      line.product_name = `${line.product_name || product_name} (${codes})`;
+    }
+  }
   return {
     reference: e.id,
     student_id: s.id,
@@ -165,8 +179,8 @@ export function lmsEnrolPayload(e: any, s: any, program: any, L: any): Purchase 
     parent_phone: p.mobile || '',
     branch: L?.branchMap?.[e.branch] || '',
     valid_until: e.lmsValidUntil || addDays(addMonthsDay(e.date, +(L?.validMonths || 12)), -1),
-    items: structuredClone(items),
-    skillslabs: structuredClone(skillslabs),
+    items,
+    skillslabs,
   };
 }
 
