@@ -13,6 +13,7 @@ import { money } from '../domain/core';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
 import { verifyHubSignature, parseWebhook } from '../integrations/whatsapp';
+import { parseGupshupSubmission } from '../integrations/gupshup';
 import { parseLeadgenWebhook, fetchLead, mapLead } from '../integrations/meta';
 import { parseStatus } from '../integrations/exotel';
 import { razorpayVerifyWebhook, telrCheck } from '../integrations/payments';
@@ -139,6 +140,37 @@ webhooks.post('/meta', async (c) => {
   c.executionCtx.waitUntil(work);
   if (isTestReq(c)) await work; // the Testing Console waits so it can show the result
   return c.json({ ok: true, received: changes.length, leads: created });
+});
+
+// ------------------------------------------------------------------ Gupshup WhatsApp Flow submissions
+webhooks.post('/gupshup/leads', async (c) => {
+  const secret = c.env.GUPSHUP_WEBHOOK_SECRET;
+  if (!secret) throw new HttpError(503, 'Gupshup lead capture is not configured');
+  const token = c.req.header('authorization')?.match(/^Bearer (.+)$/i)?.[1];
+  if (!token || !safeEqual(token, secret)) throw new HttpError(401, 'Invalid Gupshup webhook token');
+
+  const raw = await c.req.text();
+  if (raw.length > 16_384) throw new HttpError(413, 'Gupshup submission is too large');
+  const { id, input } = parseGupshupSubmission(JSON.parse(raw));
+  const repo = new Repo(c.env.DB, 'Gupshup', isTestReq(c));
+  const provider = repo.isTest ? 'gupshup-test' : 'gupshup';
+  const event = c.env.DB.prepare('SELECT result FROM webhook_events WHERE provider=? AND event_id=?').bind(provider, id);
+  const duplicate = (reference: string) => c.json({ ok: true, reference, duplicate: true });
+  const existing = await event.first<string>('result');
+  if (existing) return duplicate(existing);
+
+  let reference: string;
+  try {
+    const { lead } = await createLead(repo, input, repo.actor, { noAutoMessages: true, webhookEvent: { provider, id } });
+    reference = lead.id;
+  } catch (error) {
+    // A simultaneous retry can commit the same submission while this request is being prepared.
+    const committed = await event.first<string>('result');
+    if (committed) return duplicate(committed);
+    throw error;
+  }
+  await logInbound(c.env, 'gupshup', 'lead.submit', true, {}, { lead: reference }, reference, repo.isTest);
+  return c.json({ ok: true, reference });
 });
 
 // ------------------------------------------------------------------ WhatsApp Cloud API

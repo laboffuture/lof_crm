@@ -131,6 +131,7 @@ Datasets: `leads, opportunities, students, enrollments, instalments, payments, r
 | `POST /webhooks/website` | Website form | `X-LOF-Signature` (HMAC-SHA256 hex) or allowed `Origin` |
 | `GET/POST /webhooks/meta` | Meta Lead Ads | `hub.verify_token`; `X-Hub-Signature-256` |
 | `GET/POST /webhooks/whatsapp` | WhatsApp Cloud API | `hub.verify_token`; `X-Hub-Signature-256` |
+| `POST /webhooks/gupshup/leads` | Gupshup WhatsApp Flow submission | `Authorization: Bearer <GUPSHUP_WEBHOOK_SECRET>` |
 | `GET/POST /webhooks/exotel/incoming` | Exotel passthru | `?token=` |
 | `POST /webhooks/exotel/status` | Exotel status callback | `?token=` |
 | `POST /webhooks/razorpay` | Razorpay | `X-Razorpay-Signature` |
@@ -138,6 +139,31 @@ Datasets: `leads, opportunities, students, enrollments, instalments, payments, r
 | `GET /webhooks/pay/return` | Customer return page | Status re-checked with the gateway |
 
 All webhooks are idempotent (provider event IDs are recorded) and logged with secrets redacted. Signatures are compared in constant time. Optional: `EXOTEL_ALLOWED_IPS` (comma-separated) restricts the Exotel endpoints; `TURNSTILE_SECRET` adds Cloudflare Turnstile to the website form.
+
+### Gupshup WhatsApp enquiry form
+
+1. Set a new random `GUPSHUP_WEBHOOK_SECRET` in the CRM runtime (Cloudflare secret or VPS environment). Enable **WhatsApp** under **Configuration → Lead Sources & Campaigns**.
+2. In the Gupshup WhatsApp Flows Journey for the enquiry form, map the submitted answers in `system_var.message_meta` to the JSON fields below. Add an API node before the terminal node to POST to `https://<crm-host>/webhooks/gupshup/leads` with `Content-Type: application/json` and `Authorization: Bearer <GUPSHUP_WEBHOOK_SECRET>`. [Gupshup WhatsApp Flows guide](https://console-docs.gupshup.io/docs/whatsapp-flows-static-2-way)
+3. Submit the form once from WhatsApp and verify the returned lead reference in **Leads → Source → WhatsApp**.
+
+```json
+{
+  "submission_id": "wamid.EXAMPLE_FORM_REPLY",
+  "student": "Aisha Example",
+  "parent": "Mariam Example",
+  "phone": "+971509991234",
+  "branch": "KRM",
+  "prog": "SPA",
+  "email": "mariam@example.com",
+  "wa_consent": true
+}
+```
+
+The first six fields are required. Use the inbound WhatsApp message ID for `submission_id`. Keep it stable on retries and unique to each submitted form. Map `phone` to the WhatsApp sender number or the contact number collected by the form, including the country code. Map `branch` and `prog` to CRM IDs for a branch and one of its offered programmes.
+
+`email`, `school`, `grade`, `notes`, `campaign`, `wa_consent`, and `email_consent` are optional. Consent fields are JSON booleans and default to false. The CRM creates an open lead with source **WhatsApp** and category **Warm**, then applies normal counsellor routing. The Flow Journey can send the submission acknowledgement.
+
+Successful submissions return HTTP 200 with `{ "ok": true, "reference": "LD-26-…" }`. A retry returns the same reference with `"duplicate": true`. HTTP 400 indicates an invalid payload, 401 indicates failed authentication, 422 indicates a CRM lead rule rejected the submission, and 503 indicates the webhook secret is missing.
 
 ## Other
 

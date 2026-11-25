@@ -30,6 +30,7 @@ export interface Env {
   WHATSAPP_APP_SECRET?: string;
   WHATSAPP_VERIFY_TOKEN?: string;
   WHATSAPP_TEMPLATE_LANG?: string;
+  GUPSHUP_WEBHOOK_SECRET?: string;
 
   EXOTEL_SUBDOMAIN?: string;
   EXOTEL_SID?: string;

@@ -98,14 +98,17 @@ export class Repo {
     return r ? JSON.parse(r.data) : ({} as T);
   }
 
-  async putSetting(key: string, data: unknown) {
-    await this.db
+  putSettingStmt(key: string, data: unknown) {
+    return this.db
       .prepare(
         `INSERT INTO settings (key,data,updated_by) VALUES (?,?,?)
          ON CONFLICT(key) DO UPDATE SET data=excluded.data,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),updated_by=excluded.updated_by`,
       )
-      .bind(key, JSON.stringify(data), this.actor)
-      .run();
+      .bind(key, JSON.stringify(data), this.actor);
+  }
+
+  async putSetting(key: string, data: unknown) {
+    await this.putSettingStmt(key, data).run();
   }
 
   // ---------- sequences ----------

@@ -65,6 +65,80 @@ describe('Meta Lead Ads (live mode, Graph API stubbed)', () => {
   });
 });
 
+describe('Gupshup WhatsApp Flow submissions', () => {
+  const path = '/webhooks/gupshup/leads';
+  const secret = 'test-gupshup-crm-webhook-secret';
+  const headers = { authorization: 'Bearer ' + secret };
+  const form = {
+    submission_id: 'wamid.EXAMPLE_FORM_REPLY', student: 'Aisha Test', parent: 'Mariam Test',
+    phone: '971509991234', email: 'mariam@example.com', branch: 'KRM', prog: 'SPA',
+    notes: 'Prefers Saturday sessions', wa_consent: true,
+  };
+
+  beforeEach(() => { t.env.GUPSHUP_WEBHOOK_SECRET = secret; });
+
+  it('shows the routed lead in the Leads list and CRM bootstrap', async () => {
+    const result = await t.call('POST', path, { body: form, headers });
+    expect(result.status).toBe(200);
+    const id = result.body.reference;
+    const token = await t.login(USERS.hassan);
+    const list = await t.call('GET', '/api/v1/leads?source=WhatsApp&q=' + id, { token });
+    expect(list.body.items).toEqual([expect.objectContaining({
+      id, src: 'WhatsApp', stage: 'New Lead', status: 'Open', cat: 'Warm', cslr: 'S02',
+      student: form.student, parent: form.parent, phone: '+' + form.phone, email: form.email,
+      branch: form.branch, prog: form.prog, notes: form.notes, wa: true, em: false,
+      external: { gupshup: { submissionId: form.submission_id } },
+    })]);
+    const bootstrap = await t.call('GET', '/api/v1/bootstrap', { token });
+    expect(bootstrap.body.data.leads).toEqual(expect.arrayContaining([expect.objectContaining({ id, src: 'WhatsApp' })]));
+    expect(bootstrap.body.data.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ lead: id, type: 'First call' })]));
+    expect(bootstrap.body.data.comms.filter((comm: any) => comm.lead === id)).toEqual([]);
+  });
+
+  it('creates one lead for simultaneous and subsequent retries of the same submission', async () => {
+    const send = () => t.call('POST', path, { body: form, headers });
+    const results = await Promise.all([send(), send()]);
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    const id = results[0].body.reference;
+    expect(results.map((r) => r.body.reference)).toEqual([id, id]);
+    expect(results.filter((r) => r.body.duplicate)).toHaveLength(1);
+    expect((await send()).body).toMatchObject({ reference: id, duplicate: true });
+    expect(await t.sql("SELECT id FROM docs WHERE type='lead' AND ref1='509991234'")).toEqual([{ id }]);
+    expect(await t.sql("SELECT id FROM docs WHERE type='task' AND ref1=?", id)).toHaveLength(1);
+
+    const another = await t.call('POST', path, { body: { ...form, submission_id: 'wamid.ANOTHER_FORM_REPLY' }, headers });
+    expect(another.status).toBe(200);
+    expect(another.body.reference).not.toBe(id);
+  });
+
+  it('checks authorization and rejects incomplete submissions or invalid branch/programme combinations', async () => {
+    expect((await t.call('POST', path, { body: form })).status).toBe(401);
+    expect((await t.call('POST', path, { body: form, headers: { authorization: 'Bearer wrong' } })).status).toBe(401);
+    expect((await t.call('POST', path, { body: { ...form, student: '' }, headers })).status).toBe(400);
+    expect((await t.call('POST', path, { body: { ...form, branch: 'HYD' }, headers })).status).toBe(422);
+    await t.setCfg((cfg) => { cfg.sources.find((source: any) => source.n === 'WhatsApp').en = false; });
+    expect((await t.call('POST', path, { body: form, headers })).status).toBe(422);
+    expect(await t.sql("SELECT result FROM webhook_events WHERE provider='gupshup'")).toEqual([]);
+    delete t.env.GUPSHUP_WEBHOOK_SECRET;
+    expect((await t.call('POST', path, { body: form, headers })).status).toBe(503);
+  });
+
+  it('can retry after a failed write without leaving a partial lead', async () => {
+    t.d1.db.exec(`CREATE TRIGGER fail_gupshup_audit BEFORE INSERT ON docs WHEN NEW.type='audit'
+      BEGIN SELECT RAISE(ABORT, 'test write failure'); END;`);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await t.call('POST', path, { body: form, headers })).status).toBe(500);
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect(await t.sql("SELECT result FROM webhook_events WHERE provider='gupshup'")).toEqual([]);
+    expect(await t.sql("SELECT id FROM docs WHERE type='lead' AND ref1='509991234'")).toEqual([]);
+    t.d1.db.exec('DROP TRIGGER fail_gupshup_audit');
+    expect((await t.call('POST', path, { body: form, headers })).status).toBe(200);
+  });
+});
+
 describe('WhatsApp webhooks', () => {
   it('updates delivery status and threads inbound replies onto the lead', async () => {
     const tok = await t.login(USERS.admin);

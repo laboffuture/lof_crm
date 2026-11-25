@@ -129,6 +129,8 @@ Set the secrets (`wrangler secret put …`), set the variables in `wrangler.toml
 | **Google Calendar** | `GCAL_SERVICE_ACCOUNT_JSON`, `GCAL_CALENDAR_ID` | Share the calendar with the service account (make changes to events) |
 | **E-mail** | none – set in Configuration → Email Outgoing → SMTP server | Google Workspace: smtp.gmail.com, port 465 (SSL), the mailbox address and an app password |
 
+For Gupshup WhatsApp enquiry forms, configure the Flow Journey to POST completed submissions to the CRM. [Gupshup setup and payload](docs/API.md#gupshup-whatsapp-enquiry-form)
+
 ## Security model (summary)
 
 Server-side sessions in an HttpOnly `__Host-` cookie with CSRF header, 60-min idle timeout · TOTP two-step verification (required for System Administrator and Management) · PBKDF2 passwords, strength rules, lockout, rate limits · every write re-checked on the server (role, branch, approvals, fees, money, consent) · server-issued record numbers, append-only history and audit · database triggers block overpayment and changes to payments/audit · CSP with script hashes, HSTS, frame denial · signed/verified webhooks · secrets never logged · data retention by the scheduler. Full details: `docs/LOF-CRM-Handover.md`.
