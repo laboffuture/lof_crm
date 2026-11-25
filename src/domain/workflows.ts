@@ -572,8 +572,8 @@ const scrub = (v: unknown): string => {
   }
   return JSON.stringify(v, (k, val) => (k && SECRET_KEYS.test(k) ? '***' : val));
 };
-export async function logInbound(env: Env, integration: string, operation: string, ok: boolean, request: unknown, response: unknown, ref?: string, isTest = false, error?: string) {
-  await writeLog(env, { integration, direction: 'in', operation, mode: 'live', ok, status: ok ? 200 : 400, request: scrub(request), response: scrub(response), ref, isTest, error });
+export async function logInbound(env: Env, integration: string, operation: string, ok: boolean, request: unknown, response: unknown, ref?: string, isTest = false, error?: string, status = ok ? 200 : 400) {
+  await writeLog(env, { integration, direction: 'in', operation, mode: 'live', ok, status, request: scrub(request), response: scrub(response), ref, isTest, error });
 }
 
 export { fmtDT };

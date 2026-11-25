@@ -1,12 +1,12 @@
 // Public webhook endpoints. Each one authenticates the sender (signature or shared token), is idempotent,
-// logs the request in integration_logs (Testing Console → Logs) and returns quickly.
+// and logs the request in integration_logs (Testing Console → Logs).
 import { Hono } from 'hono';
 import type { Env, Job } from '../types';
 import { HttpError } from '../types';
 import { Repo, nowIso } from '../lib/db';
 import { normPhone } from '../lib/indexing';
-import { hmacSha256Hex, safeEqual } from '../lib/crypto';
-import { createLead, addEv, addAudit, notify } from '../domain/core';
+import { hmacSha256Hex, safeEqual, sha256Hex } from '../lib/crypto';
+import { createLead, addEv, addAudit, notify, type NewLeadInput } from '../domain/core';
 import { allow, clientIp } from '../lib/ratelimit';
 import { logInbound, settleLink, linkExpired, reopenTelrOrder } from '../domain/workflows';
 import { money } from '../domain/core';
@@ -113,33 +113,52 @@ webhooks.post('/meta', async (c) => {
   const repo = new Repo(c.env.DB, 'Meta Lead Ads', isTestReq(c));
   const cfg = await repo.setting<any>('cfg');
   const changes = parseLeadgenWebhook(JSON.parse(raw));
+  const [branches, programs] = await Promise.all([repo.many<any>('branch'), repo.many<any>('program')]);
   const created: string[] = [];
-  // Meta expects a fast 200; process in the background
-  const work = (async () => {
-    const [branches, programs] = await Promise.all([repo.many<any>('branch'), repo.many<any>('program')]);
-    const jobs: Job[] = [];
-    for (const ch of changes) {
-      if (!(await firstTime(c.env, 'meta', ch.leadgenId))) continue;
-      try {
-        if (!cfg.integ?.meta?.on && !repo.isTest) throw new Error('Meta lead integration is disabled in Configuration');
-        // Test events (Testing Console) carry a fake leadgen id, so their lead details come from the mock
-        const lead = await fetchLead({ env: c.env, cfg, mode: repo.isTest ? 'mock' : modeFor(c.env, cfg, 'meta'), isTest: repo.isTest }, ch.leadgenId, ch.formId);
-        const input = mapLead(cfg, lead, branches, programs);
-        const r = await createLead(repo, input, 'Meta Lead Ads');
-        created.push(r.lead.id);
-        jobs.push(...r.queuedComms.map((id) => ({ kind: 'send_comm' as const, id })));
-        await c.env.DB.prepare('UPDATE webhook_events SET result=? WHERE provider=? AND event_id=?').bind(r.lead.id, 'meta', ch.leadgenId).run();
-      } catch (e: any) {
-        await c.env.DB.prepare('UPDATE webhook_events SET result=? WHERE provider=? AND event_id=?').bind('error: ' + e.message, 'meta', ch.leadgenId).run();
-        await notify(repo, { type: 'none', sev: 'crit', text: `Meta lead ${ch.leadgenId} could not be imported: ${e.message}`, route: { page: 'testing' }, roles: ['System Administrator', 'Admissions Head'] });
+  const failed: { id: string; error: string }[] = [];
+  const jobs: Job[] = [];
+  for (const ch of changes) {
+    const event = c.env.DB.prepare("SELECT result FROM webhook_events WHERE provider='meta' AND event_id=?").bind(ch.leadgenId);
+    const previous = await event.first<{ result: string | null }>();
+    if (previous?.result && !previous.result.startsWith('error: ')) continue;
+
+    if (previous) {
+      // Older versions reserved the event before importing and saved the result separately.
+      const saved = await c.env.DB.prepare("SELECT id FROM docs WHERE type='lead' AND is_test=? AND json_extract(data,'$.external.metaLeadId')=? LIMIT 1")
+        .bind(+repo.isTest, ch.leadgenId).first<string>('id');
+      if (saved) {
+        await c.env.DB.prepare("UPDATE webhook_events SET result=? WHERE provider='meta' AND event_id=?").bind(saved, ch.leadgenId).run();
+        continue;
       }
+      await c.env.DB.prepare("DELETE FROM webhook_events WHERE provider='meta' AND event_id=? AND (result IS NULL OR result LIKE 'error: %')")
+        .bind(ch.leadgenId).run();
     }
-    await logInbound(c.env, 'meta', 'leadgen.webhook', true, raw, { leads: created }, created.join(','), repo.isTest);
-    await dispatch(c.env, waitOf(c), jobs);
-  })();
-  c.executionCtx.waitUntil(work);
-  if (isTestReq(c)) await work; // the Testing Console waits so it can show the result
-  return c.json({ ok: true, received: changes.length, leads: created });
+
+    try {
+      if (!cfg.integ?.meta?.on && !repo.isTest) throw new Error('Meta lead integration is disabled in Configuration');
+      // The Testing Console uses synthetic lead IDs and mock Graph responses.
+      const lead = await fetchLead({ env: c.env, cfg, mode: repo.isTest ? 'mock' : modeFor(c.env, cfg, 'meta'), isTest: repo.isTest }, ch.leadgenId, ch.formId);
+      const input = mapLead(cfg, lead, branches, programs, ch);
+      const r = await createLead(repo, input, 'Meta Lead Ads', { webhookEvent: { provider: 'meta', id: ch.leadgenId } });
+      created.push(r.lead.id);
+      jobs.push(...r.queuedComms.map((id) => ({ kind: 'send_comm' as const, id })));
+    } catch (e) {
+      // A concurrent delivery may already have committed the event and its lead.
+      if (await event.first<string>('result')) continue;
+      failed.push({ id: ch.leadgenId, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  const ok = failed.length === 0;
+  const status = ok ? 200 : 503;
+  await logInbound(c.env, 'meta', 'leadgen.webhook', ok, raw, { leads: created, failed }, created.join(','), repo.isTest, failed[0]?.error, status);
+  await dispatch(c.env, waitOf(c), jobs);
+  if (!ok) {
+    c.executionCtx.waitUntil(Promise.all(failed.map(({ id, error }) =>
+      notify(repo, { type: 'none', sev: 'crit', text: `Meta lead ${id} could not be imported: ${error}`, route: { page: 'testing' }, roles: ['System Administrator', 'Admissions Head'] }),
+    )));
+  }
+  // Meta retries failed requests. Completed entries in a partially failed batch are safe to redeliver.
+  return c.json({ ok, received: changes.length, leads: created, ...(ok ? {} : { error: 'Meta lead import incomplete' }) }, status);
 });
 
 // ------------------------------------------------------------------ Gupshup WhatsApp Flow submissions
@@ -172,6 +191,136 @@ webhooks.post('/gupshup/leads', async (c) => {
   await logInbound(c.env, 'gupshup', 'lead.submit', true, {}, { lead: reference }, reference, repo.isTest);
   return c.json({ ok: true, reference });
 });
+
+// ------------------------------------------------------------------ LMS lead submissions
+const LMS_LEAD_MAX_BYTES = 16_384;
+const LMS_UTM_FIELDS = {
+  source: 'UTM Source',
+  medium: 'UTM Medium',
+  campaign: 'UTM Campaign',
+  term: 'UTM Term',
+  content: 'UTM Content',
+};
+
+function lmsEnquiryTime(timestamp: string) {
+  const parts = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
+  if (!parts) throw new HttpError(400, 'Timestamp must include a date and time, for example 2026-10-30T16:55:59+05:30');
+  const [, day, time, fraction = '', offset = '+05:30'] = parts;
+  const local = `${day}T${time}${fraction}`;
+  const wallClock = new Date(local + 'Z');
+  if (!Number.isFinite(wallClock.getTime()) || wallClock.toISOString().slice(0, 19) !== `${day}T${time}`)
+    throw new HttpError(400, 'Timestamp is not a valid date and time');
+
+  const submitted = new Date(local + offset);
+  if (!Number.isFinite(submitted.getTime())) throw new HttpError(400, 'Invalid LMS timestamp offset');
+  return submitted.toISOString();
+}
+
+async function parseLmsLead(body: unknown): Promise<{
+  id: string;
+  input: Omit<NewLeadInput, 'src'>;
+  utmSource?: string;
+}> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Expected a JSON object');
+  const fieldKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const fields = Object.entries(body).map(([key, value]) => [fieldKey(key), value] as const);
+  const field = (name: string, max: number, allowNumber = false) => {
+    const key = fieldKey(name);
+    const matches = fields.filter(([fieldName]) => fieldName === key);
+    if (matches.length > 1) throw new HttpError(400, `Send only one ${name} field`);
+    const raw = matches[0]?.[1];
+    if (raw == null) return '';
+    if (typeof raw !== 'string' && !(allowNumber && Number.isSafeInteger(raw)))
+      throw new HttpError(400, `${name} must be ${allowNumber ? 'text or an integer' : 'text'}`);
+    const value = String(raw).trim();
+    if (value.length > max) throw new HttpError(400, `${name} must be at most ${max} characters`);
+    return value;
+  };
+
+  const parent = field('Parent Name', 120);
+  const phone = field('Phone', 25, true);
+  const email = field('Email', 160);
+  const timestamp = field('Timestamp', 35);
+  if (!parent || !phone || !timestamp) throw new HttpError(400, 'Timestamp, Parent Name and Phone are required');
+  if (!/^\+?\d{7,15}$/.test(phone.replace(/[\s()-]/g, ''))) throw new HttpError(400, 'Phone must contain 7 to 15 digits');
+  if (email && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email)) throw new HttpError(400, 'Enter a valid e-mail address');
+  const enq = lmsEnquiryTime(timestamp);
+  const childAge = field('Child Age', 40, true);
+  const interest = field('Interest', 500);
+  const submissionId = field('Submission ID', 512, true);
+  const notes: string[] = [];
+  if (childAge) notes.push(`Child age: ${childAge}`);
+  if (interest) notes.push(`Interest: ${interest}`);
+  const utm: Record<string, string> = {};
+  for (const [key, label] of Object.entries(LMS_UTM_FIELDS)) {
+    const value = field(label, 200);
+    if (!value) continue;
+    utm[key] = value;
+    notes.push(`${label}: ${value}`);
+  }
+  const id = submissionId
+    ? `id:${submissionId}`
+    : `payload:${await sha256Hex(JSON.stringify([enq, parent, phone, email, childAge, interest, utm]))}`;
+  return {
+    id,
+    utmSource: utm.source,
+    input: {
+      student: parent, parent, phone, email, enq,
+      branch: field('Branch', 60) || 'BLR',
+      prog: field('Programme', 60) || 'ROB',
+      age: /^\d{1,2}$/.test(childAge) ? Number(childAge) : undefined,
+      camp: utm.campaign, notes: notes.join(' · '),
+      external: {
+        lms: submissionId ? { submissionId } : undefined,
+        childAge: childAge || undefined,
+        interest: interest || undefined,
+        utm: Object.keys(utm).length ? utm : undefined,
+      },
+    },
+  };
+}
+
+webhooks.post('/lms/leads', async (c) => {
+  const secret = c.env.LMS_LEAD_WEBHOOK_SECRET?.trim();
+  if (!secret) throw new HttpError(503, 'LMS lead webhook is not configured');
+  const token = c.req.header('authorization')?.match(/^Bearer (.+)$/i)?.[1];
+  if (!token || !safeEqual(token, secret)) throw new HttpError(401, 'Invalid LMS lead webhook token');
+
+  const raw = await c.req.arrayBuffer();
+  if (raw.byteLength > LMS_LEAD_MAX_BYTES) throw new HttpError(413, 'LMS lead submission is too large');
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(raw));
+  } catch {
+    throw new HttpError(400, 'Invalid UTF-8 JSON body');
+  }
+  const { id, input, utmSource } = await parseLmsLead(body);
+  const repo = new Repo(c.env.DB, 'LMS', isTestReq(c));
+  const provider = repo.isTest ? 'lms-leads-test' : 'lms-leads';
+  const event = c.env.DB.prepare('SELECT result FROM webhook_events WHERE provider=? AND event_id=?').bind(provider, id);
+  const duplicate = (reference: string) => c.json({ ok: true, reference, duplicate: true });
+  const existing = await event.first<string>('result');
+  if (existing) return duplicate(existing);
+
+  let reference: string;
+  try {
+    const cfg = await repo.setting<{ sources?: { n: string }[] }>('cfg');
+    const source = utmSource?.toLowerCase();
+    const src = cfg.sources?.find(({ n }) => n.toLowerCase() === source)?.n || 'Website';
+    const { lead } = await createLead(repo, { ...input, src }, repo.actor, {
+      noAutoMessages: true, webhookEvent: { provider, id },
+    });
+    reference = lead.id;
+  } catch (error) {
+    // The event and lead commit together, including when two deliveries race.
+    const committed = await event.first<string>('result');
+    if (committed) return duplicate(committed);
+    throw error;
+  }
+  await logInbound(c.env, 'lms-leads', 'lead.submit', true, {}, { lead: reference }, reference, repo.isTest);
+  return c.json({ ok: true, reference });
+});
+webhooks.all('/lms/leads', (c) => c.json({ error: 'Use POST to submit an LMS lead' }, 405, { Allow: 'POST' }));
 
 // ------------------------------------------------------------------ WhatsApp Cloud API
 webhooks.get('/whatsapp', (c) => {

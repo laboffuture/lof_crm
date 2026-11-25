@@ -41,6 +41,7 @@ export interface Env {
 
   LMS_URL?: string;
   LMS_TOKEN?: string;
+  LMS_LEAD_WEBHOOK_SECRET?: string;
 
   TELR_STORE_ID?: string;
   TELR_AUTH_KEY?: string;

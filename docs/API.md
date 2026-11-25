@@ -132,6 +132,7 @@ Datasets: `leads, opportunities, students, enrollments, instalments, payments, r
 | `GET/POST /webhooks/meta` | Meta Lead Ads | `hub.verify_token`; `X-Hub-Signature-256` |
 | `GET/POST /webhooks/whatsapp` | WhatsApp Cloud API | `hub.verify_token`; `X-Hub-Signature-256` |
 | `POST /webhooks/gupshup/leads` | Gupshup WhatsApp Flow submission | `Authorization: Bearer <GUPSHUP_WEBHOOK_SECRET>` |
+| `POST /webhooks/lms/leads` | LMS enquiry form submission | `Authorization: Bearer <LMS_LEAD_WEBHOOK_SECRET>` |
 | `GET/POST /webhooks/exotel/incoming` | Exotel passthru | `?token=` |
 | `POST /webhooks/exotel/status` | Exotel status callback | `?token=` |
 | `POST /webhooks/razorpay` | Razorpay | `X-Razorpay-Signature` |
@@ -164,6 +165,42 @@ The first six fields are required. Use the inbound WhatsApp message ID for `subm
 `email`, `school`, `grade`, `notes`, `campaign`, `wa_consent`, and `email_consent` are optional. Consent fields are JSON booleans and default to false. The CRM creates an open lead with source **WhatsApp** and category **Warm**, then applies normal counsellor routing. The Flow Journey can send the submission acknowledgement.
 
 Successful submissions return HTTP 200 with `{ "ok": true, "reference": "LD-26-…" }`. A retry returns the same reference with `"duplicate": true`. HTTP 400 indicates an invalid payload, 401 indicates failed authentication, 422 indicates a CRM lead rule rejected the submission, and 503 indicates the webhook secret is missing.
+
+### LMS enquiry form webhook
+
+The LMS sends the complete form submission to `POST /webhooks/lms/leads` over HTTPS. The CRM creates a **New Lead** and matches **UTM Source** to its configured lead sources regardless of case. For example, `facebook` appears as **Facebook**. A blank or unmatched value uses **Website**. The original timestamp is saved as **Enquiry**, and child age, interest and UTM values appear in **Overview → Notes**. The sheet supplies the parent’s name, which the CRM also uses as the lead’s display name. Automatic WhatsApp and email messages are disabled for this import.
+
+Generate a bearer token with `openssl rand -hex 32`. Save it as `LMS_LEAD_WEBHOOK_SECRET` in `.dev.vars` for local development or in the CRM server environment for UAT and production.
+
+#### Test in Postman
+
+1. For local testing, set `LMS_LEAD_WEBHOOK_SECRET` in `.dev.vars`. Run `npm run db:migrate:local` if the local database is new, then run `npm run dev`.
+2. Send **POST** to `http://127.0.0.1:8787/webhooks/lms/leads`. For UAT, use the deployed CRM’s HTTPS URL.
+3. Under **Authorization**, choose **Bearer Token** and paste the value of `LMS_LEAD_WEBHOOK_SECRET` from the environment you are testing.
+4. Under **Body**, choose **raw → JSON** and send this sample.
+
+```json
+{
+  "submission_id": "lms-test-001",
+  "Timestamp": "2026-10-30T16:55:59+05:30",
+  "Parent Name": "Postman Test Parent",
+  "Phone": "9000000042",
+  "Email": "parent@example.com",
+  "Child Age": "11-15",
+  "Interest": "Robotics & Engineering",
+  "utm_source": "facebook",
+  "utm_medium": "paid_social",
+  "utm_campaign": "robotics-october",
+  "utm_term": "robotics",
+  "utm_content": "carousel"
+}
+```
+
+5. Expect **HTTP 200** with `{ "ok": true, "reference": "LD-26-…" }`. Search that reference in **CRM → Leads**. Send the same request again to verify it returns the same reference with `"duplicate": true`.
+
+`Timestamp`, `Parent Name`, and `Phone` are required. Send one UTF-8 JSON object per request, up to 16 KiB (16,384 bytes). JSON keys may also use snake_case, such as `parent_name` and `utm_source`. Use a single spelling per field in each request. The CRM reads timestamps such as `2026-10-30 16:55:59` as India time. Include a UTC offset if the sender uses another timezone.
+
+Submissions default to Bengaluru Robotics (`BLR` / `ROB`). Send the optional `Branch` and `Programme` CRM IDs to route a submission elsewhere. Use a unique `submission_id` for each submission and reuse it on retries. If it is omitted, the CRM deduplicates identical mapped submissions using the timestamp and form fields.
 
 ## Other
 

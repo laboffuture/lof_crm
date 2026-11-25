@@ -133,8 +133,9 @@ export async function findDup(repo: Repo, phone: string, email: string) {
   const leads = await repo.many<any>('lead', '(ref1=? OR (ref2=? AND ref2 IS NOT NULL AND ref2<>\'\'))', [ph || '#', em || '#']);
   for (const l of leads) out.push({ kind: 'Lead', id: l.id, name: `${l.student} / ${l.parent}`, branch: l.branch, status: l.status });
   if (ph || em) {
-    const like = await repo.many<any>('student', '(data LIKE ? OR data LIKE ?)', [ph ? `%${ph}%` : '#', em ? `%${em}%` : '#']);
-    for (const s of like) {
+    // D1 limits LIKE pattern length, which can be shorter than a valid email address.
+    const candidates = await repo.many<any>('student', "(instr(data, NULLIF(?, '')) > 0 OR instr(lower(data), NULLIF(?, '')) > 0)", [ph, em]);
+    for (const s of candidates) {
       const hit = (s.parents || []).find((p: any) => (ph && normPhone(p.mobile) === ph) || (em && String(p.email).toLowerCase() === em));
       if (hit) out.push({ kind: 'Student', id: s.id, name: `${s.first} ${s.last} / ${hit.name}`, branch: s.branch, status: s.status });
     }
