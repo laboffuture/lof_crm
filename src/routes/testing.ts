@@ -13,12 +13,12 @@ import { HttpError } from '../types';
 import { requireAuth, can, type AppEnv } from '../lib/auth';
 import { Repo, nowIso } from '../lib/db';
 import { hmacSha256Hex } from '../lib/crypto';
-import { INTEGRATIONS, enabledInConfig, missingSecrets, modeFor, type IntegrationKey } from '../integrations/base';
+import { ACTIVE_INTEGRATIONS, INTEGRATIONS, enabledInConfig, missingSecrets, modeFor, type IntegrationKey } from '../integrations/base';
 import { ping as lmsPing } from '../integrations/lms';
 import { phoneNumberInfo } from '../integrations/whatsapp';
 import { me as metaMe } from '../integrations/meta';
 import { accountInfo } from '../integrations/exotel';
-import { razorpayPing, telrCheck } from '../integrations/payments';
+import { easebuzzEnvironment, easebuzzPing, easebuzzSetup } from '../integrations/easebuzz';
 import { loggedUser } from '../integrations/erpnext';
 import { calendarPing, emailPing } from '../integrations/gcal-email';
 import { applySync } from '../sync/sync';
@@ -26,6 +26,8 @@ import { calcFee, feeFor, routeLead } from '../domain/core';
 import { createPaymentLink } from '../domain/workflows';
 import { runJob, cron } from '../jobs';
 import { testToken } from './webhooks';
+import { assertUatReady, createUatEnrollment, uatState } from '../domain/uat-enrollment';
+import { isUatEnrollment } from '../domain/uat-policy';
 
 type FetchApp = { fetch: (req: Request, env: Env, ctx: ExecutionContext) => Response | Promise<Response> };
 
@@ -36,6 +38,7 @@ const WEBHOOK_PATHS: Partial<Record<IntegrationKey, string[]>> = {
   exotel: ['/webhooks/exotel/incoming?token=…', '/webhooks/exotel/status?token=…'],
   telr: ['POST /webhooks/telr', 'GET /webhooks/pay/return'],
   razorpay: ['POST /webhooks/razorpay'],
+  easebuzz: ['POST /webhooks/easebuzz', 'POST /webhooks/easebuzz/return'],
 };
 
 export function testingRoutes(app: FetchApp) {
@@ -66,11 +69,13 @@ export function testingRoutes(app: FetchApp) {
     const cfg = await repo.setting<any>('cfg');
     const base = c.env.APP_BASE_URL.replace(/\/+$/, '');
     const out: any[] = [];
-    for (const key of Object.keys(INTEGRATIONS) as IntegrationKey[]) {
+    for (const key of ACTIVE_INTEGRATIONS) {
       const last = await c.env.DB.prepare('SELECT at,ok,mode,operation,error FROM integration_logs WHERE integration=? ORDER BY id DESC LIMIT 1').bind(key).first();
       const lastOk = await c.env.DB.prepare('SELECT at FROM integration_logs WHERE integration=? AND ok=1 AND mode=? ORDER BY id DESC LIMIT 1').bind(key, 'live').first();
       out.push({
         key, label: INTEGRATIONS[key].label, enabled: enabledInConfig(cfg, key), mode: modeFor(c.env, cfg, key), missing: missingSecrets(c.env, key),
+        sandbox: key === 'easebuzz' && c.env.EASEBUZZ_ENV !== 'prod',
+        ...(key === 'easebuzz' ? { setup: easebuzzSetup(c.env) } : {}),
         webhooks: (WEBHOOK_PATHS[key] || []).map((p) => p.replace('/webhooks', base + '/webhooks')), last, lastLiveSuccess: lastOk?.at || null,
       });
     }
@@ -82,7 +87,7 @@ export function testingRoutes(app: FetchApp) {
   // ---------------------------------------------------------------- connection tests
   t.post('/integrations/:key/test', async (c) => {
     const key = c.req.param('key') as IntegrationKey;
-    if (!INTEGRATIONS[key]) throw new HttpError(404, 'Unknown integration');
+    if (!ACTIVE_INTEGRATIONS.includes(key)) throw new HttpError(404, 'Unknown active integration');
     const cfg = await c.get('repo').setting<any>('cfg');
     const mode = modeFor(c.env, cfg, key);
     const ctx = { env: c.env, cfg, mode, isTest: true };
@@ -95,22 +100,45 @@ export function testingRoutes(app: FetchApp) {
         case 'whatsapp': detail = await phoneNumberInfo(ctx); break;
         case 'exotel': detail = await accountInfo(ctx); break;
         case 'lms': detail = await lmsPing(ctx); break;
-        case 'telr':
-          try { detail = await telrCheck(ctx, 'CONNECTIVITY-TEST'); }
-          catch (e: any) { if (/not found|invalid order/i.test(e.message)) detail = { authenticated: true, note: 'Store credentials accepted (test order reference not found, as expected)' }; else throw e; }
-          break;
-        case 'razorpay': detail = await razorpayPing(ctx); break;
+        case 'easebuzz': detail = await easebuzzPing(ctx); break;
         case 'erpnext': detail = { user: await loggedUser(ctx) }; break;
         case 'gcal': detail = await calendarPing(ctx); break;
         case 'email': detail = await emailPing(ctx); break;
       }
-      return c.json({ ok: true, key, mode, ms: Date.now() - t0, detail, note: mode === 'mock' ? mockNote(c.env, cfg, key) : undefined });
+      return c.json({ ok: true, key, mode, sandbox: key === 'easebuzz' && c.env.EASEBUZZ_ENV !== 'prod', ms: Date.now() - t0, detail, note: mode === 'mock' ? mockNote(c.env, cfg, key) : undefined });
     } catch (e: any) {
-      return c.json({ ok: false, key, mode, ms: Date.now() - t0, error: e.message });
+      return c.json({ ok: false, key, mode, sandbox: key === 'easebuzz' && c.env.EASEBUZZ_ENV !== 'prod', ms: Date.now() - t0, error: e.message });
     }
   });
 
+  // Real Easebuzz sandbox checkout, kept separate from forged webhook simulations.
+  t.post('/easebuzz/link', async (c) => {
+    if (c.env.APP_ENV === 'production' || easebuzzEnvironment(c.env) !== 'test') throw new HttpError(409, 'Easebuzz sandbox checkout is available only outside production with EASEBUZZ_ENV=test');
+    const cfg = await c.get('repo').setting<any>('cfg');
+    if (modeFor(c.env, cfg, 'easebuzz') !== 'live') throw new HttpError(409, 'Enable payments, set INTEGRATION_MODE=auto and configure Easebuzz credentials first');
+    const repo = new Repo(c.env.DB, c.get('user').name + ' (Easebuzz sandbox)', true);
+    // Creating fixtures must not dispatch real messages, LMS calls or finance entries.
+    const id = await makeTestEnrollment({ ...c.env, INTEGRATION_MODE: 'mock', JOBS: undefined }, repo, c.get('user'), c.get('perms'), 'INR');
+    return c.json(await createPaymentLink({ ...c.env, PAYMENTS_INR_PROVIDER: 'easebuzz' }, repo, id, 1, c.get('user').name), 201);
+  });
+
   // ---------------------------------------------------------------- webhook simulation
+  t.get('/uat/enrolments', async (c) => c.json(await uatState(c.env, c.get('repo'))));
+  t.post('/uat/enrolments', async (c) => {
+    const repo = new Repo(c.env.DB, c.get('user').name + ' (full-flow UAT)', true);
+    return c.json(await createUatEnrollment(c.env, repo, await c.req.json()), 201);
+  });
+  t.post('/uat/enrolments/:id/checkout', async (c) => {
+    const repo = new Repo(c.env.DB, c.get('user').name + ' (full-flow UAT)', true);
+    await assertUatReady(c.env, repo);
+    const e = await repo.get<any>('enrollment', c.req.param('id'));
+    if (!isUatEnrollment(c.env, e)) throw new HttpError(404, 'Full-flow UAT enrolment not found.');
+    if (e.payStatus === 'Paid') throw new HttpError(409, 'This test enrolment is already paid.');
+    const link = await c.env.DB.prepare("SELECT * FROM payment_links WHERE enrollment_id=? AND provider='easebuzz-test' AND status='created' AND created_at>? ORDER BY created_at DESC LIMIT 1").bind(e.id, new Date(Date.now() - 10 * 60000).toISOString()).first<any>();
+    if (link) return c.json({ id: link.id, url: link.url, provider: 'easebuzz', mode: 'live', sandbox: true, amount: link.amount, currency: link.currency });
+    return c.json(await createPaymentLink(c.env, repo, e.id, undefined, c.get('user').name), 201);
+  });
+
   t.post('/webhooks/:kind/simulate', async (c) => {
     const kind = c.req.param('kind');
     const opts = await c.req.json<any>().catch(() => ({}));
@@ -162,18 +190,9 @@ export function testingRoutes(app: FetchApp) {
         const body = JSON.stringify({ CallSid: 'TESTCALL' + Date.now(), Status: o.status || 'completed', ConversationDuration: o.duration ?? 185, RecordingUrl: 'https://recordings.exotel.example/test.mp3', From: '+971500000001', To: lead.phone, Direction: 'outbound-api' });
         return hit(env, 'POST', `/webhooks/exotel/status?${q}`, body, { 'content-type': 'application/json' });
       }
-      case 'telr-paid': {
-        const link = await testLink(env, o.linkId, 'telr', user, perms);
-        return hit(env, 'POST', '/webhooks/telr', new URLSearchParams({ tran_store: env.TELR_STORE_ID || 'TEST', tran_type: 'sale', tran_status: 'A', tran_ref: 'TESTTXN' + Date.now(), tran_cartid: link.id, tran_amount: String(link.amount), tran_currency: link.currency }).toString(), { 'content-type': 'application/x-www-form-urlencoded' });
-      }
-      case 'razorpay-paid': {
-        const link = await testLink(env, o.linkId, 'razorpay', user, perms);
-        const body = JSON.stringify({
-          entity: 'event', event: 'payment_link.paid', created_at: Math.floor(Date.now() / 1000),
-          payload: { payment_link: { entity: { id: link.provider_ref, reference_id: link.id, amount: Math.round(link.amount * 100), amount_paid: Math.round(link.amount * 100), status: 'paid' } }, payment: { entity: { id: 'pay_TEST' + Date.now(), amount: Math.round(link.amount * 100), currency: link.currency, method: 'upi', status: 'captured' } } },
-        });
-        return hit(env, 'POST', '/webhooks/razorpay', body, { 'content-type': 'application/json', 'x-razorpay-signature': await hmacSha256Hex(need(env.RAZORPAY_WEBHOOK_SECRET, 'RAZORPAY_WEBHOOK_SECRET'), body), 'x-razorpay-event-id': 'evt_TEST' + Date.now() });
-      }
+      case 'telr-paid':
+      case 'razorpay-paid':
+        throw new HttpError(410, 'New online payments use Easebuzz only. Use Easebuzz sandbox checkout.');
       case 'bad-signature': {
         const body = JSON.stringify({ object: 'page', entry: [] });
         const r = await hit(env, 'POST', '/webhooks/meta', body, { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=deadbeef' });
@@ -190,49 +209,38 @@ export function testingRoutes(app: FetchApp) {
     if (!row) throw new HttpError(409, 'No test lead yet – run the "Website lead" simulation first (simulations only touch test records)');
     return JSON.parse(row.data);
   }
-  /** An open test payment link; creates a test student + enrolment + link when none is open. */
-  async function testLink(env: Env, id: string | undefined, provider: string, user?: User, perms?: any) {
-    let row = id
-      ? await env.DB.prepare('SELECT * FROM payment_links WHERE id=? AND is_test=1').bind(id).first<any>()
-      : await env.DB.prepare("SELECT * FROM payment_links WHERE is_test=1 AND status='created' AND provider LIKE ? ORDER BY created_at DESC LIMIT 1").bind(provider + '%').first<any>();
-    if (!row && !id && user) {
-      const trepo = new Repo(env.DB, user.name + ' (testing)', true);
-      const enr = await makeTestEnrollment(env, trepo, user, perms, provider === 'razorpay' ? 'INR' : 'AED');
-      const l = await createPaymentLink(env, trepo, enr, undefined, user.name);
-      row = await env.DB.prepare('SELECT * FROM payment_links WHERE id=?').bind(l.id).first<any>();
-    }
-    if (!row) throw new HttpError(409, `No open test ${provider} payment link`);
-    return row;
-  }
-
   // ---------------------------------------------------------------- end-to-end scenarios
   t.post('/scenarios/:name/run', async (c) => {
     const name = c.req.param('name');
     const user = c.get('user');
+    // A scenario reports completed steps, not just queue acceptance. Use request-local
+    // in-process jobs so nested webhook work can be awaited by the scenario runner.
+    // The real environment/queue binding is unchanged for normal CRM requests.
+    const env: Env = { ...c.env, JOBS: undefined };
     const steps: { step: string; ok: boolean; detail?: unknown; ms: number }[] = [];
     const run = async (step: string, fn: () => Promise<unknown>) => {
       const t0 = Date.now();
       try { const detail = await fn(); steps.push({ step, ok: true, detail, ms: Date.now() - t0 }); return detail as any; }
       catch (e: any) { steps.push({ step, ok: false, detail: e.message, ms: Date.now() - t0 }); throw e; }
     };
-    const repo = new Repo(c.env.DB, user.name + ' (testing)', true);
+    const repo = new Repo(env.DB, user.name + ' (testing)', true);
     try {
       if (name === 'uae-lead-to-enrolment' || name === 'india-lead-to-enrolment') {
         const india = name.startsWith('india');
-        await e2e(c.env, repo, user, c.get('perms'), india ? { branch: 'BLR', prog: 'ROB', provider: 'razorpay' } : { branch: 'KRM', prog: 'SPA', provider: 'telr' }, run);
+        await e2e(env, repo, user, c.get('perms'), india ? { branch: 'BLR', prog: 'ROB', currency: 'INR' } : { branch: 'KRM', prog: 'SPA', currency: 'AED' }, run);
       } else if (name === 'meta-lead') {
         await run('Meta leadgen webhook (signed) → lead imported', async () => {
-          const r = await simulate(c.env, repo, 'meta');
+          const r = await simulate(env, repo, 'meta');
           if (!r.ok || !r.body?.leads?.length) throw new Error(`Webhook returned ${r.status}: ${JSON.stringify(r.body)}`);
           return r.body;
         });
         await run('Bad signature is rejected', async () => {
-          const r = await simulate(c.env, repo, 'bad-signature');
+          const r = await simulate(env, repo, 'bad-signature');
           if (r.status !== 401) throw new Error(`Expected 401, got ${r.status}`);
           return 'HTTP 401';
         });
       } else if (name === 'lms-failure-retry' || name === 'moodle-failure-retry') {
-        await moodleRetry(c.env, repo, user, c.get('perms'), run);
+        await moodleRetry(env, repo, user, c.get('perms'), run);
       } else throw new HttpError(404, 'Unknown scenario');
       return c.json({ ok: true, scenario: name, steps });
     } catch (e: any) {
@@ -293,7 +301,7 @@ function mockNote(env: Env, cfg: any, key: IntegrationKey) {
 }
 
 // ---------------------------------------------------------------- scenario: lead → enrolment → payment → LMS → ERPNext → withdrawal
-async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: string; prog: string; provider: 'telr' | 'razorpay' }, run: (s: string, f: () => Promise<unknown>) => Promise<any>) {
+async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: string; prog: string; currency: 'AED' | 'INR' }, run: (s: string, f: () => Promise<unknown>) => Promise<any>) {
   const app = (globalThis as any).__lofApp as FetchApp;
   const sim = async (path: string, body: string, headers: Record<string, string>) => {
     const pending: Promise<unknown>[] = [];
@@ -306,7 +314,7 @@ async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: st
   const tag = Date.now().toString().slice(-6);
   // Pick a branch/programme in the same country where routing currently has a counsellor with capacity
   const cfg = await repo.setting<any>('cfg');
-  const india = o.provider === 'razorpay';
+  const india = o.currency === 'INR';
   const branches = (await repo.many<any>('branch')).filter((b) => b.status === 'Operating' && (b.cur === 'INR') === india);
   const pairs = [[o.branch, o.prog], ...branches.flatMap((b) => b.programs.map((p: string) => [b.id, p]))];
   let chosen: string[] | null = null;
@@ -364,7 +372,7 @@ async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: st
     const l = await repo.get<any>('lead', leadId);
     const opp = await repo.get<any>('opp', ids.opp);
     const today = nowIso().slice(0, 10);
-    const s = { id: ids.stu, first: 'TEST', last: `Student ${tag}`, dob: '2015-05-05', gender: 'Female', nat: '—', school: '—', grade: '—', curr: '—', address: '—', fam: 'FAM-TEST', branch: o.branch, reg: today, parents: [{ name: l.parent, rel: 'Mother', email: l.email, mobile: l.phone, job: '—' }], moodle: null, interests: [program.name], status: 'Active', uni: '', degree: '', linkedin: '', portfolio: '', photoConsent: 'Not provided', consentDate: '', consentDoc: '', testimonials: [], docs: [], comm: [{ at: nowIso(), ch: 'Email', tpl: 'Enrolment welcome', text: `Welcome to Lab of Future! ${ids.stu}`, status: 'Sent (simulated)' }], test: true };
+    const s = { id: ids.stu, email: `student.${tag}@example.com`, first: 'TEST', last: `Student ${tag}`, dob: '2015-05-05', gender: 'Female', nat: '—', school: '—', grade: '—', curr: '—', address: '—', fam: 'FAM-TEST', branch: o.branch, reg: today, parents: [{ name: l.parent, rel: 'Mother', email: l.email, mobile: l.phone, job: '—' }], moodle: null, interests: [program.name], status: 'Active', uni: '', degree: '', linkedin: '', portfolio: '', photoConsent: 'Not provided', consentDate: '', consentDoc: '', testimonials: [], docs: [], comm: [{ at: nowIso(), ch: 'Email', tpl: 'Enrolment welcome', text: `Welcome to Lab of Future! ${ids.stu}`, status: 'Sent (simulated)' }], test: true };
     const e = { id: ids.enr, stu: s.id, prog: o.prog, branch: o.branch, pkg: fee.pkg, date: today, status: 'Active', cur: fee.cur, fee: c.base, reg: c.extra, disc: c.disc, discInfo: null, tax: c.tax, total: c.total, taxPct: fee.tax, paid: 0, payStatus: 'Unpaid', opp: ids.opp, course: program.courses[0], sessions: fee.sessions, credits: program.credits, newStu: true, ms: ids.ms, test: true };
     const m = { id: ids.ms, enr: e.id, stu: s.id, status: 'Pending', mid: null, cid: e.course.moodleId, course: e.course.name, mode: 'new', last: nowIso(), err: '', attempts: 0, hist: [{ at: nowIso(), s: 'Pending', msg: 'Sync queued after enrolment' }], test: true };
     opp.stage = 'Enrolled'; opp.stu = s.id;
@@ -375,29 +383,20 @@ async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: st
     for (const j of r.jobs) await runJob(env, j);
     return { student: s.id, enrolment: e.id, total: `${fee.cur} ${c.total}` };
   });
-  await run('LMS enrol call accepted (Track + Credit codes, no payment data)', async () => {
+  const payment = await run('Mock counter payment → receipt issued, balance cleared', async () => {
+    const e = await repo.get<any>('enrollment', ids.enr);
+    const p = { id: repo.testId('pay'), enr: e.id, amt: e.total - e.paid, method: 'Cash', ref: '—', test: true };
+    const r = await applySync(env, repo, user, perms, [{ coll: 'pay', id: p.id, op: 'upsert', doc: p }]);
+    if (!r.ok) throw new Error(r.rejected.map((x) => x.reason).join('; '));
+    for (const j of r.jobs) await runJob(env, j);
+    const fresh = await repo.get<any>('enrollment', e.id);
+    if (fresh.payStatus !== 'Paid') throw new Error(`Enrolment is ${fresh.payStatus}`);
+    return { id: p.id, receipt: (await repo.get<any>('payment', p.id))?.rc, payStatus: fresh.payStatus };
+  });
+  await run('LMS purchase received after full payment (Track + Credit codes, no payment data)', async () => {
     const m = await repo.get<any>('moodle_sync', ids.ms);
     if (m.status !== 'Success') throw new Error(`LMS call ${m.status}: ${m.err}`);
     return { track: m.cid, credits: m.credits?.length };
-  });
-  const link = await run(`Payment link created (${o.provider === 'telr' ? 'Telr, AED' : 'Razorpay, INR'})`, async () => {
-    const r = await createPaymentLink(env, repo, ids.enr, undefined, user.name);
-    return r;
-  });
-  await run('Gateway confirms payment → receipt issued, balance cleared', async () => {
-    let r;
-    if (o.provider === 'telr') {
-      r = await sim('/webhooks/telr', new URLSearchParams({ tran_status: 'A', tran_cartid: link.id, tran_ref: 'TESTTXN' + tag, tran_amount: String(link.amount), tran_currency: link.currency }).toString(), { 'content-type': 'application/x-www-form-urlencoded' });
-    } else {
-      if (!env.RAZORPAY_WEBHOOK_SECRET) throw new Error('RAZORPAY_WEBHOOK_SECRET is not set');
-      const body = JSON.stringify({ event: 'payment_link.paid', payload: { payment_link: { entity: { id: link.providerRef, reference_id: link.id } }, payment: { entity: { id: 'pay_TEST' + tag, amount: Math.round(link.amount * 100), method: 'upi' } } } });
-      r = await sim('/webhooks/razorpay', body, { 'content-type': 'application/json', 'x-razorpay-signature': await hmacSha256Hex(env.RAZORPAY_WEBHOOK_SECRET, body), 'x-razorpay-event-id': 'evt_TEST' + tag });
-    }
-    if (r.status !== 200) throw new Error(`HTTP ${r.status}: ${JSON.stringify(r.body)}`);
-    const e = await repo.get<any>('enrollment', ids.enr);
-    if (e.payStatus !== 'Paid') throw new Error(`Enrolment is ${e.payStatus}`);
-    const pays = await repo.many<any>('payment', 'ref1=?', [ids.enr]);
-    return { receipt: pays[0]?.rc, payment: pays[0]?.id, payStatus: e.payStatus };
   });
   await run('Payment pushed to ERPNext as a Payment Entry', async () => {
     const pays = await repo.many<any>('payment', 'ref1=?', [ids.enr]);
@@ -407,13 +406,13 @@ async function e2e(env: Env, repo: Repo, user: User, perms: any, o: { branch: st
     if (!fresh.erp?.name) throw new Error(fresh.erp?.error || 'Not pushed');
     return fresh.erp;
   });
-  await run('Duplicate gateway event is ignored (idempotency)', async () => {
-    const r = o.provider === 'telr'
-      ? await sim('/webhooks/telr', new URLSearchParams({ tran_status: 'A', tran_cartid: link.id }).toString(), { 'content-type': 'application/x-www-form-urlencoded' })
-      : null;
+  await run('Replaying a recorded counter payment keeps one receipt', async () => {
+    const p = await repo.get<any>('payment', payment.id);
+    const r = await applySync(env, repo, user, perms, [{ coll: 'pay', id: p.id, op: 'upsert', doc: p, base: p }]);
+    if (!r.ok) throw new Error(r.rejected.map((x) => x.reason).join('; '));
     const pays = await repo.many<any>('payment', 'ref1=?', [ids.enr]);
     if (pays.length !== 1) throw new Error(`Expected 1 payment, found ${pays.length}`);
-    return { payments: pays.length, response: r?.status ?? 'n/a' };
+    return { payments: pays.length };
   });
   await run('Withdrawal: refund suggested from the refund rules, LMS cancel call sent', async () => {
     const e = await repo.get<any>('enrollment', ids.enr);
@@ -440,10 +439,11 @@ async function moodleRetry(env: Env, repo: Repo, user: User, perms: any, run: (s
   const today = nowIso().slice(0, 10);
   await run('Simulate LMS outage (failure injection)', async () => { await repo.putSetting('test_flags', { ...(await repo.setting('test_flags')), moodleFail: true }); return 'moodleFail = true'; });
   await run('Enrol a test student – the LMS enrol call fails and is recorded', async () => {
-    const s = { id: ids.stu, first: 'TEST', last: 'LMS Retry', dob: '2014-01-01', gender: 'Male', branch: 'KRM', reg: today, parents: [{ name: 'TEST Parent', rel: 'Father', email: `lms.test.${Date.now()}@example.com`, mobile: '+971500000009' }], moodle: null, interests: [], status: 'Active', comm: [], docs: [], testimonials: [], test: true };
+    const s = { id: ids.stu, email: `student.retry.${Date.now()}@example.com`, first: 'TEST', last: 'LMS Retry', dob: '2014-01-01', gender: 'Male', branch: 'KRM', reg: today, parents: [{ name: 'TEST Parent', rel: 'Father', email: `lms.test.${Date.now()}@example.com`, mobile: '+971500000009' }], moodle: null, interests: [], status: 'Active', comm: [], docs: [], testimonials: [], test: true };
     const e = { id: ids.enr, stu: s.id, prog: 'COD', branch: 'KRM', pkg: fee.pkg, date: today, status: 'Active', cur: fee.cur, fee: c.base, reg: c.extra, disc: 0, discInfo: null, tax: c.tax, total: c.total, taxPct: fee.tax, paid: 0, payStatus: 'Unpaid', opp: null, course: program.courses[0], sessions: fee.sessions, credits: program.credits, newStu: true, ms: ids.ms, test: true };
     const m = { id: ids.ms, enr: e.id, stu: s.id, status: 'Pending', mid: null, cid: e.course.moodleId, course: e.course.name, mode: 'new', last: nowIso(), err: '', attempts: 0, hist: [], test: true };
-    const r = await applySync(env, repo, user, perms, [{ coll: 'students', id: s.id, op: 'upsert', doc: s }, { coll: 'enr', id: e.id, op: 'upsert', doc: e }, { coll: 'ms', id: m.id, op: 'upsert', doc: m }]);
+    const pay = { id: repo.testId('pay'), enr: e.id, amt: c.total, method: 'Cash' };
+    const r = await applySync(env, repo, user, perms, [{ coll: 'students', id: s.id, op: 'upsert', doc: s }, { coll: 'enr', id: e.id, op: 'upsert', doc: e }, { coll: 'ms', id: m.id, op: 'upsert', doc: m }, { coll: 'pay', id: pay.id, op: 'upsert', doc: pay }]);
     if (!r.ok) throw new Error(r.rejected.map((x) => x.reason).join('; '));
     for (const j of r.jobs) if (j.kind === 'moodle_sync') await runJob(env, j);
     const after = await repo.get<any>('moodle_sync', ids.ms);
@@ -452,12 +452,13 @@ async function moodleRetry(env: Env, repo: Repo, user: User, perms: any, run: (s
   });
   await run('Outage cleared, retry succeeds (the LMS applies each reference once)', async () => {
     await repo.putSetting('test_flags', { ...(await repo.setting('test_flags')), moodleFail: false });
-    const m = await repo.get<any>('moodle_sync', ids.ms);
-    m.status = 'Pending';
-    m.hist.push({ at: nowIso(), s: 'Pending', msg: 'Retry requested from testing console' });
-    const r = await applySync(env, repo, user, perms, [{ coll: 'ms', id: m.id, op: 'upsert', doc: m }]);
-    if (!r.ok) throw new Error(r.rejected.map((x) => x.reason).join('; '));
-    for (const j of r.jobs) await runJob(env, j);
+    // This scenario explicitly requests a staff retry; queue redelivery alone
+    // must not turn a Failed call into an immediate new attempt.
+    const call = await repo.get<any>('moodle_sync', ids.ms);
+    const at = nowIso();
+    await repo.put('moodle_sync', { ...call, status: 'Pending', last: at,
+      hist: [...(call.hist || []), { at, s: 'Pending', msg: 'Explicit retry in mock outage scenario' }] });
+    await runJob(env, { kind: 'moodle_sync', id: ids.ms });
     const after = await repo.get<any>('moodle_sync', ids.ms);
     if (after.status !== 'Success') throw new Error(`Expected Success, got ${after.status}: ${after.err}`);
     return { status: after.status, attempts: after.attempts, track: after.cid };
@@ -476,7 +477,7 @@ async function makeTestEnrollment(env: Env, repo: Repo, user: User, perms: any, 
       const c = calcFee(fee, null, true);
       const today = nowIso().slice(0, 10);
       const ids = { stu: repo.testId('student'), enr: repo.testId('enr') };
-      const s = { id: ids.stu, first: 'TEST', last: 'Payment', dob: '2015-01-01', branch: b.id, reg: today, parents: [{ name: 'TEST Parent', rel: 'Mother', email: `pay.test.${Date.now()}@example.com`, mobile: '+971500000010' }], moodle: null, status: 'Active', comm: [], docs: [] };
+      const s = { id: ids.stu, first: 'TEST', last: 'Payment', email: `student.${ids.stu.toLowerCase()}@example.com`, dob: '2015-01-01', branch: b.id, reg: today, parents: [{ name: 'TEST Parent', rel: 'Mother', email: `pay.test.${Date.now()}@example.com`, mobile: currency === 'INR' ? '+919800000010' : '+971500000010' }], moodle: null, status: 'Active', comm: [], docs: [] };
       const e = { id: ids.enr, stu: s.id, prog, branch: b.id, pkg: fee.pkg, date: today, status: 'Active', cur: fee.cur, total: c.total, discInfo: null, opp: null, course: program.courses[0], newStu: true };
       const r = await applySync(env, repo, user, perms, [{ coll: 'students', id: s.id, op: 'upsert', doc: s }, { coll: 'enr', id: e.id, op: 'upsert', doc: e }]);
       if (!r.ok) throw new Error(r.rejected.map((x) => x.reason).join('; '));

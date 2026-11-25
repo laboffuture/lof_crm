@@ -30,6 +30,7 @@ export interface Env {
   WHATSAPP_APP_SECRET?: string;
   WHATSAPP_VERIFY_TOKEN?: string;
   WHATSAPP_TEMPLATE_LANG?: string;
+  GUPSHUP_WEBHOOK_SECRET?: string;
 
   EXOTEL_SUBDOMAIN?: string;
   EXOTEL_SID?: string;
@@ -49,6 +50,12 @@ export interface Env {
   RAZORPAY_KEY_SECRET?: string;
   RAZORPAY_WEBHOOK_SECRET?: string;
 
+  /** Legacy setting, ignored for new checkouts: Easebuzz is the sole provider. */
+  PAYMENTS_INR_PROVIDER?: string;
+  EASEBUZZ_KEY?: string;
+  EASEBUZZ_SALT?: string;
+  EASEBUZZ_ENV?: 'test' | 'prod' | string;
+
   ERPNEXT_URL?: string;
   ERPNEXT_API_KEY?: string;
   ERPNEXT_API_SECRET?: string;
@@ -59,8 +66,6 @@ export interface Env {
   GCAL_CALENDAR_ID?: string;
   GCAL_SERVICE_ACCOUNT_JSON?: string;
 
-  RESEND_API_KEY?: string;
-  EMAIL_FROM?: string;
 }
 
 export type Role =

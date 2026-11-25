@@ -4,6 +4,10 @@
 #
 #   DOMAIN=crm.example.com LETSENCRYPT_EMAIL=you@example.com bash deploy/vps/ssl-certbot.sh
 #
+# UAT copy (deploy/vps/uat-setup.sh):
+#   DOMAIN=uat.crm.laboffuture.com LETSENCRYPT_EMAIL=you@example.com LOF_ENV_FILE=/home/lofcrm/lof-crm-uat-data/env \
+#     LOF_PORT=8788 LOF_PROXY=lofcrmuat LOF_NAME=lof-crm-uat bash /home/lofcrm/lof-crm-uat/deploy/vps/ssl-certbot.sh
+#
 # 1. lets /.well-known/ through to the site folder (certbot's webroot check), everything else to the CRM
 # 2. certbot certonly --webroot   (certificate under /etc/letsencrypt/live/lofcrm-<domain>/)
 # 3. OpenLiteSpeed: the site's vhssl block + a map on the :443 listener, then http → https redirect
@@ -22,6 +26,8 @@ LIVE="/etc/letsencrypt/live/$CERT_NAME"
 ENV_FILE="${LOF_ENV_FILE:-/etc/lof-crm/env}"
 APP_USER="${APP_USER:-lofcrm}"
 PORT="${LOF_PORT:-8787}"
+PROXY="${LOF_PROXY:-lofcrm}"   # OpenLiteSpeed extprocessor name – lofcrmuat for the UAT copy
+NAME="${LOF_NAME:-lof-crm}"    # pm2 process name – lof-crm-uat for the UAT copy
 [ "$(id -u)" = 0 ] || { echo "Run as root (sudo)"; exit 1; }
 [ -f "$VHOST_CONF" ] || { echo "No OpenLiteSpeed site for $DOMAIN ($VHOST_CONF) – create it in CyberPanel first"; exit 1; }
 [ -d "$WEBROOT" ] || { echo "Missing $WEBROOT"; exit 1; }
@@ -39,7 +45,7 @@ write_htaccess() {  # $1 = 1 to redirect http → https
       echo 'RewriteCond %{HTTPS} !=on'
       echo 'RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1 [R=301,L]'
     fi
-    echo 'RewriteRule ^(.*)$ http://lofcrm/$1 [P,L]'
+    echo "RewriteRule ^(.*)\$ http://$PROXY/\$1 [P,L]"
   } > "$WEBROOT/.htaccess"
   chown --reference="$WEBROOT" "$WEBROOT/.htaccess"
 }
@@ -97,9 +103,9 @@ vhssl  {
   ocspRespMaxAge          86400
 }
 EOF
-grep -q 'extprocessor lofcrm' "$VHOST_CONF" || cat >> "$VHOST_CONF" <<EOF
+grep -qE "^extprocessor[ \t]+$PROXY[ \t]*\{" "$VHOST_CONF" || cat >> "$VHOST_CONF" <<EOF
 
-extprocessor lofcrm {
+extprocessor $PROXY {
   type                    proxy
   address                 127.0.0.1:$PORT
   maxConns                100
@@ -152,7 +158,7 @@ systemctl restart lsws; sleep 3
 step "CRM address"
 sed -i "s#^APP_BASE_URL=.*#APP_BASE_URL=https://$DOMAIN#" "$ENV_FILE"
 grep '^APP_BASE_URL=' "$ENV_FILE" | sed 's/^/  /'
-sudo -u "$APP_USER" -H pm2 restart lof-crm >/dev/null
+sudo -u "$APP_USER" -H pm2 restart "$NAME" >/dev/null
 sleep 6
 
 step "Check"

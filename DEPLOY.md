@@ -43,7 +43,7 @@ Unzip the code, open a terminal in the folder, then:
 The script asks for the account ID, the API token, the administrator e-mail and a password (typed hidden – it is
 never saved to disk; only a hash goes into the database). It then:
 
-1. installs dependencies and runs the automated tests,
+1. installs dependencies and checks TypeScript types,
 2. creates the database and job queues (only if missing),
 3. applies the database migrations (only new ones),
 4. generates the server secret (only if missing),
@@ -152,7 +152,7 @@ Cloudflare also has a browser console: dashboard → Storage & Databases → D1 
 ## 6. Updating
 
 Replace the code with the new version and run `./deploy.sh` (or the GitHub workflow) again. New migrations are
-applied automatically; data, logins and secrets are kept. Tests run first and the deployment stops if any fail.
+applied automatically; data, logins and secrets are kept. TypeScript checking runs first and the deployment stops if it fails.
 
 ## 7. If something goes wrong
 

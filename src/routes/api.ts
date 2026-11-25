@@ -6,14 +6,18 @@ import { EXACT_SEQS, BLOCK_SEQS } from '../lib/indexing';
 import { HttpError } from '../types';
 import { bootstrap } from '../sync/bootstrap';
 import { applySync } from '../sync/sync';
-import { createLead, findDup, addAudit, addEv, money, r2, dayKey } from '../domain/core';
+import { createLead, findDup, addAudit, addEv, money, r2, dayKey, feeFor, notify, recalcEnrollment } from '../domain/core';
 import { instStatus, refundCalc, daysBetween, lmsEnrolPayload, lmsMissing } from '../domain/terms';
-import { createPaymentLink, processSync } from '../domain/workflows';
+import { createPaymentLink, createOppPaymentLink, canShareOppLink, processSync, payLinkUrl, linkExpired, markLinkSent, sendToParent } from '../domain/workflows';
+import { catalogue, LmsError, studentLookup } from '../integrations/lms';
+import { prepareLmsOrder, studentEmailKey } from '../domain/lms-orders';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
+import { sandboxPaymentRecords } from '../domain/easebuzz-payments';
 import { clickToCall } from '../integrations/exotel';
-import { receiptHtml } from './receipt';
-import { sendToParent } from '../domain/workflows';
+import { receiptPage } from './receipt';
+import { loadBillingDoc, invoicePdf, receiptPdf, docFileNames } from '../domain/billing-docs';
+import { importLeads, IMPORT_MAX } from '../domain/lead-import';
 
 export const api = new Hono<AppEnv>();
 api.use('*', requireAuth);
@@ -92,6 +96,55 @@ api.get('/leads/:id', async (c) => {
   needScope(c, l.branch);
   const [tasks, calls, comms, opps] = await Promise.all(['task', 'call', 'comm', 'opp'].map((t) => repo.many(t, 'ref1=?', [l.id], 'at')));
   return c.json({ lead: l, tasks, calls, comms, opportunities: opps });
+});
+
+/**
+ * Remarks on a communication with a lead (a call, WhatsApp or e-mail, sent or received). They can be written or
+ * changed until 24 hours after the communication; after that the record is closed for remarks.
+ */
+export const REMARK_HOURS = 24;
+api.post('/leads/:id/remarks', async (c) => {
+  const u = c.get('user');
+  if (!(can(c.get('perms'), u, 'leads', 'E') || can(c.get('perms'), u, 'leads', 'C'))) throw new HttpError(403, `${u.role} cannot add communication remarks`);
+  const repo = c.get('repo');
+  const lead = await repo.get<any>('lead', c.req.param('id'));
+  if (!lead) throw new HttpError(404, 'Lead not found');
+  needScope(c, lead.branch);
+  const body = await c.req.json<{ kind?: string; rec?: string; text?: string }>().catch(() => ({} as any));
+  const type = body.kind === 'call' ? 'call' : body.kind === 'comm' ? 'comm' : '';
+  if (!type) throw new HttpError(400, 'kind must be call or comm');
+  const rec = await repo.get<any>(type, String(body.rec || ''));
+  if (!rec || rec.lead !== lead.id) throw new HttpError(404, 'Communication not found on this lead');
+  if (!(Date.now() - Date.parse(rec.at) <= REMARK_HOURS * 36e5)) throw new HttpError(409, `Remarks can only be added within ${REMARK_HOURS} hours of the communication – this one was on ${new Date(rec.at).toISOString().slice(0, 16).replace('T', ' ')} UTC`);
+  const text = String(body.text ?? '').replace(/\r\n/g, '\n').trim();
+  if (text.length < 3) throw new HttpError(400, 'Write the remarks (at least 3 characters)');
+  if (text.length > 1000) throw new HttpError(400, 'Remarks can be at most 1000 characters');
+  const prev = rec.remark?.text;
+  rec.remark = { text, by: u.name, byId: u.id, at: nowIso(), ...(prev ? { edited: true } : {}) };
+  await repo.put(type, rec);
+  const what = type === 'call' ? `${rec.dir || ''} call`.trim() : `${rec.inbound ? 'Received ' : ''}${rec.ch}`;
+  addEv(lead, 'note', `Remarks on ${what} (${new Date(rec.at).toISOString().slice(0, 16).replace('T', ' ')} UTC): ${text.slice(0, 200)}`, u.name);
+  await repo.put('lead', lead);
+  await addAudit(repo, prev ? 'Communication remarks changed' : 'Communication remarks added', rec.id, prev ? `"${prev.slice(0, 300)}" → "${text.slice(0, 300)}"` : text.slice(0, 500));
+  return c.json({ ok: true, kind: type, rec, lead });
+});
+
+/** Bulk lead import from an Excel / CSV sheet: dryRun checks every row, then the same rows are created. */
+api.post('/leads/import', async (c) => {
+  need(c, 'leads', 'C');
+  const raw = await c.req.text();
+  if (raw.length > 3_000_000) throw new HttpError(413, 'The file is too large');
+  let body: any;
+  try { body = JSON.parse(raw); } catch { throw new HttpError(400, 'Invalid JSON body'); }
+  const rows = Array.isArray(body?.rows) ? body.rows : null;
+  if (!rows || !rows.length) throw new HttpError(400, 'The sheet has no rows to import');
+  if (rows.length > IMPORT_MAX) throw new HttpError(413, `At most ${IMPORT_MAX} leads per file – split the sheet`);
+  const r = await importLeads(c.get('repo'), c.get('user'), rows, {
+    defaults: body.defaults && typeof body.defaults === 'object' ? body.defaults : {},
+    sendMessages: body.sendMessages === true, allowDuplicates: body.allowDuplicates === true, dryRun: body.dryRun !== false,
+  });
+  if (r.queuedComms.length) await dispatch(c.env, wait(c), r.queuedComms.map((id) => ({ kind: 'send_comm' as const, id })));
+  return c.json({ results: r.results, summary: r.summary });
 });
 
 api.post('/leads', async (c) => {
@@ -206,12 +259,13 @@ api.get('/students/:id', async (c) => {
   const repo = c.get('repo');
   const s = await repo.get<any>('student', c.req.param('id'));
   if (!s) throw new HttpError(404, 'Student not found');
-  const enrollments = await repo.many<any>('enrollment', 'ref1=?', [s.id], 'at');
+  const enrollments = await repo.many<any>('enrollment', "ref1=? AND json_extract(data,'$.sandboxSource') IS NULL", [s.id], 'at');
   if (!c.get('user').scope.includes(s.branch) && !enrollments.some((e) => c.get('user').scope.includes(e.branch))) throw new HttpError(403, 'Outside your branch access');
   const u = c.get('user'), perms = c.get('perms');
   const canEnr = can(perms, u, 'enrollments', 'V');
-  const payments = can(perms, u, 'payments', 'V') ? (await repo.many<any>('payment', 'ref2=?', [s.id], 'at')).filter((p) => u.scope.includes(p.branch)) : [];
-  const syncs = canEnr ? await repo.many('moodle_sync', 'ref2=?', [s.id], 'at') : [];
+  const studentOrder = "ref2=? AND NOT EXISTS (SELECT 1 FROM docs checkout WHERE checkout.type='enrollment' AND checkout.id=docs.ref1 AND json_extract(checkout.data,'$.sandboxSource') IS NOT NULL)";
+  const payments = can(perms, u, 'payments', 'V') ? (await repo.many<any>('payment', studentOrder, [s.id], 'at')).filter((p) => u.scope.includes(p.branch)) : [];
+  const syncs = canEnr ? await repo.many('moodle_sync', studentOrder, [s.id], 'at') : [];
   return c.json({ student: s, enrollments: canEnr ? enrollments.filter((e) => u.scope.includes(e.branch)) : [], payments, moodle: syncs });
 });
 api.get('/enrollments', async (c) => {
@@ -227,17 +281,84 @@ api.get('/payments', async (c) => {
   if (c.req.query('to')) { where.push('at<=?'); binds.push(c.req.query('to') + 'T23:59:59Z'); }
   return c.json(await list(c, 'payment', where, binds));
 });
+async function billingDocFor(c: import('hono').Context<AppEnv>, p: any) {
+  const repo = c.get('repo');
+  const e = await repo.get<any>('enrollment', p.enr);
+  if (p.test && e?.sandboxSource) {
+    const source = await repo.get<any>('enrollment', e.sandboxSource);
+    if (!source) throw new HttpError(404, 'Enrollment not found');
+    needScope(c, source.branch);
+    const payments = await sandboxPaymentRecords(c.env, c.get('user').scope, source.id);
+    const receipt = payments.find((row) => row.id === p.id);
+    if (!receipt) throw new HttpError(404, 'Payment not found');
+    return loadBillingDoc(repo, p.id, { payment: receipt, enrollment: source, payments });
+  }
+  return loadBillingDoc(repo, p.id);
+}
+
 api.get('/payments/:id/receipt', async (c) => {
   need(c, 'payments', 'V');
   const repo = c.get('repo');
   const p = await repo.get<any>('payment', c.req.param('id'));
   if (!p) throw new HttpError(404, 'Payment not found');
   needScope(c, p.branch);
-  const [e, s, b, programs] = await Promise.all([repo.get<any>('enrollment', p.enr), repo.get<any>('student', p.stu), repo.get<any>('branch', p.branch), repo.many<any>('program')]);
+  const d = await billingDocFor(c, p);
+  if (!d) throw new HttpError(404, 'Payment not found');
   await addAudit(repo, 'Receipt generated', p.id, p.rc);
   c.header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   c.header('cache-control', 'no-store');
-  return c.html(receiptHtml(p, e, s, b, programs));
+  return c.html(receiptPage(d));
+});
+/**
+ * Cancel a transaction (wrong course, miscommunication …). Payments are never deleted: the payment keeps its receipt
+ * and invoice numbers, is marked Cancelled with who/when/parent's knowledge/reason, and drops out of every total.
+ * A cancellation is final. Refunds of the money are handled separately.
+ */
+api.post('/payments/:id/cancel', async (c) => {
+  const u = c.get('user');
+  if (!(can(c.get('perms'), u, 'payments', 'C') || can(c.get('perms'), u, 'payments', 'E'))) throw new HttpError(403, `${u.role} cannot cancel payments`);
+  const repo = c.get('repo');
+  const p = await repo.get<any>('payment', c.req.param('id'));
+  if (!p) throw new HttpError(404, 'Payment not found');
+  needScope(c, p.branch);
+  if (p.test) throw new HttpError(409, 'Sandbox transactions cannot be cancelled here');
+  if (p.status === 'Cancelled') throw new HttpError(409, 'This transaction is already cancelled');
+  const body = await c.req.json<{ parentAware?: string; reason?: string; confirm?: boolean }>().catch(() => ({} as any));
+  const parentAware = body.parentAware === 'Yes' || body.parentAware === 'No' ? body.parentAware : '';
+  const reason = String(body.reason ?? '').replace(/\s+/g, ' ').trim();
+  if (!parentAware) throw new HttpError(400, 'Answer whether the transaction is being cancelled with the parent\'s knowledge');
+  if (reason.length < 10) throw new HttpError(400, 'Describe the reason for the cancellation (at least 10 characters)');
+  if (reason.length > 500) throw new HttpError(400, 'The reason can be at most 500 characters');
+  if (body.confirm !== true) throw new HttpError(400, 'Confirm that the cancellation cannot be undone');
+  const refunds = (await repo.many<any>('refund', 'ref1=?', [p.enr])).filter((r) => r.status !== 'Rejected');
+  if (refunds.length) throw new HttpError(409, `The enrolment has a refund (${refunds.map((r) => r.id).join(', ')}) – settle the refund before cancelling a payment`);
+  p.status = 'Cancelled';
+  p.cancel = { at: nowIso(), by: u.name, byId: u.id, parentAware, reason };
+  await repo.put('payment', p);
+  const e = await recalcEnrollment(repo, p.enr);
+  const s = await repo.get<any>('student', p.stu);
+  const who = s ? `${s.first} ${s.last}` : p.stu;
+  await addAudit(repo, 'Payment cancelled', p.id, `${p.rc} · ${money(p.amt, p.cur)} · ${who} · with parent's knowledge: ${parentAware} · ${reason}${p.erp?.name ? ' · cancel ERPNext entry ' + p.erp.name : ''}`);
+  await notify(repo, { type: 'pay', sev: 'warn', text: `Transaction cancelled: ${p.rc}, ${money(p.amt, p.cur)} – ${who}, by ${u.name}${parentAware === 'No' ? ' (parent not informed)' : ''}. Reason: ${reason}`.slice(0, 300), route: { page: 'payRecords' }, roles: ['Centre Administrator', 'Management', 'Reception'], branch: p.branch });
+  return c.json({ ok: true, payment: p, enrollment: e });
+});
+
+/** Invoice or receipt PDF for a payment (the same files the parent receives by e-mail). */
+api.get('/payments/:id/:file{(?:invoice|receipt)\\.pdf}', async (c) => {
+  need(c, 'payments', 'V');
+  const repo = c.get('repo');
+  const p = await repo.get<any>('payment', c.req.param('id'));
+  if (!p) throw new HttpError(404, 'Payment not found');
+  needScope(c, p.branch);
+  const d = await billingDocFor(c, p);
+  if (!d) throw new HttpError(404, 'Payment not found');
+  const kind: 'invoice' | 'receipt' = c.req.param('file').startsWith('invoice') ? 'invoice' : 'receipt';
+  const bytes = kind === 'invoice' ? await invoicePdf(d) : await receiptPdf(d);
+  await addAudit(repo, kind === 'invoice' ? 'Invoice PDF downloaded' : 'Receipt PDF downloaded', p.id, kind === 'invoice' ? d.invoiceNo : d.receiptNo);
+  return new Response(new Uint8Array(bytes), { headers: {
+    'content-type': 'application/pdf', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+    'content-disposition': `attachment; filename="${docFileNames(d)[kind]}"`,
+  } });
 });
 
 api.post('/payments/links', async (c) => {
@@ -248,8 +369,11 @@ api.post('/payments/links', async (c) => {
   if (!e) throw new HttpError(404, 'Enrollment not found');
   needScope(c, e.branch);
   try {
-    return c.json(await createPaymentLink(c.env, repo, enrollmentId, amount, c.get('user').name), 201);
+    if (e.test && c.get('user').role !== 'System Administrator')
+      throw new HttpError(404, 'Enrollment not found');
+    return c.json(await createPaymentLink(c.env, repo, enrollmentId, amount, c.get('user').name, { createdById: c.get('user').id }), 201);
   } catch (err: any) {
+    if (err instanceof HttpError && err.status === 404) throw err;
     throw new HttpError(422, err.message);
   }
 });
@@ -257,35 +381,151 @@ api.get('/payments/links', async (c) => {
   need(c, 'payments', 'V');
   const enr = c.req.query('enrollmentId');
   const sc = c.get('user').scope;
-  const r = await c.env.DB.prepare(`SELECT l.* FROM payment_links l JOIN docs e ON e.type='enrollment' AND e.id=l.enrollment_id WHERE e.branch IN (${inList(sc)}) ${enr ? 'AND l.enrollment_id=?' : ''} ORDER BY l.created_at DESC LIMIT 100`).bind(...sc, ...(enr ? [enr] : [])).all();
-  return c.json({ items: r.results || [] });
+  const r = await c.env.DB.prepare(`SELECT l.* FROM payment_links l JOIN docs e ON e.type='enrollment' AND e.id=l.enrollment_id WHERE e.branch IN (${inList(sc)}) ${enr ? 'AND l.enrollment_id=?' : ''} ORDER BY l.created_at DESC LIMIT 100`).bind(...sc, ...(enr ? [enr] : [])).all<any>();
+  return c.json({ items: (r.results || []).map((l) => ({ ...l, draft: undefined, status: linkExpired(l) ? 'expired' : l.status, url: payLinkUrl(c.env, l.id) })) });
+});
+
+/** Payment link shared from an opportunity (Opportunity or Admission Decision stage). The body carries the filled-in
+ *  enrolment form as sync changes; it is checked now and applied – the student is enrolled – when the parent pays. */
+api.post('/opps/:id/payment-link', async (c) => {
+  const u = c.get('user');
+  if (!canShareOppLink(c.get('perms'), u)) throw new HttpError(403, `${u.role} cannot share payment links`);
+  const repo = c.get('repo');
+  const opp = await repo.get<any>('opp', c.req.param('id'));
+  if (!opp) throw new HttpError(404, 'Opportunity not found');
+  needScope(c, opp.branch);
+  const raw = await c.req.text();
+  if (raw.length > 400_000) throw new HttpError(413, 'Too much data');
+  let body: { changes?: any[]; amount?: number };
+  try { body = JSON.parse(raw); } catch { throw new HttpError(400, 'Invalid JSON body'); }
+  const amount = body.amount === undefined || body.amount === null ? undefined : Number(body.amount);
+  try {
+    return c.json(await createOppPaymentLink(c.env, repo, u, c.get('perms'), opp.id, body.changes as any, amount), 201);
+  } catch (err: any) {
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(422, err.message);
+  }
+});
+api.get('/opps/:id/payment-links', async (c) => {
+  need(c, 'opportunities', 'V');
+  const repo = c.get('repo');
+  const opp = await repo.get<any>('opp', c.req.param('id'));
+  if (!opp) throw new HttpError(404, 'Opportunity not found');
+  needScope(c, opp.branch);
+  const r = await c.env.DB.prepare('SELECT id,provider,enrollment_id,amount,currency,status,payment_id,created_by,created_at,paid_at,apply_error,expires_at,kind FROM payment_links WHERE opp_id=? ORDER BY created_at DESC LIMIT 20').bind(opp.id).all<any>();
+  return c.json({ items: (r.results || []).map((l) => ({ ...l, status: linkExpired(l) ? 'expired' : l.status, url: payLinkUrl(c.env, l.id) })) });
+});
+
+api.get('/payments/links/:id/status', async (c) => {
+  const user = c.get('user');
+  if (!can(c.get('perms'), user, 'payments', 'C')) need(c, 'payments', 'V');
+  const link = await c.env.DB.prepare(
+    "SELECT l.status, l.payment_id, l.is_test, e.branch, original.branch AS source_branch, json_extract(e.data, '$.payStatus') AS pay_status FROM payment_links l JOIN docs e ON e.type='enrollment' AND e.id=l.enrollment_id LEFT JOIN docs original ON original.type='enrollment' AND original.is_test=0 AND original.id=json_extract(e.data, '$.sandboxSource') WHERE l.id=?",
+  ).bind(c.req.param('id')).first<{ status: string; payment_id: string | null; is_test: number; branch: string; source_branch: string | null; pay_status: string }>();
+  if (!link || (link.is_test && !link.source_branch && user.role !== 'System Administrator')) throw new HttpError(404, 'Link not found');
+  needScope(c, link.branch);
+  if (link.source_branch) needScope(c, link.source_branch);
+  return c.json({
+    status: link.status === 'paid' && !link.payment_id ? 'confirming' : link.status,
+    paymentStatus: link.pay_status,
+  });
 });
 
 /** Send a payment link to the parent over WhatsApp or e-mail (respects consent). */
 api.post('/payments/links/:id/send', async (c) => {
-  need(c, 'payments', 'C');
   const { channel } = await c.req.json<{ channel: 'WhatsApp' | 'Email' }>();
   const link = await c.env.DB.prepare('SELECT * FROM payment_links WHERE id=?').bind(c.req.param('id')).first<any>();
   if (!link) throw new HttpError(404, 'Link not found');
   const repo = c.get('repo');
-  const e = await repo.get<any>('enrollment', link.enrollment_id);
-  needScope(c, e.branch);
+  if (link.is_test || link.provider === 'easebuzz-test') throw new HttpError(409, 'Sandbox payment links are for internal testing.');
+  if (linkExpired(link)) throw new HttpError(409, 'This link has expired – create a new one');
   if (link.status !== 'created') throw new HttpError(409, `This link is ${link.status}`);
+  const linkUrl = payLinkUrl(c.env, link.id);
   if (!['WhatsApp', 'Email'].includes(channel)) throw new HttpError(400, 'Choose WhatsApp or Email');
+  const e = await repo.get<any>('enrollment', link.enrollment_id);
+  if (!e && link.opp_id) {
+    // Shared from an opportunity: the student is not enrolled yet – the message goes to the lead's parent
+    if (!canShareOppLink(c.get('perms'), c.get('user'))) throw new HttpError(403, `${c.get('user').role} cannot share payment links`);
+    const opp = await repo.get<any>('opp', link.opp_id);
+    if (!opp) throw new HttpError(404, 'Opportunity not found');
+    needScope(c, opp.branch);
+    const lead = await repo.get<any>('lead', opp.lead);
+    if (!lead) throw new HttpError(404, 'Lead not found');
+    const progs = await repo.many<any>('program');
+    const prog = (progs.find((p) => p.id === opp.prog) || { name: opp.prog }).name;
+    const text = `Dear ${lead.parent || 'Parent'}, please use this secure link to pay ${money(link.amount, link.currency)} for ${opp.student}'s enrolment in ${prog} at Lab of Future: ${linkUrl} – the seat is confirmed as soon as the payment is received. The link is valid for 24 hours.`;
+    const id = await repo.newId('cm');
+    await repo.put('comm', { id, lead: lead.id, ch: channel, tpl: 'Payment link', text, at: nowIso(), status: 'Queued', by: c.get('user').name });
+    await dispatch(c.env, wait(c), [{ kind: 'send_comm', id }]);
+    await markLinkSent(c.env, link.id, { by: c.get('user').name, byId: c.get('user').id, via: channel, to: channel === 'WhatsApp' ? lead.phone : lead.email });
+    return c.json({ ok: true, commId: id });
+  }
+  need(c, 'payments', 'C');
+  if (!e) throw new HttpError(404, 'Enrollment not found');
+  needScope(c, e.branch);
   const s = await repo.get<any>('student', e.stu);
+  if (!s) throw new HttpError(404, 'Student not found');
   const opp = e.opp ? await repo.get<any>('opp', e.opp) : null;
   const lead = opp ? await repo.get<any>('lead', opp.lead) : null;
   const parent = (s?.parents || [])[0] || {};
-  const text = `Dear ${lead?.parent || parent.name || 'Parent'}, please use this secure link to pay ${money(link.amount, link.currency)} for ${s.first}'s enrolment at Lab of Future: ${link.url}`;
+  const text = `Dear ${lead?.parent || parent.name || 'Parent'}, please use this secure link to pay ${money(link.amount, link.currency)} for ${s.first}'s enrolment at Lab of Future: ${linkUrl}${link.expires_at ? ' – the link is valid for 24 hours.' : ''}`;
   if (lead) {
     const id = await repo.newId('cm');
     await repo.put('comm', { id, lead: lead.id, ch: channel, tpl: 'Payment link', text, at: nowIso(), status: 'Queued', by: c.get('user').name });
     await dispatch(c.env, wait(c), [{ kind: 'send_comm', id }]);
+    await markLinkSent(c.env, link.id, { by: c.get('user').name, byId: c.get('user').id, via: channel, to: channel === 'WhatsApp' ? lead.phone : lead.email });
     return c.json({ ok: true, commId: id });
   }
   // Walk-in / existing students: send to the parent on the student record (transactional message about their own enrolment)
   const r = await sendToParent(c.env, repo, s, channel, text);
+  if (r.ok) await markLinkSent(c.env, link.id, { by: c.get('user').name, byId: c.get('user').id, via: channel, to: channel === 'WhatsApp' ? parent.mobile : parent.email });
   return c.json({ ok: r.ok, status: r.status }, r.ok ? 200 : 502);
+});
+
+/**
+ * Payments → Payment links: every link with who it went to, who created and sent it, and whether the parent paid.
+ * Counsellors (and anyone without payment access) see only the links they created or sent.
+ */
+api.get('/payments/link-list', async (c) => {
+  const u = c.get('user'), perms = c.get('perms');
+  const canPay = can(perms, u, 'payments', 'V');
+  if (!canPay && !canShareOppLink(perms, u)) throw new HttpError(403, `${u.role} cannot view payment links`);
+  const own = u.role === 'Counsellor' || !canPay;
+  const repo = c.get('repo');
+  const rows = (await c.env.DB.prepare(`SELECT * FROM payment_links WHERE is_test=? ${own ? 'AND (created_by_id=? OR sent_by_id=? OR (created_by_id IS NULL AND created_by=?))' : ''} ORDER BY created_at DESC LIMIT 500`)
+    .bind(repo.isTest ? 1 : 0, ...(own ? [u.id, u.id, u.name] : [])).all<any>()).results || [];
+  const cache = new Map<string, any>();
+  const get = async (type: string, id: unknown) => {
+    if (!id) return null;
+    const k = type + ':' + id;
+    if (!cache.has(k)) cache.set(k, await repo.get<any>(type, String(id)));
+    return cache.get(k);
+  };
+  const progs = await repo.many<any>('program');
+  const pname = (id: string) => (progs.find((p) => p.id === id) || { name: id || '' }).name;
+  const now = nowIso();
+  const items: any[] = [];
+  for (const l of rows) {
+    const e = await get('enrollment', l.enrollment_id);
+    const opp = l.opp_id ? await get('opp', l.opp_id) : e?.opp ? await get('opp', e.opp) : null;
+    const s = e ? await get('student', e.stu) : null;
+    const lead = opp ? await get('lead', opp.lead) : null;
+    const branch = e?.branch || opp?.branch;
+    if (!branch || !u.scope.includes(branch)) continue;
+    const parent = (s?.parents || [])[0] || {};
+    const pay = l.payment_id ? await get('payment', l.payment_id) : null;
+    items.push({
+      id: l.id, url: payLinkUrl(c.env, l.id), kind: l.kind || (l.opp_id ? 'opp' : 'collect'), amount: l.amount, currency: l.currency,
+      status: linkExpired(l, now) ? 'expired' : l.status, applyError: l.apply_error || null,
+      student: s ? `${s.first} ${s.last}` : opp?.student || '', studentId: s?.id || null,
+      parent: lead?.parent || parent.name || opp?.parent || '', phone: lead?.phone || parent.mobile || '', email: lead?.email || parent.email || '',
+      branch, prog: pname(e?.prog || opp?.prog), enrollment: e?.id || null, opp: opp?.id || null, lead: lead?.id || null,
+      createdBy: l.created_by, createdAt: l.created_at, expiresAt: l.expires_at,
+      sentBy: l.sent_by, sentVia: l.sent_via, sentTo: l.sent_to, sentAt: l.sent_at, sends: l.sends || 0,
+      paidAt: l.paid_at, receipt: pay?.rc || null, paymentStatus: pay?.status || null,
+    });
+  }
+  return c.json({ items, own });
 });
 
 // ------------------------------------------------------------------ LMS calls (enrol / cancel); /moodle/syncs kept as an alias
@@ -311,11 +551,10 @@ const syncRetry = async (c: any) => {
   const m = await repo.get('moodle_sync', c.req.param('id'));
   if (!m) throw new HttpError(404, 'LMS call not found');
   needScope(c, (await repo.getRow('moodle_sync', m.id))?.branch);
-  if (m.status === 'Processing') throw new HttpError(409, 'The call is already running');
-  if (m.status === 'Success') throw new HttpError(409, 'The call already succeeded');
-  m.status = 'Pending';
-  m.hist.push({ at: nowIso(), s: 'Pending', msg: `Manual retry by ${u.name}` });
-  await repo.put('moodle_sync', m);
+  if (!['Failed', 'Retry Required', 'Awaiting Setup'].includes(m.status)) throw new HttpError(409, m.status === 'Warnings' ? 'LMS received this order with warnings. Resolve it with LOF; do not re-send or edit the accepted order.' : 'Only failed calls or calls awaiting setup can be retried');
+  const claim = await c.env.DB.prepare("UPDATE docs SET status='Pending', data=json_insert(json_set(data,'$.status','Pending'),'$.hist[#]',json(?)) WHERE type='moodle_sync' AND id=? AND status IN ('Failed','Retry Required','Awaiting Setup')")
+    .bind(JSON.stringify({ at: nowIso(), s: 'Pending', msg: `Manual retry by ${u.name}` }), m.id).run();
+  if (!claim.meta.changes) throw new HttpError(409, 'The call changed or another retry is already running');
   return c.json(await processSync(c.env, repo, m.id));
 };
 for (const base of ['/lms/calls', '/moodle/syncs']) {
@@ -331,9 +570,76 @@ api.get('/lms/preview/:enrollmentId', async (c) => {
   const e = await repo.get<any>('enrollment', c.req.param('enrollmentId'));
   if (!e) throw new HttpError(404, 'Enrolment not found');
   needScope(c, e.branch);
-  const [s, program, cfg] = await Promise.all([repo.get<any>('student', e.stu), repo.get<any>('program', e.prog), repo.setting<any>('cfg')]);
-  const payload = lmsEnrolPayload(e, s, program, cfg.lms || {});
-  return c.json({ enrol: { call: 'enrol', ...payload }, cancel: { call: 'cancel', reference: e.id }, missing: lmsMissing(payload), mode: modeFor(c.env, cfg, 'lms') });
+  const [s, program, cfg, fee] = await Promise.all([
+    repo.get('student', e.stu),
+    repo.get('program', e.prog),
+    repo.setting('cfg'),
+    e.feeId ? repo.get<{ courseId?: string }>('fee', e.feeId) : null,
+  ]);
+  const calls = await repo.many<any>('moodle_sync', 'ref1=?', [e.id]);
+  const frozen = calls.find((m) => m.op !== 'cancel' && m.payload)?.payload;
+  const payload = frozen || lmsEnrolPayload(e, s, program, cfg.lms, { programmeCode: program?.code, courseId: fee?.courseId });
+  return c.json({ enrol: { wsfunction: 'local_lofplatform_erp_purchase', ...payload }, cancel: { wsfunction: 'local_lofplatform_erp_cancel', reference: e.id }, missing: lmsMissing(payload), mode: modeFor(c.env, cfg, 'lms') });
+});
+
+// Run the same pre-payment checks before the wizard opens its payment step.
+api.post('/lms/enrolment-check', async (c) => {
+  const { branch, prog, pkg, studentId, student, opportunityId } = await c.req.json();
+  if (![branch, prog, pkg].every((value) => typeof value === 'string' && value.trim()))
+    throw new HttpError(400, 'Select a branch, programme and package.');
+  needScope(c, branch);
+  const repo = c.get('repo');
+  if (typeof opportunityId === 'string' && opportunityId) {
+    if (!canShareOppLink(c.get('perms'), c.get('user'))) throw new HttpError(403, 'You cannot share opportunity payment links');
+    const opp = await repo.get<any>('opp', opportunityId);
+    if (!opp || opp.branch !== branch) throw new HttpError(404, 'Opportunity not found');
+  } else {
+    need(c, 'enrollments', 'C');
+  }
+  const date = dayKey(new Date());
+  const fee = feeFor(await repo.many('fee', 'branch=?', [branch]), prog, branch, pkg, date);
+  if (!fee) throw new HttpError(409, 'No active fee record for this programme, branch and package.');
+  let profile;
+  if (studentId) {
+    profile = await repo.get('student', studentId);
+    const { scope } = c.get('user');
+    if (!profile || (!scope.includes(profile.branch) && !(await repo.count('enrollment', `ref1=? AND branch IN (${inList(scope)})`, [studentId, ...scope]))))
+      throw new HttpError(404, 'Select an available student before continuing.');
+  } else {
+    profile = { ...student, id: 'preview' };
+    const email = studentEmailKey(profile.email);
+    if (email && await repo.count('student', "lower(trim(json_extract(data,'$.email')))=?", [email]))
+      throw new HttpError(409, 'This student email already belongs to a CRM profile. Go back and select Existing student.');
+  }
+  const cfg = await repo.setting('cfg');
+  try {
+    await prepareLmsOrder(c.env, repo, cfg, { id: 'preview', branch, prog, pkg, date, lmsValidUntil: fee.validUntil },
+      profile, await repo.get('program', prog));
+  } catch (error) {
+    if (!(error instanceof LmsError)) throw error;
+    throw new HttpError(error.retryable ? 503 : 409, error.message);
+  }
+  return c.json({ ok: true });
+});
+
+// Read-only Moodle operations. Tokens stay on the server; student lookups require branch access.
+api.post('/lms/catalogue', async (c) => {
+  need(c, 'configuration', 'V');
+  const cfg = await c.get('repo').setting<any>('cfg');
+  const body = await c.req.json<any>();
+  if (body.track !== undefined && !/^[A-Za-z0-9._-]{1,64}$/.test(body.track)) throw new HttpError(400, 'Invalid Track code');
+  const mode = modeFor(c.env, cfg, 'lms');
+  return c.json({ mode, data: await catalogue({ env: c.env, mode }, body.track) });
+});
+api.post('/lms/students/:id/lookup', async (c) => {
+  need(c, 'students', 'V');
+  const repo = c.get('repo');
+  const s = await repo.get<any>('student', c.req.param('id'));
+  if (!s) throw new HttpError(404, 'Student not found');
+  needScope(c, s.branch);
+  const cfg = await repo.setting<any>('cfg');
+  const mode = modeFor(c.env, cfg, 'lms', !!s.test);
+  return c.json({ mode, data: await studentLookup({ env: c.env, mode, isTest: !!s.test }, s.id) });
 });
 
 // ------------------------------------------------------------------ instalments, refunds, targets

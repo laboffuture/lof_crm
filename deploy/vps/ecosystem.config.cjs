@@ -10,7 +10,7 @@ const port = process.env.LOF_PORT || '8787';
 
 module.exports = {
   apps: [{
-    name: 'lof-crm',
+    name: process.env.LOF_NAME || 'lof-crm', // lof-crm-uat for the UAT copy (deploy/vps/uat-setup.sh)
     cwd: appDir,
     script: path.join(appDir, 'node_modules/wrangler/bin/wrangler.js'),
     args: ['dev', '--ip', '127.0.0.1', '--port', port, '--env-file', envFile, '--persist-to', stateDir,

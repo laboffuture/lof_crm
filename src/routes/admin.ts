@@ -156,7 +156,7 @@ admin.get('/db/backup', async (c) => {
   // One batch = one transaction, so record numbers and their counters are a consistent snapshot
   const [docs, settings, sequences] = await c.env.DB.batch<any>([
     c.env.DB.prepare('SELECT type, id, is_test, version, created_at, updated_at, updated_by, data FROM docs ORDER BY type, id'),
-    c.env.DB.prepare('SELECT key, updated_at, updated_by, data FROM settings ORDER BY key'),
+    c.env.DB.prepare("SELECT key, updated_at, updated_by, data FROM settings WHERE key <> 'smtp_pass' ORDER BY key"), // the SMTP password never leaves the server
     c.env.DB.prepare('SELECT name, value FROM sequences ORDER BY name'),
   ]);
   const body = {

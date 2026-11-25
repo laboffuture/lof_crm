@@ -65,6 +65,80 @@ describe('Meta Lead Ads (live mode, Graph API stubbed)', () => {
   });
 });
 
+describe('Gupshup WhatsApp Flow submissions', () => {
+  const path = '/webhooks/gupshup/leads';
+  const secret = 'test-gupshup-crm-webhook-secret';
+  const headers = { authorization: 'Bearer ' + secret };
+  const form = {
+    submission_id: 'wamid.EXAMPLE_FORM_REPLY', student: 'Aisha Test', parent: 'Mariam Test',
+    phone: '971509991234', email: 'mariam@example.com', branch: 'KRM', prog: 'SPA',
+    notes: 'Prefers Saturday sessions', wa_consent: true,
+  };
+
+  beforeEach(() => { t.env.GUPSHUP_WEBHOOK_SECRET = secret; });
+
+  it('shows the routed lead in the Leads list and CRM bootstrap', async () => {
+    const result = await t.call('POST', path, { body: form, headers });
+    expect(result.status).toBe(200);
+    const id = result.body.reference;
+    const token = await t.login(USERS.hassan);
+    const list = await t.call('GET', '/api/v1/leads?source=WhatsApp&q=' + id, { token });
+    expect(list.body.items).toEqual([expect.objectContaining({
+      id, src: 'WhatsApp', stage: 'New Lead', status: 'Open', cat: 'Warm', cslr: 'S02',
+      student: form.student, parent: form.parent, phone: '+' + form.phone, email: form.email,
+      branch: form.branch, prog: form.prog, notes: form.notes, wa: true, em: false,
+      external: { gupshup: { submissionId: form.submission_id } },
+    })]);
+    const bootstrap = await t.call('GET', '/api/v1/bootstrap', { token });
+    expect(bootstrap.body.data.leads).toEqual(expect.arrayContaining([expect.objectContaining({ id, src: 'WhatsApp' })]));
+    expect(bootstrap.body.data.tasks).toEqual(expect.arrayContaining([expect.objectContaining({ lead: id, type: 'First call' })]));
+    expect(bootstrap.body.data.comms.filter((comm: any) => comm.lead === id)).toEqual([]);
+  });
+
+  it('creates one lead for simultaneous and subsequent retries of the same submission', async () => {
+    const send = () => t.call('POST', path, { body: form, headers });
+    const results = await Promise.all([send(), send()]);
+    expect(results.map((r) => r.status)).toEqual([200, 200]);
+    const id = results[0].body.reference;
+    expect(results.map((r) => r.body.reference)).toEqual([id, id]);
+    expect(results.filter((r) => r.body.duplicate)).toHaveLength(1);
+    expect((await send()).body).toMatchObject({ reference: id, duplicate: true });
+    expect(await t.sql("SELECT id FROM docs WHERE type='lead' AND ref1='509991234'")).toEqual([{ id }]);
+    expect(await t.sql("SELECT id FROM docs WHERE type='task' AND ref1=?", id)).toHaveLength(1);
+
+    const another = await t.call('POST', path, { body: { ...form, submission_id: 'wamid.ANOTHER_FORM_REPLY' }, headers });
+    expect(another.status).toBe(200);
+    expect(another.body.reference).not.toBe(id);
+  });
+
+  it('checks authorization and rejects incomplete submissions or invalid branch/programme combinations', async () => {
+    expect((await t.call('POST', path, { body: form })).status).toBe(401);
+    expect((await t.call('POST', path, { body: form, headers: { authorization: 'Bearer wrong' } })).status).toBe(401);
+    expect((await t.call('POST', path, { body: { ...form, student: '' }, headers })).status).toBe(400);
+    expect((await t.call('POST', path, { body: { ...form, branch: 'HYD' }, headers })).status).toBe(422);
+    await t.setCfg((cfg) => { cfg.sources.find((source: any) => source.n === 'WhatsApp').en = false; });
+    expect((await t.call('POST', path, { body: form, headers })).status).toBe(422);
+    expect(await t.sql("SELECT result FROM webhook_events WHERE provider='gupshup'")).toEqual([]);
+    delete t.env.GUPSHUP_WEBHOOK_SECRET;
+    expect((await t.call('POST', path, { body: form, headers })).status).toBe(503);
+  });
+
+  it('can retry after a failed write without leaving a partial lead', async () => {
+    t.d1.db.exec(`CREATE TRIGGER fail_gupshup_audit BEFORE INSERT ON docs WHEN NEW.type='audit'
+      BEGIN SELECT RAISE(ABORT, 'test write failure'); END;`);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect((await t.call('POST', path, { body: form, headers })).status).toBe(500);
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect(await t.sql("SELECT result FROM webhook_events WHERE provider='gupshup'")).toEqual([]);
+    expect(await t.sql("SELECT id FROM docs WHERE type='lead' AND ref1='509991234'")).toEqual([]);
+    t.d1.db.exec('DROP TRIGGER fail_gupshup_audit');
+    expect((await t.call('POST', path, { body: form, headers })).status).toBe(200);
+  });
+});
+
 describe('WhatsApp webhooks', () => {
   it('updates delivery status and threads inbound replies onto the lead', async () => {
     const tok = await t.login(USERS.admin);
@@ -111,16 +185,19 @@ describe('Exotel webhooks', () => {
 });
 
 describe('payment gateways', () => {
-  async function link(enr: string) {
-    const r = await t.call('POST', '/api/v1/payments/links', { token: await t.login(USERS.admin), body: { enrollmentId: enr } });
-    expect(r.status).toBe(201);
-    return r.body;
+  async function legacyLink(enrollmentId: string, provider: 'telr' | 'razorpay', ref: string, url: string) {
+    const enrollment = await doc(t, 'enrollment', enrollmentId);
+    const id = 'PL-LEGACY9';
+    const amount = enrollment.total - enrollment.paid;
+    await t.d1.prepare("INSERT INTO payment_links (id,provider,provider_ref,enrollment_id,amount,currency,url,status,created_by,is_test) VALUES (?,?,?,?,?,?,?,'created','Test',0)")
+      .bind(id, provider, ref, enrollmentId, amount, enrollment.cur, url).run();
+    return { id, provider, providerRef: ref, amount };
   }
   it('Razorpay: signed payment_link.paid records the payment once', async () => {
     // Make an INR enrolment with a balance: Dhruv (BLR) is fully paid, so use a fresh partial payment state
     // give the (fully paid) Bengaluru enrolment an open balance of 1,000 INR
     await t.d1.prepare("UPDATE docs SET data=json_set(data,'$.total',json_extract(data,'$.total')+1000,'$.payStatus','Partially paid') WHERE type='enrollment' AND id='EN-26-0006'").run();
-    const l = await link('EN-26-0006');
+    const l = await legacyLink('EN-26-0006', 'razorpay', 'rzp_fixture', 'https://razorpay.com/fixture');
     expect(l.provider).toBe('razorpay');
     const body = JSON.stringify({ event: 'payment_link.paid', payload: { payment_link: { entity: { id: l.providerRef, reference_id: l.id } }, payment: { entity: { id: 'pay_1', amount: Math.round(l.amount * 100), method: 'upi' } } } });
     const headers = { 'content-type': 'application/json', 'x-razorpay-signature': await sign(SECRETS.RAZORPAY_WEBHOOK_SECRET, body), 'x-razorpay-event-id': 'evt_1' };
@@ -147,8 +224,8 @@ describe('payment gateways', () => {
       checks++;
       return { json: { order: { ref: 'TELRREF1', status: { code: 3, text: 'Paid' }, amount: '1260.00', currency: 'AED', transaction: { ref: 'TXN9' } } } };
     }]]);
-    const l = await link('EN-26-0002');
-    expect(l.url).toContain('secure.telr.com');
+    const l = await legacyLink('EN-26-0002', 'telr', 'TELRREF1', 'https://secure.telr.com/gateway/process.html?o=TELRREF1'); // parents get the CRM's link page, which forwards to Telr
+    expect((await t.sql<any>('SELECT url FROM payment_links WHERE id=?', l.id))[0].url).toContain('secure.telr.com');
     await t.call('POST', '/webhooks/telr', { raw: `tran_cartid=${l.id}&tran_status=A&tran_ref=forged`, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
     expect(checks).toBe(1);
     const pays = (await t.sql<any>("SELECT data FROM docs WHERE type='payment' AND ref1='EN-26-0002'")).map((x) => JSON.parse(x.data));

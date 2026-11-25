@@ -1,6 +1,16 @@
 node_modules
+.DS_Store
 .wrangler
 .dev.vars
+.dev.vars.*
+!.dev.vars.example
+config/payments/*.env
 test-results
 playwright-report
-.dev.vars
+
+# local database backups
+backups/
+
+# Generated frontend demo
+dist/
+

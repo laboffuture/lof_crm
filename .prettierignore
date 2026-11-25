@@ -1,0 +1,4 @@
+public/
+dist/
+node_modules/
+migrations/0002_seed.sql
