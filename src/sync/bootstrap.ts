@@ -1,5 +1,6 @@
 // Builds the branch-scoped CRM state the screens run on (same shape as the approved prototype).
 import { Repo } from '../lib/db';
+import { branchIdEditable } from '../domain/branch-rename';
 import { can, inList } from '../lib/auth';
 import type { Env, User } from '../types';
 import { ACTIVE_INTEGRATIONS, modeFor, missingSecrets } from '../integrations/base';
@@ -81,7 +82,7 @@ export async function bootstrap(env: Env, repo: Repo, user: User, perms: any) {
 
   return {
     me: user,
-    server: { env: env.APP_ENV, now: new Date().toISOString(), impersonation: env.ALLOW_IMPERSONATION === 'true', integrations, lmsSecrets: missingSecrets(env, 'lms').length === 0,
+    server: { env: env.APP_ENV, now: new Date().toISOString(), impersonation: env.ALLOW_IMPERSONATION === 'true', branchIdEdit: branchIdEditable(env) && user.role === 'System Administrator', integrations, lmsSecrets: missingSecrets(env, 'lms').length === 0,
       payments: { provider: 'easebuzz', inrProvider: 'easebuzz', supportedCurrencies: ['INR'], easebuzzSandbox: env.EASEBUZZ_ENV !== 'prod' },
       emailTemplates: { categories: EMAIL_TPL_CATEGORIES, placeholders: EMAIL_PLACEHOLDERS } },
     data: { branches, programs, fees, discounts, staff: staffOut, cfg: cfgOut, perms: permsDoc, scope, fx, hist, leads, opps, tasks, calls, comms, students, enr, pay, checkoutPayments, checkoutLms, ms, refunds, approvals, notifs, audit },

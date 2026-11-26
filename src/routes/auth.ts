@@ -3,7 +3,17 @@ import { hashPassword, verifyPassword, sha256Hex } from '../lib/crypto';
 import { requireAuth, loadUser, mfaRequiredFor, type AppEnv } from '../lib/auth';
 import { Repo, nowIso } from '../lib/db';
 import { allow, clientIp } from '../lib/ratelimit';
-import { createSession, sessionCookie, clearCookie, revokeAll, revokeSession, setStage, readToken, loadSession, type Stage } from '../lib/session';
+import {
+  createSession,
+  sessionCookie,
+  clearCookie,
+  revokeAll,
+  revokeSession,
+  setStage,
+  readToken,
+  loadSession,
+  type Stage,
+} from '../lib/session';
 import { newTotpSecret, otpauthUri, verifyTotp, encryptSecret, decryptSecret } from '../lib/totp';
 import { addAudit } from '../domain/core';
 import { HttpError } from '../types';
@@ -12,7 +22,8 @@ import { sendEmail } from '../integrations/gcal-email';
 
 export const auth = new Hono<AppEnv>();
 
-const MAX_FAILS = 5, LOCK_MIN = 15;
+const MAX_FAILS = 5,
+  LOCK_MIN = 15;
 const GENERIC = 'Incorrect e-mail or password, or the account is temporarily locked';
 const COMMON = ['password', 'welcome', 'qwerty', 'letmein', 'admin', 'labofuture', 'changeme', '123456', 'iloveyou'];
 
@@ -28,7 +39,8 @@ export function passwordProblem(pw: string, email = ''): string | null {
   return null;
 }
 
-const audit = (env: Env, by: string, act: string, det: string) => addAudit(new Repo(env.DB, by), act, 'Session', det, by);
+const audit = (env: Env, by: string, act: string, det: string) =>
+  addAudit(new Repo(env.DB, by), act, 'Session', det, by);
 const browser = (c: any) => c.req.header('x-lof-csrf') === '1'; // the CRM screens; API clients get the token in the body
 
 function startStage(env: Env, row: any, role: string): Stage {
@@ -39,7 +51,8 @@ function startStage(env: Env, row: any, role: string): Stage {
 
 auth.post('/login', async (c) => {
   // Only JSON bodies (no cross-site HTML form posts), and a browser Origin must be this app
-  if (!(c.req.header('content-type') || '').toLowerCase().startsWith('application/json')) throw new HttpError(415, 'Send the sign-in as JSON');
+  if (!(c.req.header('content-type') || '').toLowerCase().startsWith('application/json'))
+    throw new HttpError(415, 'Send the sign-in as JSON');
   // Sec-Fetch-Site is set by the browser itself (pages cannot forge it). Some reverse proxies (OpenLiteSpeed) repeat
   // the Origin header, which arrives joined as "a, a" – accepted only when every copy is this app.
   const origin = c.req.header('origin');
@@ -49,47 +62,75 @@ auth.post('/login', async (c) => {
     console.warn(`login refused: origin ${origin} is not ${new URL(c.env.APP_BASE_URL).origin}`);
     throw new HttpError(403, 'Sign-in from another site is not allowed');
   }
-  const body = await c.req.json<{ email?: string; password?: string; code?: string }>().catch(() => ({} as any));
-  const email = String(body.email || '').trim().toLowerCase();
+  const body = await c.req.json<{ email?: string; password?: string; code?: string }>().catch(() => ({}) as any);
+  const email = String(body.email || '')
+    .trim()
+    .toLowerCase();
   if (!email || !body.password) throw new HttpError(400, 'E-mail and password are required');
   const ip = clientIp(c.req.raw);
   if (!(await allow(c.env, 'login-ip:' + ip, 30, 900)) || !(await allow(c.env, 'login-email:' + email, 10, 900))) {
     throw new HttpError(429, 'Too many sign-in attempts – wait 15 minutes and try again');
   }
   const row = await c.env.DB.prepare('SELECT * FROM staff_auth WHERE email=?').bind(email).first<any>();
-  if (!row) { await verifyPassword(body.password, 'pbkdf2_sha256$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAA'); throw new HttpError(401, GENERIC); }
+  if (!row) {
+    await verifyPassword(body.password, 'pbkdf2_sha256$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAA');
+    throw new HttpError(401, GENERIC);
+  }
   if (row.locked_until && row.locked_until > nowIso()) throw new HttpError(401, GENERIC);
   const fail = async (why: string) => {
     const fails = row.failed_count + 1;
     const lock = fails >= MAX_FAILS ? new Date(Date.now() + LOCK_MIN * 6e4).toISOString() : null;
-    await c.env.DB.prepare('UPDATE staff_auth SET failed_count=?, locked_until=? WHERE staff_id=?').bind(lock ? 0 : fails, lock, row.staff_id).run();
-    await audit(c.env, row.staff_id, 'Access', `Sign-in failed (${why}) from ${ip}${lock ? ' – account locked for 15 minutes' : ''}`);
+    await c.env.DB.prepare('UPDATE staff_auth SET failed_count=?, locked_until=? WHERE staff_id=?')
+      .bind(lock ? 0 : fails, lock, row.staff_id)
+      .run();
+    await audit(
+      c.env,
+      row.staff_id,
+      'Access',
+      `Sign-in failed (${why}) from ${ip}${lock ? ' – account locked for 15 minutes' : ''}`,
+    );
   };
-  if (!(await verifyPassword(body.password, row.password_hash))) { await fail('password'); throw new HttpError(401, GENERIC); }
+  if (!(await verifyPassword(body.password, row.password_hash))) {
+    await fail('password');
+    throw new HttpError(401, GENERIC);
+  }
 
   if (row.mfa_enabled) {
     if (!body.code) return c.json({ mfaRequired: true });
     const secret = await decryptSecret(row.mfa_secret, c.env.JWT_SECRET);
     const step = await verifyTotp(secret, body.code, row.mfa_last_step || 0);
-    if (!step) { await fail('verification code'); throw new HttpError(401, 'The verification code is not valid – use the current code from your authenticator app'); }
+    if (!step) {
+      await fail('verification code');
+      throw new HttpError(401, 'The verification code is not valid – use the current code from your authenticator app');
+    }
     await c.env.DB.prepare('UPDATE staff_auth SET mfa_last_step=? WHERE staff_id=?').bind(step, row.staff_id).run();
   }
 
   const repo = new Repo(c.env.DB);
   const user = await loadUser(repo, row.staff_id);
   if (!user) throw new HttpError(403, 'Your access is disabled – contact the System Administrator');
-  await c.env.DB.prepare('UPDATE staff_auth SET failed_count=0, locked_until=NULL, last_login_at=? WHERE staff_id=?').bind(nowIso(), row.staff_id).run();
+  await c.env.DB.prepare('UPDATE staff_auth SET failed_count=0, locked_until=NULL, last_login_at=? WHERE staff_id=?')
+    .bind(nowIso(), row.staff_id)
+    .run();
   const stage = startStage(c.env, row, user.role);
   const token = await createSession(c.env, user.id, stage, c.req.raw);
   await audit(c.env, user.name, 'Access', `Signed in from ${ip}${row.mfa_enabled ? ' (two-step verified)' : ''}`);
   c.header('set-cookie', sessionCookie(c.env, token));
-  return c.json({ user, stage, mustChangePassword: stage === 'password_change', mfaSetupRequired: stage === 'mfa_setup', ...(browser(c) ? {} : { token }) });
+  return c.json({
+    user,
+    stage,
+    mustChangePassword: stage === 'password_change',
+    mfaSetupRequired: stage === 'mfa_setup',
+    ...(browser(c) ? {} : { token }),
+  });
 });
 
 // ---------------------------------------------------------------- self-service password reset
 auth.post('/forgot-password/request', async (c) => {
-  const body = await c.req.json<{ email?: string }>().catch(() => ({} as any));
-  const email = String(body.email || '').trim().toLowerCase();
+  const body = await c.req.json<{ email?: string }>().catch(() => ({}) as any);
+  const email = String(body.email || '')
+    .trim()
+    .toLowerCase();
   if (!email || !email.includes('@')) throw new HttpError(400, 'A valid work e-mail address is required');
 
   const ip = clientIp(c.req.raw);
@@ -97,7 +138,9 @@ auth.post('/forgot-password/request', async (c) => {
     throw new HttpError(429, 'Too many reset requests – please wait 15 minutes before trying again');
   }
 
-  const row = await c.env.DB.prepare('SELECT staff_id FROM staff_auth WHERE email=?').bind(email).first<{ staff_id: string }>();
+  const row = await c.env.DB.prepare('SELECT staff_id FROM staff_auth WHERE email=?')
+    .bind(email)
+    .first<{ staff_id: string }>();
 
   let devCode: string | undefined = undefined;
   if (row) {
@@ -115,26 +158,35 @@ auth.post('/forgot-password/request', async (c) => {
       attempts: 0,
     };
 
-    await c.env.DB.prepare(`
+    await c.env.DB.prepare(
+      `
       INSERT OR REPLACE INTO docs (type, id, data, at, updated_by)
       VALUES ('pw_reset', ?, ?, ?, 'system')
-    `).bind(email, JSON.stringify(record), nowIso()).run();
+    `,
+    )
+      .bind(email, JSON.stringify(record), nowIso())
+      .run();
 
     try {
       const mode = (c.env.INTEGRATION_MODE || 'auto') === 'mock' ? 'mock' : 'live';
-      await sendEmail({ env: c.env, mode, isTest: false }, {
-        to: email,
-        subject: 'Lab of Future CRM – Password Reset Code',
-        text: `Hello,\n\nA password reset request was received for your Lab of Future CRM account.\n\nYour 6-digit verification code is: ${code}\n\nThis code is valid for 15 minutes. If you did not request this reset, you can safely ignore this email.\n\nLab of Future Security Team`,
-        ref: 'pw-reset-' + row.staff_id,
-      });
+      await sendEmail(
+        { env: c.env, mode, isTest: false },
+        {
+          to: email,
+          subject: 'Lab of Future CRM – Password Reset Code',
+          text: `Hello,\n\nA password reset request was received for your Lab of Future CRM account.\n\nYour 6-digit verification code is: ${code}\n\nThis code is valid for 15 minutes. If you did not request this reset, you can safely ignore this email.\n\nLab of Future Security Team`,
+          ref: 'pw-reset-' + row.staff_id,
+        },
+      );
     } catch (e: any) {
       console.warn('Could not send password reset email:', e.message);
     }
 
     await audit(c.env, row.staff_id, 'Access', `Self-service password reset requested from ${ip}`);
 
-    if (c.env.APP_ENV !== 'production') {
+    // Only on a developer's own machine: a deployed UAT/staging copy is public, and showing the code there would let
+    // anyone who knows a staff e-mail reset that password.
+    if (c.env.APP_ENV === 'development') {
       devCode = code;
     }
   }
@@ -147,8 +199,10 @@ auth.post('/forgot-password/request', async (c) => {
 });
 
 auth.post('/forgot-password/confirm', async (c) => {
-  const body = await c.req.json<{ email?: string; code?: string; next?: string }>().catch(() => ({} as any));
-  const email = String(body.email || '').trim().toLowerCase();
+  const body = await c.req.json<{ email?: string; code?: string; next?: string }>().catch(() => ({}) as any);
+  const email = String(body.email || '')
+    .trim()
+    .toLowerCase();
   const code = String(body.code || '').trim();
   const next = String(body.next || '');
 
@@ -159,7 +213,9 @@ auth.post('/forgot-password/confirm', async (c) => {
     throw new HttpError(429, 'Too many verification attempts – wait 15 minutes');
   }
 
-  const doc = await c.env.DB.prepare("SELECT data FROM docs WHERE type='pw_reset' AND id=?").bind(email).first<{ data: string }>();
+  const doc = await c.env.DB.prepare("SELECT data FROM docs WHERE type='pw_reset' AND id=?")
+    .bind(email)
+    .first<{ data: string }>();
   if (!doc) {
     throw new HttpError(400, 'Reset request expired or not found. Please request a new code.');
   }
@@ -178,14 +234,18 @@ auth.post('/forgot-password/confirm', async (c) => {
   const inputHash = await sha256Hex(code);
   if (inputHash !== record.code_hash) {
     record.attempts = (record.attempts || 0) + 1;
-    await c.env.DB.prepare("UPDATE docs SET data=? WHERE type='pw_reset' AND id=?").bind(JSON.stringify(record), email).run();
+    await c.env.DB.prepare("UPDATE docs SET data=? WHERE type='pw_reset' AND id=?")
+      .bind(JSON.stringify(record), email)
+      .run();
     throw new HttpError(400, 'The verification code is incorrect');
   }
 
   const problem = passwordProblem(next, email);
   if (problem) throw new HttpError(400, problem);
 
-  const staffAuth = await c.env.DB.prepare('SELECT * FROM staff_auth WHERE staff_id=?').bind(record.staff_id).first<any>();
+  const staffAuth = await c.env.DB.prepare('SELECT * FROM staff_auth WHERE staff_id=?')
+    .bind(record.staff_id)
+    .first<any>();
   if (!staffAuth) throw new HttpError(404, 'User account not found');
 
   if (await verifyPassword(next, staffAuth.password_hash)) {
@@ -193,15 +253,24 @@ auth.post('/forgot-password/confirm', async (c) => {
   }
 
   const hashed = await hashPassword(next);
-  await c.env.DB.prepare(`
+  await c.env.DB.prepare(
+    `
     UPDATE staff_auth
     SET password_hash=?, must_change=0, failed_count=0, locked_until=NULL, password_changed_at=?
     WHERE staff_id=?
-  `).bind(hashed, nowIso(), record.staff_id).run();
+  `,
+  )
+    .bind(hashed, nowIso(), record.staff_id)
+    .run();
 
   await c.env.DB.prepare("DELETE FROM docs WHERE type='pw_reset' AND id=?").bind(email).run();
   await revokeAll(c.env, record.staff_id);
-  await audit(c.env, staffAuth.staff_id, 'Access', `Password reset completed via self-service from ${ip}; all sessions revoked`);
+  await audit(
+    c.env,
+    staffAuth.staff_id,
+    'Access',
+    `Password reset completed via self-service from ${ip}; all sessions revoked`,
+  );
 
   return c.json({
     ok: true,
@@ -224,20 +293,32 @@ auth.get('/session', async (c) => {
 });
 
 auth.get('/me', requireAuth, async (c) => {
-  const row = await c.env.DB.prepare('SELECT mfa_enabled FROM staff_auth WHERE staff_id=?').bind(c.get('user').id).first<any>();
-  return c.json({ user: c.get('user'), stage: c.get('session').stage, mfaEnabled: !!row?.mfa_enabled, mfaRequired: mfaRequiredFor(c.env, c.get('user').role) });
+  const row = await c.env.DB.prepare('SELECT mfa_enabled FROM staff_auth WHERE staff_id=?')
+    .bind(c.get('user').id)
+    .first<any>();
+  return c.json({
+    user: c.get('user'),
+    stage: c.get('session').stage,
+    mfaEnabled: !!row?.mfa_enabled,
+    mfaRequired: mfaRequiredFor(c.env, c.get('user').role),
+  });
 });
 
 auth.post('/change-password', requireAuth, async (c) => {
   const { current, next } = await c.req.json<{ current: string; next: string }>();
   const u = c.get('user');
-  if (!(await allow(c.env, 'pwchange:' + u.id, 10, 900))) throw new HttpError(429, 'Too many attempts – wait 15 minutes');
+  if (!(await allow(c.env, 'pwchange:' + u.id, 10, 900)))
+    throw new HttpError(429, 'Too many attempts – wait 15 minutes');
   const row = await c.env.DB.prepare('SELECT * FROM staff_auth WHERE staff_id=?').bind(u.id).first<any>();
-  if (!row || !(await verifyPassword(current || '', row.password_hash))) throw new HttpError(400, 'Current password is incorrect');
+  if (!row || !(await verifyPassword(current || '', row.password_hash)))
+    throw new HttpError(400, 'Current password is incorrect');
   const problem = passwordProblem(next, u.email);
   if (problem) throw new HttpError(400, problem);
-  if (await verifyPassword(next, row.password_hash)) throw new HttpError(400, 'Choose a password you have not used just now');
-  await c.env.DB.prepare('UPDATE staff_auth SET password_hash=?, must_change=0, password_changed_at=? WHERE staff_id=?').bind(await hashPassword(next), nowIso(), u.id).run();
+  if (await verifyPassword(next, row.password_hash))
+    throw new HttpError(400, 'Choose a password you have not used just now');
+  await c.env.DB.prepare('UPDATE staff_auth SET password_hash=?, must_change=0, password_changed_at=? WHERE staff_id=?')
+    .bind(await hashPassword(next), nowIso(), u.id)
+    .run();
   const s = c.get('session');
   await revokeAll(c.env, u.id, s.id_hash); // sign out every other device
   const stage: Stage = mfaRequiredFor(c.env, u.role) && !row.mfa_enabled ? 'mfa_setup' : 'full';
@@ -252,7 +333,9 @@ auth.post('/mfa/setup', requireAuth, async (c) => {
   const row = await c.env.DB.prepare('SELECT mfa_enabled FROM staff_auth WHERE staff_id=?').bind(u.id).first<any>();
   if (row?.mfa_enabled) throw new HttpError(409, 'Two-step verification is already on');
   const secret = newTotpSecret();
-  await c.env.DB.prepare('UPDATE staff_auth SET mfa_secret=?, mfa_last_step=0 WHERE staff_id=?').bind(await encryptSecret(secret, c.env.JWT_SECRET), u.id).run();
+  await c.env.DB.prepare('UPDATE staff_auth SET mfa_secret=?, mfa_last_step=0 WHERE staff_id=?')
+    .bind(await encryptSecret(secret, c.env.JWT_SECRET), u.id)
+    .run();
   return c.json({ secret, otpauth: otpauthUri(secret, u.email) });
 });
 
@@ -260,11 +343,15 @@ auth.post('/mfa/enable', requireAuth, async (c) => {
   const { code } = await c.req.json<{ code: string }>();
   const u = c.get('user');
   if (!(await allow(c.env, 'mfa:' + u.id, 10, 600))) throw new HttpError(429, 'Too many attempts – wait 10 minutes');
-  const row = await c.env.DB.prepare('SELECT mfa_secret, mfa_enabled FROM staff_auth WHERE staff_id=?').bind(u.id).first<any>();
+  const row = await c.env.DB.prepare('SELECT mfa_secret, mfa_enabled FROM staff_auth WHERE staff_id=?')
+    .bind(u.id)
+    .first<any>();
   if (!row?.mfa_secret) throw new HttpError(400, 'Start the setup first');
   const step = await verifyTotp(await decryptSecret(row.mfa_secret, c.env.JWT_SECRET), code, 0);
   if (!step) throw new HttpError(400, 'That code is not valid – check the time on your phone and try the current code');
-  await c.env.DB.prepare('UPDATE staff_auth SET mfa_enabled=1, mfa_last_step=? WHERE staff_id=?').bind(step, u.id).run();
+  await c.env.DB.prepare('UPDATE staff_auth SET mfa_enabled=1, mfa_last_step=? WHERE staff_id=?')
+    .bind(step, u.id)
+    .run();
   const s = c.get('session');
   if (s.stage === 'mfa_setup') await setStage(c.env, s.id_hash, 'full');
   await revokeAll(c.env, u.id, s.id_hash);
@@ -281,9 +368,13 @@ auth.post('/mfa/disable', requireAuth, async (c) => {
   const BAD = 'Password or verification code is incorrect';
   if (!row?.mfa_enabled) throw new HttpError(400, 'Two-step verification is not on');
   const pwOk = await verifyPassword(password || '', row.password_hash);
-  const step = await decryptSecret(row.mfa_secret || '', c.env.JWT_SECRET).then((sec) => verifyTotp(sec, code, row.mfa_last_step || 0)).catch(() => 0);
+  const step = await decryptSecret(row.mfa_secret || '', c.env.JWT_SECRET)
+    .then((sec) => verifyTotp(sec, code, row.mfa_last_step || 0))
+    .catch(() => 0);
   if (!pwOk || !step) throw new HttpError(400, BAD);
-  await c.env.DB.prepare('UPDATE staff_auth SET mfa_enabled=0, mfa_secret=NULL, mfa_last_step=? WHERE staff_id=?').bind(step, u.id).run();
+  await c.env.DB.prepare('UPDATE staff_auth SET mfa_enabled=0, mfa_secret=NULL, mfa_last_step=? WHERE staff_id=?')
+    .bind(step, u.id)
+    .run();
   await audit(c.env, u.name, 'Access', 'Two-step verification turned off');
   return c.json({ ok: true });
 });
@@ -296,16 +387,26 @@ auth.post('/reset-password', requireAuth, async (c) => {
   const { staffId, resetMfa } = await c.req.json<{ staffId: string; resetMfa?: boolean }>();
   if (staffId === u.id) throw new HttpError(400, 'Use Change password for your own account');
   const temp = 'Lof-' + crypto.randomUUID().replace(/-/g, '').slice(0, 10) + '7';
-  const r = await c.env.DB.prepare(`UPDATE staff_auth SET password_hash=?, must_change=1, failed_count=0, locked_until=NULL${resetMfa ? ', mfa_enabled=0, mfa_secret=NULL' : ''} WHERE staff_id=?`).bind(await hashPassword(temp), staffId).run();
+  const r = await c.env.DB.prepare(
+    `UPDATE staff_auth SET password_hash=?, must_change=1, failed_count=0, locked_until=NULL${resetMfa ? ', mfa_enabled=0, mfa_secret=NULL' : ''} WHERE staff_id=?`,
+  )
+    .bind(await hashPassword(temp), staffId)
+    .run();
   if (!r.meta.changes) throw new HttpError(404, 'User has no login');
   await revokeAll(c.env, staffId);
-  await addAudit(c.get('repo'), 'Access', staffId, `Password reset by administrator${resetMfa ? ' (two-step verification reset)' : ''}; all sessions signed out`);
+  await addAudit(
+    c.get('repo'),
+    'Access',
+    staffId,
+    `Password reset by administrator${resetMfa ? ' (two-step verification reset)' : ''}; all sessions signed out`,
+  );
   return c.json({ ok: true, temporaryPassword: temp });
 });
 
 /** Sign a user out of every device (System Administrator). */
 auth.post('/revoke-sessions', requireAuth, async (c) => {
-  if (c.get('user').role !== 'System Administrator') throw new HttpError(403, 'Only a System Administrator can do this');
+  if (c.get('user').role !== 'System Administrator')
+    throw new HttpError(403, 'Only a System Administrator can do this');
   const { staffId } = await c.req.json<{ staffId: string }>();
   await revokeAll(c.env, staffId);
   await addAudit(c.get('repo'), 'Access', staffId, 'All sessions signed out by administrator');
@@ -315,16 +416,24 @@ auth.post('/revoke-sessions', requireAuth, async (c) => {
 /** Staging only: System Administrators preview the CRM as another role. Never available in production. */
 auth.post('/impersonate', requireAuth, async (c) => {
   const me = c.get('user');
-  if (c.env.ALLOW_IMPERSONATION !== 'true' || c.env.APP_ENV === 'production') throw new HttpError(403, 'Role preview is disabled in this environment');
+  if (c.env.ALLOW_IMPERSONATION !== 'true' || c.env.APP_ENV === 'production')
+    throw new HttpError(403, 'Role preview is disabled in this environment');
   const s = c.get('session');
   const originalId = s.acting_as || me.id;
   const original = await loadUser(new Repo(c.env.DB), originalId);
-  if (!original || original.role !== 'System Administrator') throw new HttpError(403, 'Only a System Administrator can preview other roles');
+  if (!original || original.role !== 'System Administrator')
+    throw new HttpError(403, 'Only a System Administrator can preview other roles');
   const { staffId } = await c.req.json<{ staffId: string }>();
   const target = await loadUser(new Repo(c.env.DB), staffId);
   if (!target) throw new HttpError(404, 'User not found or disabled');
   await revokeSession(c.env, s.id_hash);
-  const token = await createSession(c.env, target.id, 'full', c.req.raw, target.id === originalId ? undefined : originalId);
+  const token = await createSession(
+    c.env,
+    target.id,
+    'full',
+    c.req.raw,
+    target.id === originalId ? undefined : originalId,
+  );
   await addAudit(c.get('repo'), 'Access', 'Session', `${original.name} previewing as ${target.name} (${target.role})`);
   c.header('set-cookie', sessionCookie(c.env, token));
   return c.json({ user: target, ...(browser(c) ? {} : { token }) });
