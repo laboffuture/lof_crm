@@ -12,6 +12,7 @@ function applyBootstrap(b, keepUi) {
     S[c] = b.data[c] || [];
   });
   S.paymentSandbox = b.server.payments?.easebuzzSandbox ?? true;
+  S.branchIdEdit = !!b.server.branchIdEdit; // System Administrator may change a branch Short ID (not on the live site)
   S.checkoutPayments = b.data.checkoutPayments || [];
   S.checkoutLms = b.data.checkoutLms || [];
   S.checkoutOrderIds = new Set(S.enr.filter((enrollment) => enrollment.sandboxSource).map((enrollment) => enrollment.id));

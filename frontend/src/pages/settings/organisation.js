@@ -58,7 +58,7 @@ MODALS.branch = (m) => {
     size: 'lg',
     form: 'branch',
     ok: 'Save branch',
-    body: `<input type="hidden" name="oid" value="${esc(m.id || '')}"><div class="fgrid">${F('Branch name', 'name', { v: b.name, req: 1 })}${F('Unique branch code', 'code', { v: b.code, req: 1, ph: 'LOF-XXX-000' })}${F('Short ID', 'id', { v: b.id, req: 1, dis: !!m.id && !SERVER.branchIdEdit, help: m.id && SERVER.branchIdEdit ? '2–5 capital letters or digits. Changing it moves every record of this branch to the new ID (old receipts keep their number)' : '2–5 capital letters or digits; cannot change later' })}${F('Country', 'country', { v: b.country, opts: ['UAE', 'India', 'Other'] })}${F('City / location', 'city', { v: b.city, req: 1 })}${F('Currency', 'cur', { v: b.cur, opts: ['AED', 'INR', 'USD'] })}${F('Operating status', 'status', { v: b.status, opts: ['Operating', 'Planned', 'Closed'] })}${F('Branch administrator', 'admin', { v: b.admin, opts: S.staff.filter((s) => s.role === 'Centre Administrator').map((s) => [s.id, s.name]), blank: 'Not assigned' })}${F('Address', 'address', { v: b.address, full: 1 })}${F('Phone', 'phone', { v: b.phone })}${F('Email', 'email', { v: b.email })}${F('Working days', 'days', { v: b.days })}${F('Operational hours', 'hours', { v: b.hours })}${F('Monthly admissions target', 'tAdm', { t: 'number', min: 0, v: b.tAdm })}${F('Monthly revenue target', 'tRev', { t: 'number', min: 0, v: b.tRev })}<div class="sec">Programmes offered</div><div class="f full"><div class="chips">${S.programs.map((p) => `<label class="chip" style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="p_${p.id}"${b.programs.includes(p.id) ? ' checked' : ''}>${esc(p.name)}</label>`).join('')}</div></div></div>`,
+    body: `<input type="hidden" name="oid" value="${esc(m.id || '')}"><div class="fgrid">${F('Branch name', 'name', { v: b.name, req: 1 })}${F('Unique branch code', 'code', { v: b.code, req: 1, ph: 'LOF-XXX-000' })}${F('Short ID', 'id', { v: b.id, req: 1, dis: !!m.id && !S.branchIdEdit, help: m.id && S.branchIdEdit ? '2–5 capital letters or digits. Changing it moves every record of this branch to the new ID (old receipts keep their number)' : '2–5 capital letters or digits; cannot change later' })}${F('Country', 'country', { v: b.country, opts: ['UAE', 'India', 'Other'] })}${F('City / location', 'city', { v: b.city, req: 1 })}${F('Currency', 'cur', { v: b.cur, opts: ['AED', 'INR', 'USD'] })}${F('Operating status', 'status', { v: b.status, opts: ['Operating', 'Planned', 'Closed'] })}${F('Branch administrator', 'admin', { v: b.admin, opts: S.staff.filter((s) => s.role === 'Centre Administrator').map((s) => [s.id, s.name]), blank: 'Not assigned' })}${F('Address', 'address', { v: b.address, full: 1 })}${F('Phone', 'phone', { v: b.phone })}${F('Email', 'email', { v: b.email })}${F('Working days', 'days', { v: b.days })}${F('Operational hours', 'hours', { v: b.hours })}${F('Monthly admissions target', 'tAdm', { t: 'number', min: 0, v: b.tAdm })}${F('Monthly revenue target', 'tRev', { t: 'number', min: 0, v: b.tRev })}<div class="sec">Programmes offered</div><div class="f full"><div class="chips">${S.programs.map((p) => `<label class="chip" style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="p_${p.id}"${b.programs.includes(p.id) ? ' checked' : ''}>${esc(p.name)}</label>`).join('')}</div></div></div>`,
   };
 };
 SUB.branch = (d, f) => {
@@ -72,26 +72,7 @@ SUB.branch = (d, f) => {
     setErr(f, 'id', 'Short ID already exists');
     return;
   }
-  const newId = String(d.id || '')
-    .trim()
-    .toUpperCase();
-  if (d.oid && SERVER.branchIdEdit && newId && newId !== d.oid) {
-    // Temporary Short ID change: the server moves every record first, then the other fields are saved under the new ID
-    if (S.branches.find((b) => b.id === newId)) {
-      setErr(f, 'id', 'Short ID already exists');
-      return;
-    }
-    req('POST', '/admin/branches/rename', { from: d.oid, to: newId })
-      .then((r) => {
-        if (S.modal?.t === 'branch') S.modal.id = r.to; // the open form now refers to the new ID
-        return reload(true).then(() => {
-          toast(`Short ID changed ${r.from} → ${r.to} (${r.records} records moved)`, 'ok');
-          SUB.branch({ ...d, oid: r.to, id: r.to }, f);
-        });
-      })
-      .catch((e) => setErr(f, 'id', e.message));
-    return;
-  }
+  // A changed Short ID is moved on the server first: api/live/branch-short-id.js
   const progs = S.programs.filter((p) => d['p_' + p.id]).map((p) => p.id);
   const o = {
     id: (d.oid || d.id).toUpperCase(),

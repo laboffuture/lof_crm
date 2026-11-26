@@ -67,6 +67,7 @@
     "api/email-and-administration.js",
     "api/live/opportunity-payments.js",
     "api/live/branch-tax.js",
+    "api/live/branch-short-id.js",
     "api/live/student-edit.js",
     "api/live/payment-tracking.js",
     "api/live/conversation-log.js",
