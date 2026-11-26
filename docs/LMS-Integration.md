@@ -65,3 +65,11 @@ New-student registration treats matching parent contact details as informational
 ## Request and response logs
 
 The Integration log in Settings → Testing console retains the redacted HTTP request, destination URL and provider response. Browser diagnostics show enrolment and sync status. Opening the LMS call history or its receipt does not resend an order.
+
+## Test an enrolment with its CRM IDs
+
+In the non-production CRM, a System Administrator can create a walk-in enrolment for a new or existing test student. At an eligible branch, **Payment & confirm** shows that the enrolment uses Easebuzz sandbox. Leave the amount paid now at zero and save. Open **Payments → Collect** and select **Create sandbox payment link**.
+
+The CRM uses active INR branches and their saved LMS branch and package mappings. The standard LOF UAT service accepts the LMS code `AW`. Any eligible CRM branch can map to that code. The CRM validates Track and Credit codes against the LMS catalogue. Set `LMS_UAT_URL` in the server environment if this deployment uses a different UAT endpoint. `LMS_URL` must match the allowlisted UAT endpoint to enable sandbox checkout.
+
+After Easebuzz verifies full payment, the CRM records a test receipt against that enrolment and sends its enrolment reference and student ID to UAT LMS. Check the student's **Payments** and **LMS** tabs for the sandbox result. The Testing Console's Integration log shows the outgoing LMS payload. Older sandbox copies retain their original test references. The student profile labels their recorded payments and LMS results as Sandbox.

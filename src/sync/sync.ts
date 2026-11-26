@@ -28,7 +28,7 @@ import { checkMailSettings } from '../domain/mail';
 import { checkMailAuto } from '../domain/mail-send';
 import { activatePaidLms, LMS_CONTRACT, prepareLmsOrder, studentEmailKey } from '../domain/lms-orders';
 import { LmsError } from '../integrations/lms';
-import { isUatTestFee, UAT_FEE_ID, UAT_FLOW } from '../domain/uat-policy';
+import { isUatTestFee, uatCheckoutBranches, UAT_FEE_ID, UAT_FLOW } from '../domain/uat-policy';
 
 export interface Change { coll: string; id: string; op: 'upsert' | 'delete'; doc?: any; base?: any }
 export interface SettingChange { key: string; doc: any }
@@ -134,18 +134,22 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   // ---------------------------------------------------------------- 3. field-level merge
   // keys = what THIS user changed (base → doc); merged = current server copy + those changes
   const eff = new Map<string, { d: any; o: any; keys: string[] }>();
+  const sandboxCheckoutIds = new Set<string>();
   for (const c of changes) {
     if (c.op !== 'upsert') continue;
     const o = oldOf(c.coll, c.id);
     const doc = structuredClone(c.doc);
+    if (c.coll === 'enr' && !o && doc.sandboxCheckout === true) sandboxCheckoutIds.add(c.id);
+    delete doc.sandboxCheckout;
     delete doc.test; // test flags are server-only
     delete doc.uatFlow;
+    delete doc.uatCheckout;
     delete doc.lmsAccess;
     delete doc.sandboxSource;
     if (o?.uatFlow) doc.uatFlow = o.uatFlow; // full-flow test approval is server-only
     if (!o) { eff.set(c.coll + ':' + c.id, { d: doc, o: null, keys: Object.keys(doc) }); continue; }
     const base = c.base ?? o;
-    const keys = changedKeys(base, doc).filter((k) => !['test', 'lmsAccess', 'sandboxSource'].includes(k) && !(c.coll === 'fees' && (k === 'revisionAt' || (o.uatFeeStructure && ['uatFeeStructure', 'uatRootFeeId', 'validUntil'].includes(k)))));
+    const keys = changedKeys(base, doc).filter((k) => !['test', 'lmsAccess', 'sandboxSource', 'uatCheckout'].includes(k) && !(c.coll === 'fees' && (k === 'revisionAt' || (o.uatFeeStructure && ['uatFeeStructure', 'uatRootFeeId', 'validUntil'].includes(k)))));
     const d = structuredClone(o);
     for (const k of keys) {
       const b = base[k], n = doc[k], cur = o[k];
@@ -178,6 +182,10 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   const fees = await repo.many<any>('fee');
   const discounts = await repo.many<any>('discount');
   const branches = await repo.many<any>('branch');
+  const sandboxBranches = new Set(user.role === 'System Administrator' ? uatCheckoutBranches(env, cfg, branches) : []);
+  const enrolmentDate = (date: string | undefined) => !date || date > today || date < dayKey(new Date(Date.now() - 7 * 864e5)) ? today : date;
+  const usesSandboxCheckout = (enrolment: any) => !enrolment.opp && sandboxBranches.has(enrolment.branch) &&
+    feeFor(fees, enrolment.prog, enrolment.branch, enrolment.pkg, enrolmentDate(enrolment.date))?.cur === 'INR';
   const staffList = await repo.many<any>('staff');
   const programs = await repo.many<any>('program');
   /** LMS call record: Track and Credit codes come from Settings → LMS Integration, never from the browser. */
@@ -492,9 +500,10 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
 
       // ---------------------------------------------------------------- students
       case 'students': {
-        const enrolNow = batchItems('enr').find((x) => !x.o && x.d.stu === d.id);
-        const uatRegistration = user.role === 'System Administrator' && enrolNow &&
-          isUatTestFee(env, feeFor(fees, enrolNow.d.prog, enrolNow.d.branch, enrolNow.d.pkg, today), cfg);
+        const enrolmentsNow = batchItems('enr').filter((x) => !x.o && x.d.stu === d.id);
+        const enrolNow = enrolmentsNow[0];
+        const uatRegistration = user.role === 'System Administrator' && enrolmentsNow.some(({ d: enrolment }) =>
+          usesSandboxCheckout(enrolment) || isUatTestFee(env, feeFor(fees, enrolment.prog, enrolment.branch, enrolment.pkg, today), cfg));
         if (!o) {
           if (!P('enrollments', 'C')) { reject(c, `${user.role} cannot register students`); break; }
           if (!enrolNow) { reject(c, 'A new student is registered together with the first enrolment'); break; }
@@ -565,7 +574,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             const opp = await getDoc('opps', 'opp', d.opp);
             if (!opp || !inScope(opp.branch) || ['Enrolled', 'Lost'].includes(oldOf('opps', d.opp)?.stage ?? opp.stage)) { reject(c, 'Linked opportunity not found, closed or outside your branch access'); break; }
           }
-          if (!d.date || d.date > today || d.date < dayKey(new Date(Date.now() - 7 * 864e5))) d.date = today;
+          d.date = enrolmentDate(d.date);
           const fee = feeFor(fees, d.prog, d.branch, d.pkg, d.date);
           if (!fee) { reject(c, 'No active fee record for this programme, branch and package'); break; }
           const program = programs.find((p) => p.id === d.prog);
@@ -598,12 +607,21 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           Object.assign(d, { cur: fee.cur, fee: calc.base, reg: calc.extra, disc: calc.disc, discInfo: disc, tax: calc.tax, total: calc.total, taxPct: calc.taxPct, paid: 0, payStatus: 'Unpaid', feeId: fee.id, pkg: fee.pkg, sessions: fee.sessions, credits: program.credits, course, newStu, status: 'Active',
             term: term?.id || null, sched: buildSched(term, calc.total, d.date), cslr: linkedOpp?.cslr || null, lmsContract: LMS_CONTRACT,
             lmsValidUntil: fee.validUntil || undefined });
+          const sandboxCheckout = usesSandboxCheckout(d);
+          if (sandboxCheckoutIds.has(d.id) && !sandboxCheckout) {
+            reject(c, 'Sandbox checkout requires a System Administrator, an INR walk-in enrolment at a branch mapped to the UAT LMS, and configured UAT integrations'); break;
+          }
+          if (sandboxCheckout) {
+            if (d.total < 1) { reject(c, 'Easebuzz requires a sandbox payment of at least INR 1'); break; }
+            Object.assign(d, { test: true, uatFlow: UAT_FLOW, uatCheckout: true });
+          }
           if (fee.id === UAT_FEE_ID || fee.uatFeeStructure === 'AW-DOC-UAT-v1') {
             if (user.role !== 'System Administrator' || !isUatTestFee(env, fee, cfg) || disc || (fee.id === UAT_FEE_ID && calc.total !== 1)) {
               reject(c, 'The AW test fee requires a System Administrator, the supplied UAT LMS, Easebuzz sandbox and no discount'); break;
             }
             Object.assign(d, { test: true, uatFlow: UAT_FLOW });
           }
+          if (stu.test && !d.test && !repo.isTest) { reject(c, 'Use sandbox checkout for test students'); break; }
           try {
             const access = await prepareLmsOrder(env, repo, cfg, d, stu, program);
             if (access) d.lmsAccess = access;
@@ -635,7 +653,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         const atEnrolment = P('enrollments', 'C') && isNew('enr', d.enr);
         if (!P('payments', 'C') && !atEnrolment) { reject(c, `${user.role} cannot record payments`); break; }
         if (!e || !inScope(e.branch) || e.status === 'Withdrawn') { reject(c, 'Enrolment not found, withdrawn or outside your branch access'); break; }
-        if (e.sandboxSource) { reject(c, 'Use the Easebuzz sandbox to pay this test enrolment'); break; }
+        if (e.sandboxSource || e.uatCheckout) { reject(c, 'Use the Easebuzz sandbox to pay this test enrolment'); break; }
         const amt = r2(num(d.amt));
         const dbPaid = isNew('enr', d.enr) ? 0 : (await repo.many<any>('payment', 'ref1=?', [d.enr])).filter((p) => p.status !== 'Cancelled').reduce((a, p) => a + p.amt, 0);
         const batchPaid = receiptFor.filter((p) => p.enr === d.enr).reduce((a, p) => a + p.amt, 0);

@@ -7,6 +7,8 @@ INTEGRATION_MODE=mock
 ALLOW_IMPERSONATION=true
 MFA_REQUIRED_ROLES=
 LMS_URL=
+# Optional allowlisted non-production LMS endpoint. Defaults to the LOF UAT endpoint.
+LMS_UAT_URL=
 LMS_TOKEN=
 EASEBUZZ_ENV=test
 EASEBUZZ_KEY=

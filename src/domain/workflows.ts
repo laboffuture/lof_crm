@@ -345,7 +345,7 @@ export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amo
   if (e.lmsContract === LMS_CONTRACT && (!repo.isTest || e.uatFlow)) {
     await prepareLmsOrder(env, paymentRepo, cfg, e, s, await repo.get('program', e.prog), false);
   }
-  if (sandbox && e.sandboxSource) {
+  if (sandbox && (e.sandboxSource || e.uatFlow)) {
     const open = await repo.db.prepare(
       "SELECT id,url,provider_ref,expires_at FROM payment_links WHERE enrollment_id=? AND provider='easebuzz-test' AND status='created' AND (expires_at IS NULL OR expires_at>=?) AND amount=? AND created_at>? ORDER BY created_at DESC LIMIT 1",
     ).bind(e.id, nowIso(), amt, new Date(Date.now() - 10 * 60_000).toISOString()).first<{ id: string; url: string; provider_ref: string; expires_at: string | null }>();

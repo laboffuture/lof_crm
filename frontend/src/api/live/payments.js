@@ -13,17 +13,18 @@ PAGES.payCollect = function (rt) {
       ' INR checkout is available. AED checkout requires Easebuzz multicurrency setup.</span></div>',
   );
   if (S.payPick) {
+    const sandboxOnly = usesUatSandboxCheckout(enrById(S.payPick));
     h = h.replace(
       '<button class="btn primary" type="submit">Record payment (simulated)</button>',
-      '<button class="btn primary" type="submit">Record payment</button>' +
-        '<button class="btn" type="button" data-act="payLink" data-id="' +
+      (sandboxOnly ? '' : '<button class="btn primary" type="submit">Record payment</button>') +
+        '<button class="btn' + (sandboxOnly ? ' primary' : '') + '" type="button" data-act="payLink" data-id="' +
         esc(S.payPick) +
         '"' +
         (creatingPaymentLink ? ' disabled aria-busy="true"' : '') +
         '>' +
         ic('link') +
         ' ' +
-        (creatingPaymentLink ? 'Creating link…' : 'Send payment link') +
+        (creatingPaymentLink ? 'Creating link…' : sandboxOnly ? 'Create sandbox payment link' : 'Send payment link') +
         '</button>',
     );
   }
@@ -100,7 +101,7 @@ function refreshPaymentLinkProgress() {
 MODALS.plink = function (m) {
   var l = m.link;
   return {
-    title: 'Payment link',
+    title: l.sandbox ? 'Sandbox payment link' : 'Payment link',
     size: 'sm2',
     body:
       '<p class="sm">' +

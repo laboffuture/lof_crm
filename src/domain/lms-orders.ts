@@ -3,15 +3,11 @@ import { modeFor } from '../integrations/base';
 import { catalogue, diagnosticEndpoint, LmsError, type LmsCtx, type Purchase } from '../integrations/lms';
 import type { Env } from '../types';
 import { lmsEnrolPayload, lmsMissing } from './terms';
+import { isLofUatEndpoint, LOF_UAT_BRANCH_CODE } from './uat-policy';
 
 export const LMS_CONTRACT = '2026-11-v1.1';
 
 export const studentEmailKey = (email: unknown) => String(email ?? '').trim().toLowerCase();
-
-const UAT_TRACKS = [
-  { code: 'FT', credits: ['F2', 'FC1', 'FC2', 'FC3', 'FC4'] },
-  { code: 'RT', credits: ['C1', 'C2'] },
-];
 
 export function lmsPayloadProblems(payload: Purchase, e: any, student: any): string[] {
   const problems = lmsMissing(payload);
@@ -24,18 +20,14 @@ export async function validateLmsCodes(ctx: LmsCtx, payload: Purchase, checkCata
   if (ctx.mode !== 'live') return;
   const endpoint = diagnosticEndpoint(ctx.env);
   if (!endpoint) throw new LmsError('Configure a valid LMS endpoint before taking payment.', false, 'localvalidation');
-  const uat = new URL(endpoint).origin === 'https://uat.learning.laboffuture.com';
-  if (uat && (payload.branch !== 'AW' || payload.skillslabs.length))
-    throw new LmsError('The UAT LMS supports branch AW and Track packages only. Check the branch and package mapping.', false, 'localvalidation');
-  if (!payload.items.length || (!uat && !checkCatalogue)) return;
-  let tracks = UAT_TRACKS;
-  if (!uat) {
-    const result = await catalogue(ctx);
-    tracks = (Array.isArray(result) ? result : result.tracks).map((track: any) => ({
-      code: track?.code,
-      credits: Array.isArray(track?.credits) ? track.credits.map((credit: any) => credit?.code) : [],
-    }));
-  }
+  if (isLofUatEndpoint(endpoint) && (payload.branch !== LOF_UAT_BRANCH_CODE || payload.skillslabs.length))
+    throw new LmsError(`The LOF UAT LMS supports branch ${LOF_UAT_BRANCH_CODE} and Track packages only. Check the branch and package mapping.`, false, 'localvalidation');
+  if (!payload.items.length || !checkCatalogue) return;
+  const result = await catalogue(ctx);
+  const tracks = (Array.isArray(result) ? result : result.tracks).map((track: any) => ({
+    code: track?.code,
+    credits: Array.isArray(track?.credits) ? track.credits.map((credit: any) => typeof credit === 'string' ? credit : credit?.code) : [],
+  }));
   for (const { track, credits } of payload.items) {
     const available = tracks.find((item) => item.code === track);
     const invalid = credits.filter((credit) => !available?.credits.includes(credit));

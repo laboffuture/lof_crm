@@ -12,6 +12,7 @@ function applyBootstrap(b, keepUi) {
     S[c] = b.data[c] || [];
   });
   S.paymentSandbox = b.server.payments?.easebuzzSandbox ?? true;
+  S.uatCheckoutBranches = b.server.payments?.uatCheckoutBranches || [];
   S.checkoutPayments = b.data.checkoutPayments || [];
   S.checkoutLms = b.data.checkoutLms || [];
   S.checkoutOrderIds = new Set(S.enr.filter((enrollment) => enrollment.sandboxSource).map((enrollment) => enrollment.id));

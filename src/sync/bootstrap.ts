@@ -9,6 +9,7 @@ import { MAIL_IN_DEFAULTS, MAIL_OUT_DEFAULTS } from '../domain/mail';
 import { mailAutoSettings } from '../domain/mail-send';
 import { SMTP_DEFAULTS } from '../integrations/smtp';
 import { sandboxLmsRecords, sandboxPaymentRecords } from '../domain/easebuzz-payments';
+import { uatCheckoutBranches } from '../domain/uat-policy';
 
 const rows = async (env: Env, sql: string, binds: unknown[]) =>
   ((await env.DB.prepare(sql).bind(...binds).all<{ data: string }>()).results || []).map((r) => JSON.parse(r.data));
@@ -82,7 +83,8 @@ export async function bootstrap(env: Env, repo: Repo, user: User, perms: any) {
   return {
     me: user,
     server: { env: env.APP_ENV, now: new Date().toISOString(), impersonation: env.ALLOW_IMPERSONATION === 'true', integrations, lmsSecrets: missingSecrets(env, 'lms').length === 0,
-      payments: { provider: 'easebuzz', inrProvider: 'easebuzz', supportedCurrencies: ['INR'], easebuzzSandbox: env.EASEBUZZ_ENV !== 'prod' },
+      payments: { provider: 'easebuzz', inrProvider: 'easebuzz', supportedCurrencies: ['INR'], easebuzzSandbox: env.EASEBUZZ_ENV !== 'prod',
+        uatCheckoutBranches: user.role === 'System Administrator' ? uatCheckoutBranches(env, cfg, branches) : [] },
       emailTemplates: { categories: EMAIL_TPL_CATEGORIES, placeholders: EMAIL_PLACEHOLDERS } },
     data: { branches, programs, fees, discounts, staff: staffOut, cfg: cfgOut, perms: permsDoc, scope, fx, hist, leads, opps, tasks, calls, comms, students, enr, pay, checkoutPayments, checkoutLms, ms, refunds, approvals, notifs, audit },
     seq,

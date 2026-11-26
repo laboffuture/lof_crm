@@ -67,15 +67,21 @@ PAGES.payCollect = () => {
   const pick = es.find((e) => e.id === S.payPick);
   const selected = S.payPick && enrById(S.payPick);
   const completed = selected && !pick && inScope(selected.branch) && paymentEnrolment(selected).payStatus === 'Paid';
+  const sandboxPaid = selected && (selected.uatFlow || S.checkoutPaid?.has(selected.id));
   let right = completed
     ? '<div role="status">' +
-      emptyBox('Payment confirmed', 'The enrolment is paid in full. Open Payments → Records for the receipt.') +
+      (sandboxPaid
+        ? emptyBox('Sandbox payment confirmed', 'Open Payments → Records for the test receipt.')
+        : emptyBox('Payment confirmed', 'The enrolment is paid in full. Open Payments → Records for the receipt.')) +
       '</div>'
     : emptyBox('Select an enrolment', 'Choose an enrolment with an outstanding balance to record a payment.');
   if (pick) {
     const s = stuById(pick.stu),
       out = r2(pick.total - pick.paid);
     const nr = (S.seq.rc[pick.branch] || 0) + 1;
+    const paymentFields = usesUatSandboxCheckout(pick)
+      ? ''
+      : `${F('Payment method', 'method', { opts: S.cfg.pm, v: 'Card' })}${F('Payment reference', 'ref', { help: 'Card/UPI/bank reference. Required for non-cash.' })}${F('Transaction date', 'date', { t: 'date', v: TODAY, max: TODAY })}${F('Receipt number', 'rc', { v: 'RC-' + pick.branch + '-26-' + String(nr).padStart(4, '0') + ' (auto)', dis: 1 })}${F('Payment status', 'st', { v: 'Recorded (simulated)', dis: 1 })}`;
     right = `${dl([
       ['Student', `<a ${sgo(s.id)}>${esc(s.first + ' ' + s.last)}</a> <span class="mono muted">${s.id}</span>`],
       ['Branch', esc(branchName(pick.branch))],
@@ -91,7 +97,7 @@ PAGES.payCollect = () => {
       ['Paid so far', money(pick.paid, pick.cur)],
       ['Outstanding', `<b style="color:var(--crit)">${money(out, pick.cur)}</b>`],
       ['Payment term', esc(termName(pick.term))],
-    ])}<div class="sec">Instalments</div>${payInstTable(pick)}<form id="payf" data-submit="pay" style="margin-top:14px"><input type="hidden" name="id" value="${pick.id}"><div class="fgrid">${F('Amount (' + pick.cur + ')', 'amt', { t: 'number', min: 0.01, step: '0.01', v: payAmtDefault(pick), req: 1 })}${F('Payment method', 'method', { opts: S.cfg.pm, v: 'Card' })}${F('Payment reference', 'ref', { help: 'Card/UPI/bank reference. Required for non-cash.' })}${F('Transaction date', 'date', { t: 'date', v: TODAY, max: TODAY })}${F('Receipt number', 'rc', { v: 'RC-' + pick.branch + '-26-' + String(nr).padStart(4, '0') + ' (auto)', dis: 1 })}${F('Payment status', 'st', { v: 'Recorded (simulated)', dis: 1 })}</div><div class="row" style="margin-top:12px"><button class="btn primary" type="submit">Record payment (simulated)</button></div></form>`;
+    ])}<div class="sec">Instalments</div>${payInstTable(pick)}<form id="payf" data-submit="pay" style="margin-top:14px"><input type="hidden" name="id" value="${pick.id}"><div class="fgrid">${F('Amount (' + pick.cur + ')', 'amt', { t: 'number', min: 0.01, step: '0.01', v: payAmtDefault(pick), req: 1 })}${paymentFields}</div><div class="row" style="margin-top:12px"><button class="btn primary" type="submit">Record payment (simulated)</button></div></form>`;
   }
   const hist = pick
     ? card(

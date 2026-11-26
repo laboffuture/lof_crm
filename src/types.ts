@@ -40,6 +40,8 @@ export interface Env {
   EXOTEL_WEBHOOK_TOKEN?: string;
 
   LMS_URL?: string;
+  /** Optional allowlisted UAT endpoint for full-flow sandbox checkout. */
+  LMS_UAT_URL?: string;
   LMS_TOKEN?: string;
   LMS_LEAD_WEBHOOK_SECRET?: string;
 
