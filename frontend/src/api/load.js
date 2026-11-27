@@ -23,6 +23,7 @@ function applyBootstrap(b, keepUi) {
   SETTINGS.forEach(function (k) {
     S[k] = b.data[k] || {};
   });
+  S.uatCheckoutBranches = b.server.payments?.uatCheckoutBranches || [];
   if (S.wiz) wizReconcileStudent();
   S.user = b.me.id;
   if (b.me && b.me.role === 'Reception' && S.perms && S.perms.reports) {

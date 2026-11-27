@@ -7,6 +7,7 @@ import { modeFor, enabledInConfig, writeLog } from '../integrations/base';
 import * as lms from '../integrations/lms';
 import { lmsEnrolPayload } from './terms';
 import * as wa from '../integrations/whatsapp';
+import { gupshupTemplateIds, sendGupshupTemplate } from '../integrations/gupshup';
 import * as erp from '../integrations/erpnext';
 import { calendarInsert } from '../integrations/gcal-email';
 import { deliverEmail } from './mail';
@@ -167,9 +168,21 @@ export async function sendComm(env: Env, repo: Repo, commId: string) {
   try {
     if (c.ch === 'WhatsApp') {
       if (cfg.consentReq?.wa && !l.wa) throw new Error('Blocked – no WhatsApp consent');
-      const mode = modeFor(env, cfg, 'whatsapp', isTest);
+      const templateIds = tpl ? gupshupTemplateIds(env.GUPSHUP_TEMPLATE_IDS) : {};
+      const gupshupId = tpl && Object.hasOwn(templateIds, tpl.id) ? templateIds[tpl.id] : undefined;
+      const mode = modeFor(env, cfg, gupshupId ? 'gupshup' : 'whatsapp', isTest);
       let r;
-      if (tpl?.waTemplate) {
+      if (gupshupId) {
+        if (/\{\w+\}/.test(tpl.body)) throw new Error('This Gupshup Gateway API setup supports templates without variables only');
+        if (mode === 'live') {
+          // A second queue consumer must not submit the same message concurrently.
+          const claim = await env.DB.prepare("UPDATE docs SET status='Sending', data=json_set(data,'$.status','Sending','$.waProvider','gupshup') WHERE type='comm' AND id=? AND status=?")
+            .bind(c.id, c.status).run();
+          if (!claim.meta.changes) return repo.get<any>('comm', c.id);
+        }
+        c.waProvider = 'gupshup';
+        r = await sendGupshupTemplate({ env, mode, isTest }, l.phone, gupshupId, c.id);
+      } else if (tpl?.waTemplate) {
         const [branch, programs, cslr] = await Promise.all([repo.get<any>('branch', l.branch), repo.many<any>('program'), l.cslr ? repo.get<any>('staff', l.cslr) : null]);
         const progName = (programs.find((p) => p.id === l.prog) || { name: l.prog }).name;
         const params = templateParams(tpl.body, l, { progName, branchName: branch?.name || l.branch, counsellor: cslr?.name || 'our team' });
@@ -345,7 +358,7 @@ export async function createPaymentLink(env: Env, repo: Repo, enrId: string, amo
   if (e.lmsContract === LMS_CONTRACT && (!repo.isTest || e.uatFlow)) {
     await prepareLmsOrder(env, paymentRepo, cfg, e, s, await repo.get('program', e.prog), false);
   }
-  if (sandbox && e.sandboxSource) {
+  if (sandbox && (e.sandboxSource || e.uatFlow)) {
     const open = await repo.db.prepare(
       "SELECT id,url,provider_ref,expires_at FROM payment_links WHERE enrollment_id=? AND provider='easebuzz-test' AND status='created' AND (expires_at IS NULL OR expires_at>=?) AND amount=? AND created_at>? ORDER BY created_at DESC LIMIT 1",
     ).bind(e.id, nowIso(), amt, new Date(Date.now() - 10 * 60_000).toISOString()).first<{ id: string; url: string; provider_ref: string; expires_at: string | null }>();
@@ -572,8 +585,8 @@ const scrub = (v: unknown): string => {
   }
   return JSON.stringify(v, (k, val) => (k && SECRET_KEYS.test(k) ? '***' : val));
 };
-export async function logInbound(env: Env, integration: string, operation: string, ok: boolean, request: unknown, response: unknown, ref?: string, isTest = false, error?: string) {
-  await writeLog(env, { integration, direction: 'in', operation, mode: 'live', ok, status: ok ? 200 : 400, request: scrub(request), response: scrub(response), ref, isTest, error });
+export async function logInbound(env: Env, integration: string, operation: string, ok: boolean, request: unknown, response: unknown, ref?: string, isTest = false, error?: string, status = ok ? 200 : 400) {
+  await writeLog(env, { integration, direction: 'in', operation, mode: 'live', ok, status, request: scrub(request), response: scrub(response), ref, isTest, error });
 }
 
 export { fmtDT };

@@ -12,7 +12,8 @@ const sandboxViewEnabled = (env: Env) => env.APP_ENV !== 'production' && (env.EA
 export async function sandboxPaymentRecords(env: Env, scope: string[], enrollmentId?: string) {
   if (!sandboxViewEnabled(env) || !scope.length) return [];
   const rows = await env.DB.prepare(`
-    SELECT json_set(p.data, '$.enr', original.id, '$.stu', original.ref1, '$.branch', original.branch) AS data
+    SELECT json_set(p.data, '$.enr', original.id, '$.stu', original.ref1, '$.branch', original.branch,
+      '$.sandboxEnrollmentId', checkout.id) AS data
     FROM payment_links l
     JOIN docs p ON p.type='payment' AND p.id=l.payment_id AND p.is_test=1
     JOIN docs checkout ON checkout.type='enrollment' AND checkout.id=l.enrollment_id AND checkout.is_test=1

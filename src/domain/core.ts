@@ -133,8 +133,9 @@ export async function findDup(repo: Repo, phone: string, email: string) {
   const leads = await repo.many<any>('lead', '(ref1=? OR (ref2=? AND ref2 IS NOT NULL AND ref2<>\'\'))', [ph || '#', em || '#']);
   for (const l of leads) out.push({ kind: 'Lead', id: l.id, name: `${l.student} / ${l.parent}`, branch: l.branch, status: l.status });
   if (ph || em) {
-    const like = await repo.many<any>('student', '(data LIKE ? OR data LIKE ?)', [ph ? `%${ph}%` : '#', em ? `%${em}%` : '#']);
-    for (const s of like) {
+    // D1 limits LIKE pattern length, which can be shorter than a valid email address.
+    const candidates = await repo.many<any>('student', "(instr(data, NULLIF(?, '')) > 0 OR instr(lower(data), NULLIF(?, '')) > 0)", [ph, em]);
+    for (const s of candidates) {
       const hit = (s.parents || []).find((p: any) => (ph && normPhone(p.mobile) === ph) || (em && String(p.email).toLowerCase() === em));
       if (hit) out.push({ kind: 'Student', id: s.id, name: `${s.first} ${s.last} / ${hit.name}`, branch: s.branch, status: s.status });
     }
@@ -171,12 +172,15 @@ export interface NewLeadInput {
 export async function createLead(repo: Repo, input: NewLeadInput, by = 'System', opts: {
   quiet?: boolean;
   noAutoMessages?: boolean;
+  allowUnrouted?: boolean;
   webhookEvent?: { provider: string; id: string };
 } = {}) {
   const cfg = await repo.setting<any>('cfg');
-  const branch = await repo.get<any>('branch', input.branch);
-  if (!branch) throw new HttpError(422, `Unknown branch ${input.branch}`);
-  if (!branch.programs.includes(input.prog)) throw new HttpError(422, `Programme ${input.prog} is not offered at ${branch.name}`);
+  const pendingRouting = !!opts.allowUnrouted && (!input.branch || !input.prog);
+  const branch = input.branch ? await repo.get<any>('branch', input.branch) : null;
+  if (!branch && (!pendingRouting || input.branch)) throw new HttpError(422, `Unknown branch ${input.branch}`);
+  if (branch && (!pendingRouting || input.prog) && !branch.programs.includes(input.prog))
+    throw new HttpError(422, `Programme ${input.prog} is not offered at ${branch.name}`);
   const src = (cfg.sources || []).find((s: any) => s.n === input.src);
   if (src && !src.en) throw new HttpError(422, `Lead creation from ${input.src} is disabled in configuration`);
 
@@ -201,7 +205,9 @@ export async function createLead(repo: Repo, input: NewLeadInput, by = 'System',
   if (dups.length) l.events.push({ at: now, type: 'warn', text: `Possible duplicate of ${dups.map((d) => d.id).join(', ')} (matched on phone or e-mail)`, by: 'System' });
 
   let rt: any = null;
-  if (input.cslr) {
+  if (pendingRouting) {
+    l.events.push({ at: now, type: 'sys', text: 'Website lead needs a branch or programme before it can be assigned', by: 'System' });
+  } else if (input.cslr) {
     l.cslr = input.cslr;
     l.assign.push({ at: now, from: '', to: input.cslr, by, how: 'Manual', reason: 'Selected at creation' });
   } else {
@@ -216,12 +222,12 @@ export async function createLead(repo: Repo, input: NewLeadInput, by = 'System',
   }
   const progName = ((await repo.get<any>('program', l.prog)) || { name: l.prog }).name;
   const cslrName = l.cslr ? ((await repo.get<any>('staff', l.cslr)) || { name: 'our team' }).name : 'our team';
-  const ctx = { progName, branchName: branch.name, counsellor: cslrName };
+  const ctx = { progName, branchName: branch?.name || '', counsellor: cslrName };
 
   const queuedComms: string[] = [];
   for (const [tid, key] of [['T1', 'wa'], ['T2', 'wa'], ['T3', 'em']] as const) {
     const t = (cfg.comms || []).find((x: any) => x.id === tid);
-    if (!t || !t.auto || opts.noAutoMessages) continue;
+    if (!t || !t.auto || opts.noAutoMessages || pendingRouting) continue;
     const blocked = cfg.consentReq?.[key] && !l[key];
     const cid = await repo.newId('cm');
     statements.push(await repo.createStmt('comm', {
@@ -242,9 +248,11 @@ export async function createLead(repo: Repo, input: NewLeadInput, by = 'System',
     }
   }
   if (!opts.quiet) {
-    const notification = l.cslr
+    const notification = pendingRouting
+      ? { type: 'new', sev: 'info', text: 'Website lead needs routing: ' + l.student, route: { page: 'lead', id }, roles: branch ? ['Centre Administrator', 'Admissions Head', 'System Administrator', 'Management'] : ['System Administrator', 'Management'], branch: l.branch }
+      : l.cslr
       ? { type: 'new', sev: 'info', text: `New lead created: ${l.student} (${l.src}) – assigned to ${cslrName}`, route: { page: 'lead', id }, roles: ['Counsellor', 'Centre Administrator'], branch: l.branch, cslr: l.cslr }
-      : { type: 'none', sev: 'crit', text: `No counsellor available: ${l.student} (${branch.name} · ${progName}) – lead in Unassigned queue`, route: { page: 'leads', preset: 'unassigned' }, roles: ['Admissions Head', 'Centre Administrator', 'System Administrator'], branch: l.branch };
+      : { type: 'none', sev: 'crit', text: `No counsellor available: ${l.student} (${ctx.branchName} · ${progName}) – lead in Unassigned queue`, route: { page: 'leads', preset: 'unassigned' }, roles: ['Admissions Head', 'Centre Administrator', 'System Administrator'], branch: l.branch };
     statements.push(await repo.createStmt('notification', await newNotification(repo, notification)));
   }
   statements.push(await repo.createStmt('lead', l));

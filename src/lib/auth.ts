@@ -80,3 +80,17 @@ export function needScope(c: Context<AppEnv>, branch: string | null | undefined)
 }
 
 export const inList = (xs: string[]) => (xs.length ? xs.map(() => '?').join(',') : "''");
+
+export const canReviewWebsiteLeads = (user: User) => user.role === 'System Administrator' || user.role === 'Management';
+
+export function canReviewUnroutedWebsiteLead(user: User, lead: { branch?: string; test?: boolean; external?: { website?: unknown } }) {
+  return !lead.branch && !!lead.external?.website && canReviewWebsiteLeads(user) && (!lead.test || user.role === 'System Administrator');
+}
+
+export function leadScopeSql(user: User) {
+  // An empty branch is reserved for website intake awaiting assignment.
+  const scope = user.scope.length ? `branch IN (${inList(user.scope)})` : '0';
+  if (!canReviewWebsiteLeads(user)) return scope;
+  const test = user.role === 'System Administrator' ? '' : ' AND is_test=0';
+  return `(${scope} OR (branch='' AND json_type(data,'$.external.website')='object'${test}))`;
+}

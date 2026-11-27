@@ -148,7 +148,7 @@ PAGES.student = (rt) => {
           { h: 'Enrolled', f: (e) => fD(e.date) },
           { h: 'Branch', f: (e) => esc(branchName(e.branch)) },
           { h: 'Status', f: (e) => stB(e.status) },
-          { h: 'Payment status', f: (e) => (pay ? stB(e.payStatus) : '—') },
+          { h: 'Payment status', f: (e) => (pay ? stB(e.payStatus) + (e.uatFlow || e.sandboxPayment ? ' ' + bdg('Sandbox', 'warn') : '') : '—') },
           {
             h: 'Payment date',
             f: (e) => {
@@ -190,11 +190,11 @@ PAGES.student = (rt) => {
             [
               { h: 'Date', f: (p) => fDT(p.at) },
               { h: 'Receipt', f: (p) => `<a data-act="receipt" data-id="${p.id}" class="mono">${p.rc}</a>` },
-              { h: 'Enrolment', f: (p) => p.enr },
+              { h: 'Enrolment', f: (p) => esc(p.sandboxEnrollmentId || p.enr) },
               { h: 'Amount', f: (p) => money(p.amt, p.cur), r: 1 },
               { h: 'Method', f: (p) => p.method },
               { h: 'Reference', f: (p) => esc(p.ref) },
-              { h: 'Status', f: (p) => bdg(p.status, 'info') },
+              { h: 'Status', f: (p) => bdg(p.status, 'info') + (p.gateway?.provider === 'easebuzz-test' ? ' ' + bdg('Sandbox', 'warn') : '') },
             ],
             pays,
             { all: 1, et: 'No payments' },
@@ -207,7 +207,7 @@ PAGES.student = (rt) => {
           table(
             'pbal',
             [
-              { h: 'Enrolment', f: (e) => e.id },
+              { h: 'Enrolment', f: (e) => esc(e.id) + (e.uatFlow || e.sandboxPayment ? ' ' + bdg('Sandbox', 'warn') : '') },
               { h: 'Programme', f: (e) => esc(PNAME(e.prog)) },
               { h: 'Payable', f: (e) => money(e.total, e.cur), r: 1 },
               { h: 'Paid', f: (e) => money(e.paid, e.cur), r: 1 },
@@ -243,11 +243,15 @@ PAGES.student = (rt) => {
       table(
         'smo',
         [
-          { h: 'Call', f: (m) => m.id + ' · ' + msCall(m) },
-          { h: 'Enrolment', f: (m) => m.enr },
+          {
+            h: 'Call',
+            f: (m) => esc(m.id) + ' · ' + msCall(m) + (m.sandboxEnrollmentId && m.payload?.student_id
+              ? `<div class="mono muted xs">Student ID ${esc(m.payload.student_id)}</div>` : ''),
+          },
+          { h: 'Enrolment', f: (m) => esc(m.sandboxEnrollmentId || m.enr) },
           { h: 'Product', f: (m) => esc(m.course || '') + `<div class="mono muted xs">${esc(m.cid || '')}</div>` },
           { h: 'Credits', f: (m) => (m.credits || []).length, r: 1 },
-          { h: 'Status', f: (m) => stB(m.status) },
+          { h: 'Status', f: (m) => stB(m.status) + (m.sandboxEnrollmentId || enrById(m.enr)?.uatFlow ? ' ' + bdg('Sandbox', 'warn') : '') },
           { h: 'Last attempt', f: (m) => fDT(m.last) },
           { h: 'Error', f: (m) => esc(m.err) },
         ],

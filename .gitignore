@@ -11,6 +11,9 @@ playwright-report
 # local database backups
 backups/
 
-# Generated frontend demo
+# Generated frontend output
+/public/assets/
+/public/index.html
+/public/_headers
 dist/
 

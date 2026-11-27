@@ -31,6 +31,7 @@ function lmsCallsForView() {
     ...lmsCallById(entry.call.id),
     enr: entry.enrollmentId,
     stu: entry.studentId,
+    sandboxEnrollmentId: entry.call.enr,
   });
   const calls = [];
   for (const call of S.ms) {
@@ -46,8 +47,9 @@ function paymentEnrolment(e) {
   const checkoutPaid = S.checkoutPaid?.get(e.id);
   if (!checkoutPaid) return e;
   const paid = r2(Math.min(e.total, (e.paid || 0) + checkoutPaid));
-  return { ...e, paid, payStatus: paid >= e.total - 0.005 ? 'Paid' : 'Partially paid' };
+  return { ...e, paid, payStatus: paid >= e.total - 0.005 ? 'Paid' : 'Partially paid', sandboxPayment: true };
 }
+const usesUatSandboxCheckout = (e) => e?.uatCheckout === true;
 function paymentRecordsForView() {
   const records = S.pay.filter((p) => !p.test || (S.paymentSandbox !== false && !enrById(p.enr)?.sandboxSource));
   return records.concat(S.checkoutPayments || []);

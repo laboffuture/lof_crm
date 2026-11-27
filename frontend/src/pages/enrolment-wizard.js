@@ -1,6 +1,7 @@
 /* Three-step registration and enrolment wizard. */
 /* ====== enrolment wizard ====== */
 const WSTEPS = ['Student', 'Programme & fees', 'Payment & confirm'];
+const wizSandboxAvailable = (w) => S.uatCheckoutBranches?.includes(w.calc?.br) && !w.opp && w.fee?.cur === 'INR';
 // A background refresh can remove a student while their enrolment draft is open.
 function wizReconcileStudent() {
   const w = S.wiz;
@@ -169,7 +170,10 @@ PAGES.wizard = (rt) => {
       c = calcFee(f, w.disc, w.mode === 'new'),
       sch = buildSched(termById(w.term), c.total, TODAY),
       payment = w.paymentDraft || {};
-    body = `<div class="grid g2"><div>${feeBox(f, w.disc, w.mode === 'new')}</div><div><form id="wf3" data-submit="wizFinish"><div class="fgrid">${F('Amount paid now (' + f.cur + ')', 'amt', { t: 'number', min: 0, step: '0.01', v: payment.amt ?? 0, req: 1, help: 'Leave 0 for online payment or pay later. Enter an amount only if payment has already been received. First instalment: ' + money(sch[0].amt, f.cur) + '.' })}${F('Payment method', 'method', { opts: S.cfg.pm, v: payment.method || 'Card' })}${F('Payment reference', 'ref', { v: payment.ref, help: 'Required only when recording a received non-cash payment. Leave blank when amount paid now is 0.' })}</div></form><div class="banner" style="margin-top:12px">${ic('alert')}Payment gateway is not connected. The payment is recorded manually and marked simulated.</div></div></div><div class="card" style="margin-top:14px"><div class="hd"><h3>Payment schedule – ${esc(termName(w.term))}</h3></div><div class="bd">${schedTable(sch, f.cur)}</div></div><div class="card" style="margin-top:14px"><div class="bd">${dl(
+    const sandboxOption = wizSandboxAvailable(w)
+      ? `<div class="banner" role="status">${ic('wallet')}<span>This enrolment uses Easebuzz sandbox. Leave the amount paid now at 0, then create the sandbox payment link from Payments.</span></div>`
+      : '';
+    body = `<div class="grid g2"><div>${feeBox(f, w.disc, w.mode === 'new')}</div><div><form id="wf3" data-submit="wizFinish">${sandboxOption}<div class="fgrid">${F('Amount paid now (' + f.cur + ')', 'amt', { t: 'number', min: 0, step: '0.01', v: payment.amt ?? 0, req: 1, help: 'Leave 0 for online payment or pay later. Enter an amount only if payment has already been received. First instalment: ' + money(sch[0].amt, f.cur) + '.' })}${F('Payment method', 'method', { opts: S.cfg.pm, v: payment.method || 'Card' })}${F('Payment reference', 'ref', { v: payment.ref, help: 'Required only when recording a received non-cash payment. Leave blank when amount paid now is 0.' })}</div></form><div class="banner" style="margin-top:12px">${ic('alert')}Payment gateway is not connected. The payment is recorded manually and marked simulated.</div></div></div><div class="card" style="margin-top:14px"><div class="hd"><h3>Payment schedule – ${esc(termName(w.term))}</h3></div><div class="bd">${schedTable(sch, f.cur)}</div></div><div class="card" style="margin-top:14px"><div class="bd">${dl(
       [
         [
           'Student',
@@ -413,8 +417,13 @@ SUB.wizFinish = (d, f, { draft = false } = {}) => {
   clearErrs(f);
   const amt = +d.amt || 0,
     tot = calcFee(fee, w.disc, w.mode === 'new').total;
+  const sandboxCheckout = !draft && wizSandboxAvailable(w);
   if (amt < 0 || amt > tot + 0.005) {
     setErr(f, 'amt', 'Amount must be between 0 and ' + money(tot, fee.cur));
+    return;
+  }
+  if (sandboxCheckout && amt !== 0) {
+    setErr(f, 'amt', 'Leave this amount at 0 for Easebuzz sandbox checkout.');
     return;
   }
   if (amt > 0 && d.method !== 'Cash' && !String(d.ref).trim()) {
@@ -463,7 +472,7 @@ SUB.wizFinish = (d, f, { draft = false } = {}) => {
     S.students.push(s);
   } else {
     s = stuById(w.stu);
-    if (s.status !== 'Active') {
+    if (!sandboxCheckout && s.status !== 'Active') {
       s.status = 'Active';
     }
   }
@@ -495,6 +504,7 @@ SUB.wizFinish = (d, f, { draft = false } = {}) => {
     term: w.term,
     sched: buildSched(termById(w.term), c.total, TODAY),
     cslr: w.opp && oppById(w.opp) ? oppById(w.opp).cslr : null,
+    ...(sandboxCheckout ? { sandboxCheckout: true } : {}),
   };
   S.enr.push(e);
   let pay = null;
@@ -528,7 +538,7 @@ SUB.wizFinish = (d, f, { draft = false } = {}) => {
     addEv(leadById(o.lead), 'sys', 'Enrolled as ' + s.id + ' (' + e.id + ')');
   }
   const t4 = S.cfg.comms.find((t) => t.id === 'T4');
-  if (t4 && t4.auto)
+  if (!sandboxCheckout && t4 && t4.auto)
     s.comm.push({
       at: nowIso(),
       ch: 'Email',
@@ -557,7 +567,7 @@ SUB.wizFinish = (d, f, { draft = false } = {}) => {
       ['Reception', 'Centre Administrator', 'Management'],
       e.branch,
     );
-  if (t4 && t4.auto)
+  if (!sandboxCheckout && t4 && t4.auto)
     notify(
       'mail',
       'ok',

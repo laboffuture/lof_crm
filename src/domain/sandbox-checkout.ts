@@ -1,10 +1,9 @@
 import type { Env } from '../types';
 import { Repo, nowIso } from '../lib/db';
 import { toHex } from '../lib/crypto';
-import { modeFor } from '../integrations/base';
 import { LMS_CONTRACT, prepareLmsOrder } from './lms-orders';
 import { lmsEnrolPayload } from './terms';
-import { UAT_FLOW, uatEnvironment } from './uat-policy';
+import { UAT_FLOW, uatCheckoutBranches, uatEnvironment } from './uat-policy';
 import { r2 } from './core';
 
 const orderPrefix = 'TST-ENR-SANDBOX-';
@@ -48,9 +47,9 @@ export async function sandboxOrder(env: Env, repo: Repo, cfg: any, original: any
     newStu: original.newStu, opp: null, test: true, sandboxSource: original.id,
   };
   const entries: D1PreparedStatement[] = [];
+  const branch = uatEnvironment(env) ? await repo.get('branch', original.branch) : null;
   // A sandbox copy can reach only the allowlisted UAT LMS, using synthetic student details.
-  if (original.branch === 'AW' && cfg.lms?.branchMap?.AW === 'AW' && uatEnvironment(env) &&
-      modeFor(env, cfg, 'lms', true) === 'live' &&
+  if (branch && uatCheckoutBranches(env, cfg, [branch]).includes(original.branch) &&
       (original.lmsAccess || cfg.lms?.packages?.[original.prog]?.[original.pkg])) {
     const [program, fee] = await Promise.all([
       repo.get('program', original.prog),

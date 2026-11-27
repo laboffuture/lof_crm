@@ -14,7 +14,7 @@ const LTABS = [
 ];
 PAGES.lead = (rt) => {
   const l = leadById(rt.id);
-  if (!l || !inScope(l.branch))
+  if (!l || !canViewLead(l))
     return (
       ph('Lead not found', '') + card('', emptyBox('This lead does not exist or is outside your branch access.', ''))
     );
@@ -22,11 +22,14 @@ PAGES.lead = (rt) => {
     tab = S.tab,
     edit = can('leads', 'E'),
     open = l.status === 'Open';
-  const act = edit
+  const pendingRouting = l.external?.website && (!l.branch || !l.prog);
+  const act = pendingRouting
+    ? (edit ? `<button class="btn primary" data-act="mEditLead" data-id="${l.id}">Set branch and programme</button>` : '')
+    : edit
     ? `${open ? `<button class="btn" data-act="mCall" data-id="${l.id}">${ic('phone')} Call</button><button class="btn" data-act="mWa" data-id="${l.id}">${ic('chat')} WhatsApp</button><button class="btn" data-act="mMail" data-id="${l.id}">${ic('mail')} Email</button><button class="btn" data-act="mFu" data-id="${l.id}">${ic('cal')} Schedule follow-up</button><button class="btn" data-act="mCat" data-id="${l.id}">Change category</button><button class="btn primary" data-act="startConvert" data-id="${l.id}">Create opportunity</button><button class="btn" data-act="mTransfer" data-id="${l.id}">Request branch transfer</button><button class="btn danger" data-act="mLost" data-id="${l.id}">Mark as lost</button>` : `<span class="badge">${esc(l.status)} – read-only actions</span>`}<button class="btn" data-act="mEditLead" data-id="${l.id}">Edit</button>${open && (can('reassignment', 'E') || can('reassignment', 'C')) ? `<button class="btn" data-act="mReassign" data-id="${l.id}">${can('reassignment', 'E') ? 'Reassign' : 'Request reassignment'}</button>` : ''}${l.status === 'Closed' && can('leads', 'E') ? `<button class="btn" data-act="reopen" data-id="${l.id}">Reopen</button>` : ''}`
     : '<span class="muted sm">View only for your role</span>';
   const sum = `<div class="sum"><div class="it"><small>Lead</small><b style="font-size:16px">${esc(l.student)}</b> <span class="mono muted">${l.id}</span></div><div class="it"><small>Category</small>${catB(l.cat)}${l.cat === 'No Response' ? ` <span class="badge warn">Attempt ${l.noResp} / ${S.cfg.life.noRespMax}</span>` : ''}</div><div class="it"><small>Stage / status</small>${esc(l.stage)} · ${stB(l.status)}</div><div class="it"><small>First-call SLA</small>${slaB(l)}${s.s === 'Breached' ? `<span class="muted xs"> +${s.over} min over</span>` : ''}</div><div class="it"><small>Counsellor</small>${l.cslr ? esc(staffName(l.cslr)) : bdg('Unassigned', 'warn')}</div><div class="it"><small>Branch · programme</small>${esc(branchName(l.branch))} · ${esc(PNAME(l.prog))}</div><div class="it"><small>Parent</small>${esc(l.parent)}</div><div class="it"><small>Mobile</small><span class="mono">${esc(l.phone)}</span></div><div class="it"><small>Next follow-up</small>${l.nextFU ? fDT(l.nextFU) : '—'}</div></div>`;
-  return `<div class="ph"><div><div class="muted sm"><a ${goA('leads', { preset: 'all' })}>Leads</a> / ${l.id}</div></div></div>${sum}<div class="row" style="margin-bottom:14px">${act}</div>${l.status === 'Closed' ? `<div class="banner" style="background:var(--neu-bg);color:var(--neu)">Closed: ${esc(l.closeReason)}</div>` : ''}${tabsBar(LTABS, tab, 'lTab')}${leadTab(l, tab)}`;
+  return `<div class="ph"><div><div class="muted sm"><a ${goA('leads', { preset: 'all' })}>Leads</a> / ${l.id}</div></div></div>${sum}<div class="row" style="margin-bottom:14px">${act}</div>${pendingRouting ? '<div class="banner">Choose a branch and programme before assigning this website enquiry.</div>' : ''}${l.status === 'Closed' ? `<div class="banner" style="background:var(--neu-bg);color:var(--neu)">Closed: ${esc(l.closeReason)}</div>` : ''}${tabsBar(LTABS, tab, 'lTab')}${leadTab(l, tab)}`;
 };
 ACT.lTab = (d) => {
   S.tab = d.k;
@@ -56,6 +59,7 @@ function leadTab(l, tab) {
       dl([
         ['Source', esc(l.src)],
         ['Campaign', esc(l.camp)],
+        ...(l.external?.website ? [['Website form', esc(l.external.website.form)], ['Website page', esc(l.external.website.page)]] : []),
         ['Enquiry', fDT(l.enq) + ' · ' + rel(l.enq)],
         ['Last activity', rel(l.last)],
         ['Programme interest', (l.interests || [l.prog]).map(PNAME).join(', ')],

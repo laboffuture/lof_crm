@@ -9,6 +9,7 @@ import { confirmEasebuzz } from './domain/easebuzz-payments';
 import { runMailAutomations } from './domain/mail-send';
 import { LMS_CONTRACT, activatePaidLms } from './domain/lms-orders';
 import { pollMailbox } from './domain/mail';
+import { WEBSITE_SUBMISSIONS } from './integrations/website-submissions';
 
 export async function runJob(env: Env, job: Job) {
   const repo = new Repo(env.DB, 'System');
@@ -166,7 +167,7 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
   const d = (days: number) => new Date(now - days * 864e5).toISOString();
   await env.DB.batch([
     env.DB.prepare('DELETE FROM integration_logs WHERE at < ?').bind(d(30)),
-    env.DB.prepare('DELETE FROM webhook_events WHERE received_at < ?').bind(d(90)),
+    env.DB.prepare('DELETE FROM webhook_events WHERE received_at < ? AND provider NOT IN (?,?)').bind(d(90), ...WEBSITE_SUBMISSIONS),
     env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR revoked_at < ?').bind(d(1), d(30)),
     env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(Math.floor(now / 1000) - 86400),
     env.DB.prepare('DELETE FROM call_events WHERE at < ?').bind(d(2)),

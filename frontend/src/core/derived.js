@@ -55,8 +55,11 @@ function routeLead(branch, prog, cat) {
   }
   return { pick: pick && pick.s, rows };
 }
+function canViewLead(l) {
+  return inScope(l.branch) || (!l.branch && l.external?.website && ['System Administrator', 'Management'].includes(me().role));
+}
 function leadScope() {
-  return S.leads.filter((l) => inScope(l.branch));
+  return S.leads.filter(canViewLead);
 }
 function addAudit(act, ref, det, by) {
   S.audit.unshift({ id: 'AU' + S.seq.audit++, at: nowIso(), by: by || me().name, act, ref, det });

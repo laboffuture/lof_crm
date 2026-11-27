@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { requireAuth, need, needScope, inList, can, type AppEnv } from '../lib/auth';
+import { requireAuth, need, needScope, inList, can, canReviewUnroutedWebsiteLead, leadScopeSql, type AppEnv } from '../lib/auth';
 import { allow } from '../lib/ratelimit';
 import { nowIso } from '../lib/db';
 import { EXACT_SEQS, BLOCK_SEQS } from '../lib/indexing';
@@ -67,8 +67,8 @@ const scopeWhere = (c: any, col = 'branch') => { const sc = c.get('user').scope;
 // ------------------------------------------------------------------ leads
 api.get('/leads', async (c) => {
   need(c, 'leads', 'V');
-  const s = scopeWhere(c);
-  const where = [s.sql], binds: unknown[] = [...s.binds];
+  const user = c.get('user');
+  const where = [leadScopeSql(user)], binds: unknown[] = [...user.scope];
   const q = c.req.query();
   if (q.status) { where.push('status=?'); binds.push(q.status); }
   if (q.branch) {
@@ -93,7 +93,7 @@ api.get('/leads/:id', async (c) => {
   const repo = c.get('repo');
   const l = await repo.get<any>('lead', c.req.param('id'));
   if (!l) throw new HttpError(404, 'Lead not found');
-  needScope(c, l.branch);
+  if (!canReviewUnroutedWebsiteLead(c.get('user'), l)) needScope(c, l.branch);
   const [tasks, calls, comms, opps] = await Promise.all(['task', 'call', 'comm', 'opp'].map((t) => repo.many(t, 'ref1=?', [l.id], 'at')));
   return c.json({ lead: l, tasks, calls, comms, opportunities: opps });
 });

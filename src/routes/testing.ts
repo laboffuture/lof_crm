@@ -16,6 +16,7 @@ import { hmacSha256Hex } from '../lib/crypto';
 import { ACTIVE_INTEGRATIONS, INTEGRATIONS, enabledInConfig, missingSecrets, modeFor, type IntegrationKey } from '../integrations/base';
 import { ping as lmsPing } from '../integrations/lms';
 import { phoneNumberInfo } from '../integrations/whatsapp';
+import { gupshupTemplateIds } from '../integrations/gupshup';
 import { me as metaMe } from '../integrations/meta';
 import { accountInfo } from '../integrations/exotel';
 import { easebuzzEnvironment, easebuzzPing, easebuzzSetup } from '../integrations/easebuzz';
@@ -70,8 +71,9 @@ export function testingRoutes(app: FetchApp) {
     const base = c.env.APP_BASE_URL.replace(/\/+$/, '');
     const out: any[] = [];
     for (const key of ACTIVE_INTEGRATIONS) {
-      const last = await c.env.DB.prepare('SELECT at,ok,mode,operation,error FROM integration_logs WHERE integration=? ORDER BY id DESC LIMIT 1').bind(key).first();
-      const lastOk = await c.env.DB.prepare('SELECT at FROM integration_logs WHERE integration=? AND ok=1 AND mode=? ORDER BY id DESC LIMIT 1').bind(key, 'live').first();
+      const direction = key === 'gupshup' ? " AND direction='out'" : '';
+      const last = await c.env.DB.prepare(`SELECT at,ok,mode,operation,error FROM integration_logs WHERE integration=?${direction} ORDER BY id DESC LIMIT 1`).bind(key).first();
+      const lastOk = await c.env.DB.prepare(`SELECT at FROM integration_logs WHERE integration=?${direction} AND ok=1 AND mode=? ORDER BY id DESC LIMIT 1`).bind(key, 'live').first();
       out.push({
         key, label: INTEGRATIONS[key].label, enabled: enabledInConfig(cfg, key), mode: modeFor(c.env, cfg, key), missing: missingSecrets(c.env, key),
         sandbox: key === 'easebuzz' && c.env.EASEBUZZ_ENV !== 'prod',
@@ -98,6 +100,12 @@ export function testingRoutes(app: FetchApp) {
         case 'website': detail = { signing: !!c.env.WEBSITE_FORM_SECRET, allowedOrigins: cfg.integ?.web?.origins || [] }; break;
         case 'meta': detail = await metaMe(ctx); break;
         case 'whatsapp': detail = await phoneNumberInfo(ctx); break;
+        case 'gupshup': {
+          const templateCount = Object.keys(gupshupTemplateIds(c.env.GUPSHUP_TEMPLATE_IDS)).length;
+          if (mode === 'live' && !templateCount) throw new Error('Map an approved template in GUPSHUP_TEMPLATE_IDS');
+          detail = { check: 'Local configuration only', templateCount };
+          break;
+        }
         case 'exotel': detail = await accountInfo(ctx); break;
         case 'lms': detail = await lmsPing(ctx); break;
         case 'easebuzz': detail = await easebuzzPing(ctx); break;
@@ -169,7 +177,7 @@ export function testingRoutes(app: FetchApp) {
         return { ...r, ok: r.ok && r.body === ch };
       }
       case 'whatsapp-status': {
-        const row = o.messageId ? { ref2: o.messageId } : await env.DB.prepare("SELECT ref2 FROM docs WHERE type='comm' AND ref2 IS NOT NULL AND is_test=1 ORDER BY updated_at DESC LIMIT 1").first<any>();
+        const row = o.messageId ? { ref2: o.messageId } : await env.DB.prepare("SELECT ref2 FROM docs WHERE type='comm' AND ref2 IS NOT NULL AND is_test=1 AND COALESCE(json_extract(data,'$.waProvider'),'meta')='meta' ORDER BY updated_at DESC LIMIT 1").first<any>();
         if (!row) throw new HttpError(409, 'No test WhatsApp message to update yet – run the "Website lead" simulation first');
         const body = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'WABA', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', statuses: [{ id: row.ref2, status: o.status || 'delivered', timestamp: String(Math.floor(Date.now() / 1000)), recipient_id: '971500000000' }] } }] }] });
         return hit(env, 'POST', '/webhooks/whatsapp', body, { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=' + (await hmacSha256Hex(need(env.WHATSAPP_APP_SECRET, 'WHATSAPP_APP_SECRET'), body)) });
