@@ -1,6 +1,6 @@
 // Builds the branch-scoped CRM state the screens run on (same shape as the approved prototype).
 import { Repo } from '../lib/db';
-import { can, inList } from '../lib/auth';
+import { can, inList, leadScopeSql } from '../lib/auth';
 import type { Env, User } from '../types';
 import { ACTIVE_INTEGRATIONS, modeFor, missingSecrets } from '../integrations/base';
 import { cfgDefaults } from '../domain/terms';
@@ -21,14 +21,15 @@ export async function bootstrap(env: Env, repo: Repo, user: User, perms: any) {
   const S = inList(sc);
   const newest = 'ORDER BY created_at DESC, rowid DESC';
   const oldest = 'ORDER BY created_at ASC, rowid ASC';
-  const leadIds = `SELECT id FROM docs WHERE type='lead'${T} AND branch IN (${S})`;
+  const leadScope = leadScopeSql(user);
+  const leadIds = `SELECT id FROM docs WHERE type='lead'${T} AND ${leadScope}`;
   const stuIds = `SELECT id FROM docs WHERE type='student'${T} AND (branch IN (${S}) OR id IN (SELECT ref1 FROM docs WHERE type='enrollment'${T} AND branch IN (${S})))`;
   const enrIds = `SELECT id FROM docs WHERE type='enrollment'${T} AND ref1 IN (${stuIds})`;
 
   const [branches, programs, fees, discounts, staff] = await Promise.all(['branch', 'program', 'fee', 'discount', 'staff'].map((t) => rows(env, `SELECT data FROM docs WHERE type=? ${oldest}`, [t])));
   const [cfg, permsDoc, scope, fx, hist] = await Promise.all(['cfg', 'perms', 'scope', 'fx', 'hist'].map((k) => repo.setting(k)));
 
-  const leads = await rows(env, `SELECT data FROM docs WHERE type='lead'${T} AND branch IN (${S}) ${newest}`, sc);
+  const leads = await rows(env, `SELECT data FROM docs WHERE type='lead'${T} AND ${leadScope} ${newest}`, sc);
   const opps = await rows(env, `SELECT data FROM docs WHERE type='opp'${T} AND branch IN (${S}) ${newest}`, sc);
   const tasks = await rows(env, `SELECT data FROM docs WHERE type='task'${T} AND ref1 IN (${leadIds}) ${oldest}`, sc);
   const calls = await rows(env, `SELECT data FROM docs WHERE type='call'${T} AND ref1 IN (${leadIds}) ORDER BY at DESC`, sc);

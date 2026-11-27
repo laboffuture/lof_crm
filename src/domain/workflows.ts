@@ -7,6 +7,7 @@ import { modeFor, enabledInConfig, writeLog } from '../integrations/base';
 import * as lms from '../integrations/lms';
 import { lmsEnrolPayload } from './terms';
 import * as wa from '../integrations/whatsapp';
+import { gupshupTemplateIds, sendGupshupTemplate } from '../integrations/gupshup';
 import * as erp from '../integrations/erpnext';
 import { calendarInsert } from '../integrations/gcal-email';
 import { deliverEmail } from './mail';
@@ -167,9 +168,21 @@ export async function sendComm(env: Env, repo: Repo, commId: string) {
   try {
     if (c.ch === 'WhatsApp') {
       if (cfg.consentReq?.wa && !l.wa) throw new Error('Blocked – no WhatsApp consent');
-      const mode = modeFor(env, cfg, 'whatsapp', isTest);
+      const templateIds = tpl ? gupshupTemplateIds(env.GUPSHUP_TEMPLATE_IDS) : {};
+      const gupshupId = tpl && Object.hasOwn(templateIds, tpl.id) ? templateIds[tpl.id] : undefined;
+      const mode = modeFor(env, cfg, gupshupId ? 'gupshup' : 'whatsapp', isTest);
       let r;
-      if (tpl?.waTemplate) {
+      if (gupshupId) {
+        if (/\{\w+\}/.test(tpl.body)) throw new Error('This Gupshup Gateway API setup supports templates without variables only');
+        if (mode === 'live') {
+          // A second queue consumer must not submit the same message concurrently.
+          const claim = await env.DB.prepare("UPDATE docs SET status='Sending', data=json_set(data,'$.status','Sending','$.waProvider','gupshup') WHERE type='comm' AND id=? AND status=?")
+            .bind(c.id, c.status).run();
+          if (!claim.meta.changes) return repo.get<any>('comm', c.id);
+        }
+        c.waProvider = 'gupshup';
+        r = await sendGupshupTemplate({ env, mode, isTest }, l.phone, gupshupId, c.id);
+      } else if (tpl?.waTemplate) {
         const [branch, programs, cslr] = await Promise.all([repo.get<any>('branch', l.branch), repo.many<any>('program'), l.cslr ? repo.get<any>('staff', l.cslr) : null]);
         const progName = (programs.find((p) => p.id === l.prog) || { name: l.prog }).name;
         const params = templateParams(tpl.body, l, { progName, branchName: branch?.name || l.branch, counsellor: cslr?.name || 'our team' });

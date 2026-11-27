@@ -8,17 +8,20 @@ const canOverride = () => !['Counsellor', 'Reception'].includes(me().role);
 MODALS.leadForm = (m) => {
   const l = m.id ? leadById(m.id) : null;
   const v = l || { enq: nowIso(), cat: 'Warm', wa: true, em: true, branch: optBranches()[0][0], src: 'Manual' };
-  const bs = optBranches();
+  const website = !!l?.external?.website;
+  const bs = website && !l.branch ? optBranches().filter(([id]) => S.branches.find((b) => b.id === id)?.status === 'Operating') : optBranches();
   const srcs = S.cfg.sources;
+  const campaigns = S.cfg.camps.filter((c) => c.active).map((c) => c.n);
+  if (website && v.camp && !campaigns.includes(v.camp)) campaigns.push(v.camp);
   return {
     title: l ? 'Edit lead ' + l.id : 'New lead',
     size: 'lg',
     form: 'leadForm',
     ok: l ? 'Save changes' : 'Create lead',
     body: `<input type="hidden" name="id" value="${l ? l.id : ''}"><div id="dupbox"></div><div class="fgrid">
-   <div class="sec">Prospect & parent</div>${F('Student / prospect name', 'student', { v: v.student, req: 1 })}${F('Date of birth', 'dob', { t: 'date', v: v.dob, help: 'Age is calculated from date of birth where available.' })}${F('Parent / guardian name', 'parent', { v: v.parent, req: 1 })}${F('Mobile number', 'phone', { v: v.phone, req: 1, ph: '+971 50 000 0000', chg: 'dup' })}${F('Email', 'email', { t: 'email', v: v.email, chg: 'dup' })}
+   <div class="sec">Prospect & parent</div>${F('Student / prospect name', 'student', { v: v.student, req: 1 })}${F('Date of birth', 'dob', { t: 'date', v: v.dob, help: 'Age is calculated from date of birth where available.' })}${F('Parent / guardian name', 'parent', { v: v.parent, req: !website })}${F('Mobile number', 'phone', { v: v.phone, req: !website, ph: '+971 50 000 0000', chg: 'dup' })}${F('Email', 'email', { t: 'email', v: v.email, chg: 'dup' })}
    <div class="sec">School background</div>${F('School', 'school', { v: v.school })}${F('Grade', 'grade', { v: v.grade, ph: 'e.g. Grade 6' })}${F('Curriculum / board', 'curr', { v: v.curr, ph: 'British, CBSE, IB…' })}
-   <div class="sec">Enquiry</div>${F('Branch preference', 'branch', { v: v.branch, req: 1, opts: bs, chg: 'leadBranch' })}${F('Programme / course interest', 'prog', { v: v.prog, req: 1, opts: optProgs(), blank: 'Select programme' })}${F('Lead source', 'src', { v: v.src, req: 1, opts: srcs.map((s) => [s.n, s.n + (s.en ? '' : ' (disabled)')]) })}${F('Campaign', 'camp', { v: v.camp, opts: S.cfg.camps.filter((c) => c.active).map((c) => c.n), blank: 'No campaign' })}${F('Enquiry date / time', 'enq', { t: 'datetime-local', v: locVal(v.enq), dis: !!l })}${F('Lead category', 'cat', { v: v.cat, opts: CATS.slice(0, 3) })}
+   <div class="sec">Enquiry</div>${F('Branch preference', 'branch', { v: v.branch, req: 1, opts: bs, blank: website && !l.branch ? 'Select branch' : undefined, chg: 'leadBranch' })}${F('Programme / course interest', 'prog', { v: v.prog, req: 1, opts: optProgs(), blank: 'Select programme' })}${F('Lead source', 'src', { v: v.src, req: 1, opts: srcs.map((s) => [s.n, s.n + (s.en ? '' : ' (disabled)')]) })}${F('Campaign', 'camp', { v: v.camp, opts: campaigns, blank: 'No campaign' })}${F('Enquiry date / time', 'enq', { t: 'datetime-local', v: locVal(v.enq), dis: !!l })}${F('Lead category', 'cat', { v: v.cat, opts: CATS.slice(0, 3) })}
    ${F('Assigned counsellor', 'cslr', { v: l ? l.cslr || '' : 'auto', opts: (l ? [['', 'Unassigned']] : [['auto', 'Auto – use routing rules']]).concat(optCslr(v.branch)), id: 'f_cslr', help: l ? 'Use Reassign on the lead page to keep assignment history.' : 'Routing considers branch, programme, availability and weighted workload.', dis: !!l })}
    <div class="sec">Communication consent</div><div class="f full">${CK('WhatsApp communication consent', 'wa', v.wa)}${CK('Email communication consent', 'em', v.em)}<div class="help">Automated messages are only sent where the matching consent is recorded.</div></div>
    ${S.cfg.fields.length ? `<div class="sec">Custom CRM fields</div>${S.cfg.fields.map((f, i) => (f.t === 'Dropdown' ? F(f.n, 'cf' + i, { v: (v.custom || {})[f.n] || '', opts: f.opts.split(',').map((x) => x.trim()), blank: 'Select', req: f.req }) : F(f.n, 'cf' + i, { v: (v.custom || {})[f.n] || '', req: f.req }))).join('')}` : ''}
@@ -58,9 +61,14 @@ document.addEventListener('click', (e) => {
 });
 SUB.leadForm = (d, form) => {
   const edit = !!d.id;
-  const req = ['student', 'parent', 'phone', 'branch', 'prog', 'src'];
+  const website = edit && !!leadById(d.id)?.external?.website;
+  const req = website ? ['student', 'branch', 'prog', 'src'] : ['student', 'parent', 'phone', 'branch', 'prog', 'src'];
   if (!need(form, d, req)) return;
-  if (!d.phone.replace(/\D/g, '').match(/^\d{7,15}$/)) {
+  if (!d.phone && !d.email) {
+    setErr(form, 'email', 'Enter an email address or mobile number');
+    return;
+  }
+  if (d.phone && !d.phone.replace(/\D/g, '').match(/^\d{7,15}$/)) {
     setErr(form, 'phone', 'Enter a valid mobile number');
     return;
   }

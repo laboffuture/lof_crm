@@ -1,6 +1,7 @@
 // Public webhook endpoints. Each one authenticates the sender (signature or shared token), is idempotent,
 // and logs the request in integration_logs (Testing Console → Logs).
 import { Hono } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env, Job } from '../types';
 import { HttpError } from '../types';
 import { Repo, nowIso } from '../lib/db';
@@ -19,6 +20,7 @@ import { parseStatus } from '../integrations/exotel';
 import { razorpayVerifyWebhook, telrCheck } from '../integrations/payments';
 import { easebuzzVerifyResponse } from '../integrations/easebuzz';
 import { confirmEasebuzz } from '../domain/easebuzz-payments';
+import { parseWebsiteSubmission, websiteLeadRoute, WEBSITE_SUBMISSIONS, WEBSITE_SUBMISSION_MAX_BYTES } from '../integrations/website-submissions';
 
 type WEnv = { Bindings: Env; Variables: { isTest: boolean } };
 export const webhooks = new Hono<WEnv>();
@@ -98,6 +100,76 @@ webhooks.options('/website', async (c) => {
   if (!originsOf(cfg).includes(origin)) return c.body(null, 403);
   return c.body(null, 204, { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type' });
 });
+
+// ------------------------------------------------------------------ Website dashboard submissions
+const websiteLeads = new Hono<WEnv>();
+websiteLeads.onError((error, c) => {
+  if (error instanceof HttpError) {
+    return c.json({ ok: false, error: error.message, message: error.message, details: error.details }, error.status as ContentfulStatusCode);
+  }
+  const ref = crypto.randomUUID();
+  console.error('Website lead webhook failed', ref, error);
+  return c.json({
+    ok: false, error: 'Internal error', ref,
+    message: 'The CRM could not process the submission. Please try sending it again.',
+  }, 500);
+});
+
+websiteLeads.post('/', async (c) => {
+  const secret = c.env.WEBSITE_LEAD_WEBHOOK_SECRET?.trim();
+  if (!secret) throw new HttpError(503, 'The website connection is missing its access token. Please contact your CRM administrator.');
+  const token = c.req.header('authorization')?.match(/^Bearer (.+)$/i)?.[1];
+  if (!token) throw new HttpError(401, 'The website access token is missing. Please check the website’s connection to the CRM.', { field: 'Authorization' });
+  if (!safeEqual(token, secret)) throw new HttpError(401, 'The website access token is invalid. Please check the website’s connection to the CRM.', { field: 'Authorization' });
+  if (c.req.header('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json')
+    throw new HttpError(415, 'Please send the form details in JSON format.', { field: 'Content-Type' });
+  if (Number(c.req.header('content-length')) > WEBSITE_SUBMISSION_MAX_BYTES)
+    throw new HttpError(413, 'Website submission exceeds 32 KiB');
+  const raw = await c.req.arrayBuffer();
+  if (raw.byteLength > WEBSITE_SUBMISSION_MAX_BYTES) throw new HttpError(413, 'Website submission exceeds 32 KiB');
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(raw));
+  } catch {
+    throw new HttpError(400, 'The form details could not be read. Please send valid JSON.');
+  }
+  const submission = parseWebsiteSubmission(body);
+  const repo = new Repo(c.env.DB, 'Website dashboard', isTestReq(c));
+  const provider = WEBSITE_SUBMISSIONS[repo.isTest ? 1 : 0];
+  const id = await sha256Hex(submission.submissionId);
+  const event = c.env.DB.prepare('SELECT result FROM webhook_events WHERE provider=? AND event_id=?').bind(provider, id);
+  const duplicate = (reference: string) => c.json({
+    ok: true, reference, duplicate: true, message: 'Duplicate submission. The existing CRM lead was returned.',
+  });
+  const previous = await event.first<string>('result');
+  if (previous) return duplicate(previous);
+  const cfg = await repo.setting<any>('cfg');
+  if (!cfg.integ?.web?.on) throw new HttpError(503, 'Website lead capture is disabled');
+
+  let reference: string;
+  try {
+    const source = submission.source.toLowerCase();
+    const src = source ? cfg.sources?.find(({ n }: { n: string }) => n.toLowerCase() === source)?.n : 'Website';
+    if (!src) throw new HttpError(422, 'Please select a lead source that is set up in the CRM.', { field: 'source' });
+    const route = await websiteLeadRoute(repo, submission);
+    const camp = submission.input.camp || (src === 'Website' ? 'Website Organic' : undefined);
+    const { lead } = await createLead(repo, { ...submission.input, ...route, src, camp }, repo.actor, {
+      allowUnrouted: true, noAutoMessages: true, webhookEvent: { provider, id },
+    });
+    reference = lead.id;
+  } catch (error) {
+    const committed = await event.first<string>('result');
+    if (committed) return duplicate(committed);
+    throw error;
+  }
+  await logInbound(c.env, 'website', 'dashboard.lead.submit', true, { form: submission.input.external.website.form }, { lead: reference }, reference, repo.isTest, undefined, 201);
+  return c.json({ ok: true, reference, message: 'Website lead created successfully.' }, 201);
+});
+websiteLeads.all('/', (c) => {
+  c.header('Allow', 'POST');
+  throw new HttpError(405, 'Use POST to submit a website lead');
+});
+webhooks.route('/website/leads', websiteLeads);
 
 // ------------------------------------------------------------------ Meta Lead Ads
 webhooks.get('/meta', (c) => {
@@ -338,7 +410,7 @@ webhooks.post('/whatsapp', async (c) => {
   const result = { statuses: 0, messages: 0, unmatched: 0 };
   const ORDER = ['sent', 'delivered', 'read'];
   for (const s of ev.statuses) {
-    const row = await c.env.DB.prepare("SELECT data FROM docs WHERE type='comm' AND ref2=?").bind(s.id).first<{ data: string }>();
+    const row = await c.env.DB.prepare("SELECT data FROM docs WHERE type='comm' AND ref2=? AND COALESCE(json_extract(data,'$.waProvider'),'meta')='meta'").bind(s.id).first<{ data: string }>();
     if (!row) { result.unmatched++; continue; }
     const cm = JSON.parse(row.data);
     const cur = String(cm.waStatus || 'sent');

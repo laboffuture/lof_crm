@@ -47,7 +47,7 @@ export const DATASETS: Record<string, Dataset> = {
     cols: ['id', 'at', 'integration', 'direction', 'operation', 'mode', 'status', 'ok', 'duration_ms', 'ref', 'error'], note: 'Requests and responses are stored with secrets redacted; open a row to see them. Kept 30 days.' },
   payment_links: { label: 'Payment links', group: 'System', src: 'payment_links', order: 'created_at DESC', test: true, key: 'id',
     cols: ['id', 'provider', 'provider_ref', 'enrollment_id', 'amount', 'currency', 'status', 'payment_id', 'created_by', 'created_at', 'paid_at'] },
-  webhook_events: { label: 'Webhook events', group: 'System', src: 'webhook_events', order: 'received_at DESC', cols: ['provider', 'event_id', 'received_at', 'result'], note: 'Kept 90 days to ignore provider retries.' },
+  webhook_events: { label: 'Webhook events', group: 'System', src: 'webhook_events', order: 'received_at DESC', cols: ['provider', 'event_id', 'received_at', 'result'], note: 'Provider retries are kept for 90 days. Website submission references are retained for dashboard resyncs.' },
   sessions: { label: 'Sessions', group: 'System', src: 'sessions', order: 'last_seen_at DESC', cols: ['staff_id', 'created_at', 'last_seen_at', 'expires_at', 'revoked_at', 'stage', 'acting_as', 'ip'], note: 'Session tokens are never stored or shown – only their metadata.' },
   sequences: { label: 'Number sequences', group: 'System', src: 'sequences', order: 'name ASC', cols: ['name', 'value'], note: 'The next number each series will issue.' },
 };

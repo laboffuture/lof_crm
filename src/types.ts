@@ -19,6 +19,7 @@ export interface Env {
   /** Optional comma-separated IPs allowed to call the Exotel webhooks. */
   EXOTEL_ALLOWED_IPS?: string;
   WEBSITE_FORM_SECRET?: string;
+  WEBSITE_LEAD_WEBHOOK_SECRET?: string;
 
   META_GRAPH_VERSION?: string;
   META_APP_SECRET?: string;
@@ -30,6 +31,9 @@ export interface Env {
   WHATSAPP_APP_SECRET?: string;
   WHATSAPP_VERIFY_TOKEN?: string;
   WHATSAPP_TEMPLATE_LANG?: string;
+  GUPSHUP_CLIENT_ID?: string;
+  GUPSHUP_API_TOKEN?: string;
+  GUPSHUP_TEMPLATE_IDS?: string;
   GUPSHUP_WEBHOOK_SECRET?: string;
 
   EXOTEL_SUBDOMAIN?: string;

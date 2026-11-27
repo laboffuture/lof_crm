@@ -17,7 +17,7 @@
 //  • Side effects become real integration jobs (WhatsApp, e-mail, Moodle, ERPNext, Calendar).
 import { Repo, nowIso } from '../lib/db';
 import { COLLECTIONS, SETTINGS_KEYS } from '../lib/indexing';
-import { can, ALL_ROLES } from '../lib/auth';
+import { can, ALL_ROLES, canReviewUnroutedWebsiteLead } from '../lib/auth';
 import type { Env, Job, User } from '../types';
 import { HttpError } from '../types';
 import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify, gstProblem } from '../domain/core';
@@ -316,6 +316,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
       case 'leads': {
         if (!o) {
           if (!P('leads', 'C')) { reject(c, `${user.role} cannot create leads`); break; }
+          if (d.external?.website) { reject(c, 'Website submission details must come from the webhook'); break; }
           if (!inScope(d.branch)) { reject(c, 'Lead is outside your branch access'); break; }
           const b = branches.find((x) => x.id === d.branch);
           if (!b || !b.programs.includes(d.prog)) { reject(c, `${d.prog} is not offered at ${b?.name || d.branch}`); break; }
@@ -329,11 +330,21 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         const transfer = approvedNow((a) => a.type === 'Branch Transfer' && a.payload?.lead === d.id && a.payload?.from === o.branch && a.payload?.to === d.branch);
         const reassign = approvedNow((a) => a.type === 'Counsellor Reassignment' && a.payload?.lead === d.id && a.payload?.to === d.cslr);
         const decided = decidedNow((a) => a.payload?.lead === d.id);
-        if (!inScope(o.branch)) { reject(c, 'Lead is outside your branch access'); break; }
+        const websiteLead = !!o.external?.website;
+        const initialWebsiteBranch = canReviewUnroutedWebsiteLead(user, o) && P('leads', 'E');
+        if (!inScope(o.branch) && !initialWebsiteBranch) { reject(c, 'Lead is outside your branch access'); break; }
         if (!inScope(d.branch) && !transfer) { reject(c, 'Lead is outside your branch access'); break; }
         if (keys.includes('id') || keys.includes('enq')) { reject(c, 'Lead ID and enquiry time cannot change'); break; }
+        if (!same(o.external?.website, d.external?.website)) { reject(c, 'Original website submission cannot change'); break; }
+        if (websiteLead && (keys.includes('prog') || (initialWebsiteBranch && keys.includes('branch')))) {
+          const branch = branches.find((b) => b.id === d.branch);
+          if (!branch?.programs.includes(d.prog) || (initialWebsiteBranch && (branch.status !== 'Operating' || branch.archived || branch.test)) ||
+              !programs.some((p) => p.id === d.prog && p.active && !p.test)) {
+            reject(c, 'Choose an active programme offered at this branch'); break;
+          }
+        }
         if (keys.includes('branch')) {
-          if (!transfer) { reject(c, 'Branch can only change through an approved branch transfer'); break; }
+          if (!transfer && !initialWebsiteBranch) { reject(c, 'Branch can only change through an approved branch transfer'); break; }
           leadBranchMoves.push({ id: d.id, branch: d.branch });
         }
         if (keys.includes('cslr')) {
@@ -483,7 +494,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           else if (cfg.consentReq?.[key] && !lead[key]) d.status = 'Blocked – no consent';
           else { d.status = 'Queued'; jobs.push({ kind: 'send_comm', id: d.id }); }
           d.by = d.by === 'System' && isNew('leads', d.lead) ? 'System' : user.name;
-          delete d.waMsgId; delete d.mailId;
+          delete d.waMsgId; delete d.waProvider; delete d.mailId;
         } else {
           if (!(P('leads', 'E') || P('leads', 'C') || P('reassignment', 'E'))) {
             const onlyDone = o && subset(keys, ['status', 'outcome', 'remarks']) && batchItems('calls').some((x) => !x.o && x.d.lead === d.lead);

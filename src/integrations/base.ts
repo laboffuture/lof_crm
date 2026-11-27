@@ -1,13 +1,14 @@
 import type { Env } from '../types';
 
 export type Mode = 'live' | 'mock';
-export type IntegrationKey = 'website' | 'meta' | 'whatsapp' | 'exotel' | 'lms' | 'telr' | 'razorpay' | 'easebuzz' | 'erpnext' | 'gcal' | 'email';
+export type IntegrationKey = 'website' | 'meta' | 'whatsapp' | 'gupshup' | 'exotel' | 'lms' | 'telr' | 'razorpay' | 'easebuzz' | 'erpnext' | 'gcal' | 'email';
 
 /** Integration → configuration toggle (cfg.integ.<key>.on) and required secrets/vars. */
 export const INTEGRATIONS: Record<IntegrationKey, { label: string; cfgKey: string | null; needs: (keyof Env)[] }> = {
   website: { label: 'Website lead capture', cfgKey: 'web', needs: ['WEBSITE_FORM_SECRET'] },
   meta: { label: 'Meta Lead Ads (Facebook / Instagram)', cfgKey: 'meta', needs: ['META_APP_SECRET', 'META_VERIFY_TOKEN', 'META_PAGE_ACCESS_TOKEN'] },
   whatsapp: { label: 'WhatsApp Business (Cloud API)', cfgKey: 'wa', needs: ['WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_APP_SECRET', 'WHATSAPP_VERIFY_TOKEN'] },
+  gupshup: { label: 'WhatsApp templates (Gupshup)', cfgKey: 'wa', needs: ['GUPSHUP_CLIENT_ID', 'GUPSHUP_API_TOKEN', 'GUPSHUP_TEMPLATE_IDS'] },
   exotel: { label: 'Telephony – Exotel', cfgKey: 'tel', needs: ['EXOTEL_SID', 'EXOTEL_API_KEY', 'EXOTEL_API_TOKEN', 'EXOTEL_CALLER_ID', 'EXOTEL_WEBHOOK_TOKEN'] },
   lms: { label: 'LMS – LOF Booking Platform', cfgKey: 'lms', needs: ['LMS_URL', 'LMS_TOKEN'] },
   telr: { label: 'Payment gateway – Telr (AED)', cfgKey: 'pay', needs: ['TELR_STORE_ID', 'TELR_AUTH_KEY'] },
