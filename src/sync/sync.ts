@@ -17,14 +17,18 @@
 //  • Side effects become real integration jobs (WhatsApp, e-mail, Moodle, ERPNext, Calendar).
 import { Repo, nowIso } from '../lib/db';
 import { COLLECTIONS, SETTINGS_KEYS } from '../lib/indexing';
-import { can, ALL_ROLES } from '../lib/auth';
+import { can, ALL_ROLES, canReviewUnroutedWebsiteLead } from '../lib/auth';
 import type { Env, Job, User } from '../types';
 import { HttpError } from '../types';
-import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify } from '../domain/core';
+import { calcFee, feeFor, r2, recalcEnrollment, money, dayKey, msgFrom, addEv, notify, gstProblem } from '../domain/core';
 import { hashPassword } from '../lib/crypto';
-import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, lmsProblem } from '../domain/terms';
+import { buildSched, daysBetween, refundCalc, termProblem, refundProblem, targetsProblem, recTargetsProblem, lmsProblem } from '../domain/terms';
 import { checkEmailTemplates } from '../domain/email-templates';
 import { checkMailSettings } from '../domain/mail';
+import { checkMailAuto } from '../domain/mail-send';
+import { activatePaidLms, LMS_CONTRACT, prepareLmsOrder, studentEmailKey } from '../domain/lms-orders';
+import { LmsError } from '../integrations/lms';
+import { isUatTestFee, uatCheckoutBranches, UAT_FEE_ID, UAT_FLOW } from '../domain/uat-policy';
 
 export interface Change { coll: string; id: string; op: 'upsert' | 'delete'; doc?: any; base?: any }
 export interface SettingChange { key: string; doc: any }
@@ -66,7 +70,8 @@ const HISTORY_KEYS = ['events', 'assign', 'hist', 'comm', 'testimonials', 'docs'
 const QUIET_KEYS = ['last', 'nextFU', 'events', 'assign', 'hist', 'comm'];
 const WRITE_ORDER = ['branch', 'program', 'fee', 'discount', 'staff', 'lead', 'opp', 'approval', 'student', 'enrollment', 'payment', 'moodle_sync', 'refund', 'task', 'call', 'comm', 'notification', 'audit'];
 
-export async function applySync(env: Env, repo: Repo, user: User, perms: any, changes: Change[], settings: SettingChange[] = []) {
+/** opts.dryRun: run every check and return the records that would be written, without saving anything. */
+export async function applySync(env: Env, repo: Repo, user: User, perms: any, changes: Change[], settings: SettingChange[] = [], opts: { dryRun?: boolean } = {}) {
   const P = (res: string, cap: string) => can(perms, user, res, cap);
   const inScope = (b: unknown) => typeof b === 'string' && user.scope.includes(b);
   const rejected: Rejection[] = [];
@@ -77,6 +82,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   const postPaymentsFor = new Set<string>();
   const receiptFor: any[] = [];
   const withdrawals: { enr: string; stu: string }[] = [];
+  const refundCancellations = new Set<string>();
   const cancelsFor = new Set<string>();
   const enrolsFor = new Set<string>();
   const leadBranchMoves: { id: string; branch: string }[] = [];
@@ -128,14 +134,22 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   // ---------------------------------------------------------------- 3. field-level merge
   // keys = what THIS user changed (base → doc); merged = current server copy + those changes
   const eff = new Map<string, { d: any; o: any; keys: string[] }>();
+  const sandboxCheckoutIds = new Set<string>();
   for (const c of changes) {
     if (c.op !== 'upsert') continue;
     const o = oldOf(c.coll, c.id);
     const doc = structuredClone(c.doc);
+    if (c.coll === 'enr' && !o && doc.sandboxCheckout === true) sandboxCheckoutIds.add(c.id);
+    delete doc.sandboxCheckout;
     delete doc.test; // test flags are server-only
+    delete doc.uatFlow;
+    delete doc.uatCheckout;
+    delete doc.lmsAccess;
+    delete doc.sandboxSource;
+    if (o?.uatFlow) doc.uatFlow = o.uatFlow; // full-flow test approval is server-only
     if (!o) { eff.set(c.coll + ':' + c.id, { d: doc, o: null, keys: Object.keys(doc) }); continue; }
     const base = c.base ?? o;
-    const keys = changedKeys(base, doc).filter((k) => k !== 'test');
+    const keys = changedKeys(base, doc).filter((k) => !['test', 'lmsAccess', 'sandboxSource', 'uatCheckout'].includes(k) && !(c.coll === 'fees' && (k === 'revisionAt' || (o.uatFeeStructure && ['uatFeeStructure', 'uatRootFeeId', 'validUntil'].includes(k)))));
     const d = structuredClone(o);
     for (const k of keys) {
       const b = base[k], n = doc[k], cur = o[k];
@@ -168,14 +182,19 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   const fees = await repo.many<any>('fee');
   const discounts = await repo.many<any>('discount');
   const branches = await repo.many<any>('branch');
+  const sandboxBranches = new Set(user.role === 'System Administrator' ? uatCheckoutBranches(env, cfg, branches) : []);
+  const enrolmentDate = (date: string | undefined) => !date || date > today || date < dayKey(new Date(Date.now() - 7 * 864e5)) ? today : date;
+  const usesSandboxCheckout = (enrolment: any) => !enrolment.opp && sandboxBranches.has(enrolment.branch) &&
+    feeFor(fees, enrolment.prog, enrolment.branch, enrolment.pkg, enrolmentDate(enrolment.date))?.cur === 'INR';
   const staffList = await repo.many<any>('staff');
   const programs = await repo.many<any>('program');
   /** LMS call record: Track and Credit codes come from Settings → LMS Integration, never from the browser. */
   const lmsCallDoc = (id: string, op: 'enrol' | 'cancel', e: any) => {
-    const code = cfg.lms?.programmes?.[e.prog] || {};
+    const items = e.lmsAccess?.items || [];
     const prog = programs.find((p) => p.id === e.prog);
-    return { id, enr: e.id, stu: e.stu, op, status: 'Pending', mid: null, cid: code.track || '—', credits: op === 'enrol' ? (code.credits || []).slice() : [], course: `${prog?.name || e.prog} · ${e.pkg}`, mode: op, last: now, err: '', attempts: 0,
-      hist: [{ at: now, s: 'Pending', msg: op === 'cancel' ? 'Cancel call queued after withdrawal' : 'Enrol call queued after enrolment' }], ...(e.test ? { test: true } : {}) };
+    const status = op === 'cancel' ? 'Pending' : 'Awaiting Payment';
+    return { id, enr: e.id, stu: e.stu, op, status, contract: LMS_CONTRACT, mid: null, cid: items[0]?.track || '—', credits: op === 'enrol' ? items.flatMap((item: any) => item.credits) : [], course: `${prog?.name || e.prog} · ${e.pkg}`, mode: op, last: now, err: '', attempts: 0,
+      hist: [{ at: now, s: status, msg: op === 'cancel' ? 'Cancel call queued after withdrawal' : 'Purchase waits until the order is fully paid' }], ...(e.test ? { test: true } : {}) };
   };
   const isCounsellor = (id: unknown) => staffList.some((s) => s.id === id && s.role === 'Counsellor' && s.status === 'Active');
 
@@ -234,6 +253,14 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           } else if (String(o.email).toLowerCase() !== email) staffAuth.push({ id: d.id, email });
         }
         if (c.coll === 'branches' && !/^[A-Z0-9]{2,5}$/.test(d.id)) { reject(c, 'Branch short ID must be 2–5 capital letters or digits'); break; }
+        if (c.coll === 'branches') {
+          // GST details for the tax invoice (India): GSTIN, PAN, CGST %, SGST %
+          const gp = gstProblem(d);
+          if (gp) { reject(c, `${d.name || d.id}: ${gp}`); break; }
+          d.gstin = String(d.gstin ?? '').trim().toUpperCase();
+          d.pan = String(d.pan ?? '').trim().toUpperCase();
+          for (const k of ['cgst', 'sgst']) d[k] = d[k] === undefined || d[k] === null || d[k] === '' ? null : r2(Number(d[k]));
+        }
         if (c.coll === 'staff' && !!d.archived !== !!o?.archived) {
           // Archive (= "Delete" of a user who has records) and restore
           if (!o) { reject(c, 'A new user cannot be archived'); break; }
@@ -251,11 +278,34 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           else { d.archived = false; delete d.archivedAt; delete d.archivedBy; }
         } else if (c.coll === 'branches' && o?.archived) Object.assign(d, { archived: true, archivedAt: o.archivedAt, archivedBy: o.archivedBy });
         if (c.coll === 'fees') {
+          if (!o && d.supersedes) {
+            const source = await repo.get<any>('fee', d.supersedes);
+            const closing = batchItems('fees').find((x) => x.o?.id === d.supersedes);
+            const closed = closing?.d || source;
+            // An expired original may be unchanged and therefore absent from a diff.
+            // A current original still has to be closed atomically with its replacement.
+            if (!source || !closed || (closed.active && (!closed.to || closed.to >= d.from)) || source.prog !== d.prog || source.branch !== d.branch || source.pkg !== d.pkg) {
+              reject(c, 'A fee revision must close its original fee in the same save'); break;
+            }
+            // Classification and lineage come from the stored fee, never from browser flags.
+            if (source.test) d.test = true;
+            if (source.uatFeeStructure) {
+              d.uatFeeStructure = source.uatFeeStructure;
+              d.uatRootFeeId = source.uatRootFeeId || source.id;
+              d.validUntil = source.validUntil;
+            }
+          }
           if (!(num(d.amt) > 0) || !(num(d.tax) >= 0) || !(num(d.extra?.amt) >= 0)) { reject(c, 'Fee, tax and registration must be valid numbers'); break; }
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(d.from || '') || (d.to && (!/^\d{4}-\d{2}-\d{2}$/.test(d.to) || d.to < d.from))) { reject(c, 'Fee end date must be on or after its start date'); break; }
+          // Course ID: required on new fees; older fees may still be empty until someone fills it in
+          d.courseId = String(d.courseId ?? '').trim();
+          if (d.courseId && !/^[^<>"'`\\\u0000-\u001f\u007f]{1,80}$/.test(d.courseId)) { reject(c, 'Course ID: up to 80 characters, without < > " \' ` or \\'); break; }
+          if (!o && !d.supersedes && !d.courseId) { reject(c, 'Enter the course ID for the new fee'); break; }
           if (o && (o.amt !== d.amt || o.tax !== d.tax || o.extra?.amt !== d.extra?.amt || o.prog !== d.prog || o.branch !== d.branch) && o.from <= today) {
             const used = await repo.count('enrollment', "json_extract(data,'$.feeId')=?", [o.id]);
             if (used) { reject(c, 'This fee is used by enrolments – create a new version instead of editing the amount'); break; }
           }
+          d.revisionAt = now;
         }
         if (c.coll === 'discounts' && (!(num(d.value) > 0) || (d.type === '%' && d.value > 100) || !['%', 'flat'].includes(d.type))) { reject(c, 'Invalid discount value'); break; }
         writes.push({ type, doc: d, coll: c.coll });
@@ -266,6 +316,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
       case 'leads': {
         if (!o) {
           if (!P('leads', 'C')) { reject(c, `${user.role} cannot create leads`); break; }
+          if (d.external?.website) { reject(c, 'Website submission details must come from the webhook'); break; }
           if (!inScope(d.branch)) { reject(c, 'Lead is outside your branch access'); break; }
           const b = branches.find((x) => x.id === d.branch);
           if (!b || !b.programs.includes(d.prog)) { reject(c, `${d.prog} is not offered at ${b?.name || d.branch}`); break; }
@@ -279,11 +330,21 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         const transfer = approvedNow((a) => a.type === 'Branch Transfer' && a.payload?.lead === d.id && a.payload?.from === o.branch && a.payload?.to === d.branch);
         const reassign = approvedNow((a) => a.type === 'Counsellor Reassignment' && a.payload?.lead === d.id && a.payload?.to === d.cslr);
         const decided = decidedNow((a) => a.payload?.lead === d.id);
-        if (!inScope(o.branch)) { reject(c, 'Lead is outside your branch access'); break; }
+        const websiteLead = !!o.external?.website;
+        const initialWebsiteBranch = canReviewUnroutedWebsiteLead(user, o) && P('leads', 'E');
+        if (!inScope(o.branch) && !initialWebsiteBranch) { reject(c, 'Lead is outside your branch access'); break; }
         if (!inScope(d.branch) && !transfer) { reject(c, 'Lead is outside your branch access'); break; }
         if (keys.includes('id') || keys.includes('enq')) { reject(c, 'Lead ID and enquiry time cannot change'); break; }
+        if (!same(o.external?.website, d.external?.website)) { reject(c, 'Original website submission cannot change'); break; }
+        if (websiteLead && (keys.includes('prog') || (initialWebsiteBranch && keys.includes('branch')))) {
+          const branch = branches.find((b) => b.id === d.branch);
+          if (!branch?.programs.includes(d.prog) || (initialWebsiteBranch && (branch.status !== 'Operating' || branch.archived || branch.test)) ||
+              !programs.some((p) => p.id === d.prog && p.active && !p.test)) {
+            reject(c, 'Choose an active programme offered at this branch'); break;
+          }
+        }
         if (keys.includes('branch')) {
-          if (!transfer) { reject(c, 'Branch can only change through an approved branch transfer'); break; }
+          if (!transfer && !initialWebsiteBranch) { reject(c, 'Branch can only change through an approved branch transfer'); break; }
           leadBranchMoves.push({ id: d.id, branch: d.branch });
         }
         if (keys.includes('cslr')) {
@@ -433,13 +494,15 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           else if (cfg.consentReq?.[key] && !lead[key]) d.status = 'Blocked – no consent';
           else { d.status = 'Queued'; jobs.push({ kind: 'send_comm', id: d.id }); }
           d.by = d.by === 'System' && isNew('leads', d.lead) ? 'System' : user.name;
-          delete d.waMsgId; delete d.mailId;
+          delete d.waMsgId; delete d.waProvider; delete d.mailId;
         } else {
           if (!(P('leads', 'E') || P('leads', 'C') || P('reassignment', 'E'))) {
             const onlyDone = o && subset(keys, ['status', 'outcome', 'remarks']) && batchItems('calls').some((x) => !x.o && x.d.lead === d.lead);
             if (!onlyDone) { reject(c, `${user.role} cannot manage follow-ups`); break; }
           }
           if (d.cslr && !isCounsellor(d.cslr)) d.cslr = lead.cslr;
+          // A counsellor's new follow-up goes on their own calendar (or the lead owner's), never on a third colleague's
+          if (!o && user.role === 'Counsellor' && d.cslr !== user.id && d.cslr !== lead.cslr) d.cslr = user.id;
           if (!o && cfg.integ?.cal?.on && d.status === 'Pending' && d.type !== 'First call') jobs.push({ kind: 'calendar_event', taskId: d.id });
         }
         writes.push({ type, doc: d, coll: c.coll });
@@ -448,7 +511,10 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
 
       // ---------------------------------------------------------------- students
       case 'students': {
-        const enrolNow = batchItems('enr').find((x) => !x.o && x.d.stu === d.id);
+        const enrolmentsNow = batchItems('enr').filter((x) => !x.o && x.d.stu === d.id);
+        const enrolNow = enrolmentsNow[0];
+        const uatRegistration = user.role === 'System Administrator' && enrolmentsNow.some(({ d: enrolment }) =>
+          usesSandboxCheckout(enrolment) || isUatTestFee(env, feeFor(fees, enrolment.prog, enrolment.branch, enrolment.pkg, today), cfg));
         if (!o) {
           if (!P('enrollments', 'C')) { reject(c, `${user.role} cannot register students`); break; }
           if (!enrolNow) { reject(c, 'A new student is registered together with the first enrolment'); break; }
@@ -456,15 +522,36 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           if (!Array.isArray(d.parents) || !d.parents.length || !/^\S+@\S+\.\S+$/.test(String(d.parents[0].email || ''))) { reject(c, 'A parent with a valid e-mail is required'); break; }
           d.moodle = null;
           d.reg = today;
-          if (d.email && !/^\S+@\S+\.\S+$/.test(String(d.email))) { reject(c, 'Student e-mail is not valid'); break; }
           if (d.mobile && !/^\+?[\d\s()-]{7,20}$/.test(String(d.mobile))) { reject(c, 'Student mobile is not valid'); break; }
-          d.email = str(d.email, 160); d.mobile = str(d.mobile, 20);
+          d.mobile = str(d.mobile, 20);
+          if (uatRegistration) d.test = true;
         } else {
           const visible = inScope(o.branch) || (await repo.count('enrollment', `ref1=? AND branch IN (${user.scope.map(() => '?').join(',') || "''"})`, [o.id, ...user.scope])) > 0;
           if (!visible) { reject(c, 'Student is outside your branch access'); break; }
           if (keys.some((k) => ['id', 'reg', 'branch', 'fam'].includes(k))) { reject(c, 'Student ID, branch, family and registration date are permanent'); break; }
           d.moodle = o.moodle; // owned by the Moodle sync
           if (!P('students', 'E') && !(P('enrollments', 'C') && subset(keys, ['status', 'comm', 'moodle']))) { reject(c, `${user.role} cannot edit student profiles`); break; }
+          // Edited personal details and parents / guardians: the same checks as at registration
+          const okEmail = (v: unknown) => /^\S+@\S+\.\S+$/.test(String(v ?? '').trim());
+          if ((keys.includes('first') || keys.includes('last')) && (!String(d.first ?? '').trim() || !String(d.last ?? '').trim())) { reject(c, 'First and last name are required'); break; }
+          if (keys.includes('dob') && !(/^\d{4}-\d{2}-\d{2}$/.test(String(d.dob)) && String(d.dob) <= today)) { reject(c, 'Date of birth is not valid'); break; }
+          if (keys.includes('email') && d.email && !okEmail(d.email)) { reject(c, 'Student e-mail is not valid'); break; }
+          if (keys.includes('mobile') && d.mobile && !/^\+?[\d\s()-]{7,20}$/.test(String(d.mobile))) { reject(c, 'Student mobile is not valid'); break; }
+          if (keys.includes('email') || keys.includes('mobile')) { d.email = str(d.email, 160); d.mobile = str(d.mobile, 20); }
+          if (keys.includes('parents')) {
+            if (!Array.isArray(d.parents) || !d.parents.length || !okEmail(d.parents[0]?.email)) { reject(c, 'The main parent / guardian needs a valid e-mail'); break; }
+            if (d.parents.some((p: any) => !String(p?.name ?? '').trim() || (p?.email && !okEmail(p.email)))) { reject(c, 'Every parent / guardian needs a name and a valid e-mail'); break; }
+          }
+        }
+        if (!o || keys.includes('email')) {
+          d.email = str(d.email, 160).trim();
+          const email = studentEmailKey(d.email);
+          if (email && !/^\S+@\S+\.\S+$/.test(email)) { reject(c, 'Student e-mail is not valid'); break; }
+          if (email && email !== studentEmailKey(o?.email) &&
+            (await repo.count('student', "id<>? AND lower(trim(json_extract(data,'$.email')))=?", [d.id, email]) ||
+             writes.some((w) => w.type === 'student' && studentEmailKey(w.doc.email) === email))) {
+            reject(c, 'This student email already belongs to a CRM profile. Use Existing student to select that profile.'); break;
+          }
         }
         // Messages: only the server-built welcome e-mail is sent, to the parent address on record
         const prevLen = o?.comm?.length || 0;
@@ -472,7 +559,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         const toAddr = String((o || d).parents?.[0]?.email || '');
         (d.comm || []).forEach((m: any, i: number) => {
           if (i < prevLen) { d.comm[i] = o.comm[i]; return; }
-          const welcome = enrolNow && m.tpl === 'Enrolment welcome' && t4?.auto;
+          const welcome = !uatRegistration && enrolNow && m.tpl === 'Enrolment welcome' && t4?.auto;
           if (welcome) {
             const prog = programs.find((p) => p.id === enrolNow.d.prog);
             const branch = branches.find((b) => b.id === enrolNow.d.branch);
@@ -498,7 +585,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             const opp = await getDoc('opps', 'opp', d.opp);
             if (!opp || !inScope(opp.branch) || ['Enrolled', 'Lost'].includes(oldOf('opps', d.opp)?.stage ?? opp.stage)) { reject(c, 'Linked opportunity not found, closed or outside your branch access'); break; }
           }
-          if (!d.date || d.date > today || d.date < dayKey(new Date(Date.now() - 7 * 864e5))) d.date = today;
+          d.date = enrolmentDate(d.date);
           const fee = feeFor(fees, d.prog, d.branch, d.pkg, d.date);
           if (!fee) { reject(c, 'No active fee record for this programme, branch and package'); break; }
           const program = programs.find((p) => p.id === d.prog);
@@ -522,19 +609,42 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             } else { reject(c, 'Unknown discount kind'); break; }
           }
           const newStu = isNew('students', d.stu);
-          const calc = calcFee(fee, disc, newStu);
+          const calc = calcFee(fee, disc, newStu, branches.find((b) => b.id === d.branch));
           if (Math.abs(calc.total - num(d.total)) > 0.01) { reject(c, `Fee mismatch: server total ${money(calc.total, fee.cur)} vs ${money(d.total, d.cur)}`); break; }
           const terms = Array.isArray(cfg.payTerms) ? cfg.payTerms : [];
           const term = terms.find((t: any) => t.id === d.term && t.active) || (d.term ? null : terms.find((t: any) => t.id === cfg.payTermDefault) || null);
           if (d.term && !term) { reject(c, 'Payment term is not active'); break; }
           const linkedOpp = d.opp ? await getDoc('opps', 'opp', d.opp) : null;
-          Object.assign(d, { cur: fee.cur, fee: calc.base, reg: calc.extra, disc: calc.disc, discInfo: disc, tax: calc.tax, total: calc.total, taxPct: fee.tax, paid: 0, payStatus: 'Unpaid', feeId: fee.id, pkg: fee.pkg, sessions: fee.sessions, credits: program.credits, course, newStu, status: 'Active',
-            term: term?.id || null, sched: buildSched(term, calc.total, d.date), cslr: linkedOpp?.cslr || null });
+          Object.assign(d, { cur: fee.cur, fee: calc.base, reg: calc.extra, disc: calc.disc, discInfo: disc, tax: calc.tax, total: calc.total, taxPct: calc.taxPct, paid: 0, payStatus: 'Unpaid', feeId: fee.id, pkg: fee.pkg, sessions: fee.sessions, credits: program.credits, course, newStu, status: 'Active',
+            term: term?.id || null, sched: buildSched(term, calc.total, d.date), cslr: linkedOpp?.cslr || null, lmsContract: LMS_CONTRACT,
+            lmsValidUntil: fee.validUntil || undefined });
+          const sandboxCheckout = usesSandboxCheckout(d);
+          if (sandboxCheckoutIds.has(d.id) && !sandboxCheckout) {
+            reject(c, 'Sandbox checkout requires a System Administrator, an INR walk-in enrolment at a branch mapped to the UAT LMS, and configured UAT integrations'); break;
+          }
+          if (sandboxCheckout) {
+            if (d.total < 1) { reject(c, 'Easebuzz requires a sandbox payment of at least INR 1'); break; }
+            Object.assign(d, { test: true, uatFlow: UAT_FLOW, uatCheckout: true });
+          }
+          if (fee.id === UAT_FEE_ID || fee.uatFeeStructure === 'AW-DOC-UAT-v1') {
+            if (user.role !== 'System Administrator' || !isUatTestFee(env, fee, cfg) || disc || (fee.id === UAT_FEE_ID && calc.total !== 1)) {
+              reject(c, 'The AW test fee requires a System Administrator, the supplied UAT LMS, Easebuzz sandbox and no discount'); break;
+            }
+            Object.assign(d, { test: true, uatFlow: UAT_FLOW });
+          }
+          if (stu.test && !d.test && !repo.isTest) { reject(c, 'Use sandbox checkout for test students'); break; }
+          try {
+            const access = await prepareLmsOrder(env, repo, cfg, d, stu, program);
+            if (access) d.lmsAccess = access;
+          } catch (error) {
+            if (!(error instanceof LmsError)) throw error;
+            reject(c, error.message); break;
+          }
           writes.push({ type, doc: d, coll: c.coll });
           break;
         }
         if (!inScope(o.branch)) { reject(c, 'Enrolment is outside your branch access'); break; }
-        const frozen = ['id', 'stu', 'prog', 'branch', 'pkg', 'date', 'cur', 'fee', 'reg', 'disc', 'tax', 'total', 'taxPct', 'discInfo', 'newStu', 'feeId', 'course', 'sessions', 'credits', 'opp', 'ms', 'term', 'sched', 'cslr'];
+        const frozen = ['id', 'stu', 'prog', 'branch', 'pkg', 'date', 'cur', 'fee', 'reg', 'disc', 'tax', 'total', 'taxPct', 'discInfo', 'newStu', 'feeId', 'course', 'sessions', 'credits', 'opp', 'ms', 'term', 'sched', 'cslr', 'lmsContract', 'lmsValidUntil'];
         if (keys.some((k) => frozen.includes(k))) { reject(c, 'Fee and programme details of an enrolment cannot be edited'); break; }
         d.paid = o.paid; d.payStatus = o.payStatus; // owned by payments
         const userKeys = keys.filter((k) => !['paid', 'payStatus'].includes(k));
@@ -554,14 +664,24 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         const atEnrolment = P('enrollments', 'C') && isNew('enr', d.enr);
         if (!P('payments', 'C') && !atEnrolment) { reject(c, `${user.role} cannot record payments`); break; }
         if (!e || !inScope(e.branch) || e.status === 'Withdrawn') { reject(c, 'Enrolment not found, withdrawn or outside your branch access'); break; }
+        if (e.sandboxSource || e.uatCheckout) { reject(c, 'Use the Easebuzz sandbox to pay this test enrolment'); break; }
         const amt = r2(num(d.amt));
-        const dbPaid = isNew('enr', d.enr) ? 0 : (await repo.many<any>('payment', 'ref1=?', [d.enr])).reduce((a, p) => a + p.amt, 0);
+        const dbPaid = isNew('enr', d.enr) ? 0 : (await repo.many<any>('payment', 'ref1=?', [d.enr])).filter((p) => p.status !== 'Cancelled').reduce((a, p) => a + p.amt, 0);
         const batchPaid = receiptFor.filter((p) => p.enr === d.enr).reduce((a, p) => a + p.amt, 0);
         const outstanding = r2((isNew('enr', d.enr) ? effDoc('enr', d.enr)?.total : e.total) - dbPaid - batchPaid);
         if (!(amt > 0) || amt > outstanding + 0.005) { reject(c, `Amount must be between 0 and the outstanding ${money(outstanding, e.cur)}`); break; }
         if (!(cfg.pm || []).includes(d.method)) { reject(c, 'Unknown payment method'); break; }
         const ref = str(d.ref, 100).trim();
         if (d.method !== 'Cash' && (!ref || ref === '—')) { reject(c, `Reference is required for ${d.method}`); break; }
+        if (!isNew('enr', e.id) && e.lmsContract === LMS_CONTRACT) {
+          const student = await getDoc('students', 'student', e.stu);
+          try {
+            await prepareLmsOrder(env, repo, cfg, e, student, programs.find((p) => p.id === e.prog), false);
+          } catch (error) {
+            if (!(error instanceof LmsError)) throw error;
+            reject(c, error.message); break;
+          }
+        }
         const at = d.at && Date.parse(d.at) <= Date.now() + 60e3 && Date.parse(d.at) >= Date.now() - 30 * 864e5 ? new Date(d.at).toISOString() : now;
         const p = { id: d.id, enr: e.id, stu: e.stu, amt, cur: e.cur, method: d.method, ref: d.method === 'Cash' ? '—' : ref, at, rc: null as string | null, status: 'Recorded', by: user.id, branch: e.branch, ...(e.test ? { test: true } : {}) };
         receiptFor.push(p);
@@ -600,6 +720,15 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
           if (user.role !== o.approverRole) { reject(c, `Only ${o.approverRole} can decide this refund exception`); break; }
           if (o.byId === user.id || (!o.byId && o.by === user.name)) { reject(c, 'You cannot approve a refund you requested'); break; }
         } else if (!P('payments', 'E')) { reject(c, `${user.role} cannot process refunds`); break; }
+        if (d.status === 'Processed') {
+          // A monetary refund must not leave the original LMS purchase active.
+          // Only a validated withdrawal in this batch may override the stored status.
+          const withdrawing = withdrawals.some((w) => w.enr === e.id);
+          if (e.status !== 'Withdrawn' && !withdrawing) {
+            reject(c, 'Withdraw the whole enrolment before marking its refund processed. Withdrawal queues the required LMS cancellation using the original order reference'); break;
+          }
+          refundCancellations.add(e.id);
+        }
         writes.push({ type, doc: d.status === 'Rejected' ? { ...o, status: 'Rejected', rejectedAt: now, rejectedBy: user.name } : { ...o, status: 'Processed', processedAt: now, processedBy: user.name, ...(o.exception ? { approvedBy: user.name } : {}) }, coll: c.coll });
         break;
       }
@@ -618,15 +747,16 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
             cancelsFor.add(d.enr);
           }
           writes.push({ type, doc: lmsCallDoc(d.id, op, e), coll: c.coll });
-          jobs.push({ kind: 'moodle_sync', id: d.id });
+          if (op === 'cancel') jobs.push({ kind: 'moodle_sync', id: d.id });
           break;
         }
         const e = await repo.get<any>('enrollment', o.enr);
         if (!e || !inScope(e.branch)) { reject(c, 'Enrolment outside your branch access'); break; }
-        if (d.status !== 'Pending' || ['Processing', 'Pending', 'Success', 'Closed'].includes(o.status)) { reject(c, 'LMS call status is managed by the server – only a failed call can be retried'); break; }
+        if (d.status !== 'Pending' || !['Failed', 'Retry Required', 'Awaiting Setup'].includes(o.status)) { reject(c, 'Only a failed call or one awaiting setup can be retried; received orders with warnings need LOF review'); break; }
         if (!(P('configuration', 'V') || ['Admissions Head', 'Centre Administrator', 'Management'].includes(user.role))) { reject(c, `${user.role} cannot retry syncs`); break; }
-        jobs.push({ kind: 'moodle_sync', id: d.id });
-        writes.push({ type, doc: { ...o, status: 'Pending', hist: [...(o.hist || []), { at: now, s: 'Pending', msg: `Retry requested by ${user.name}` }] }, coll: c.coll });
+        // Retry ownership is centralized in the atomic endpoint; a stale document upsert
+        // must never overwrite a worker's Processing state and issue a second call.
+        reject(c, 'Retry this call using POST /lms/calls/:id/retry');
         break;
       }
 
@@ -653,12 +783,32 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
 
   // Every withdrawal tells the LMS to withdraw unused credits, even when the client did not send the cancel call
   if (!rejected.length) {
+    // The server creates purchase records even when an API client omits the browser's ms document.
+    for (const w of writes.filter((w) => w.type === 'enrollment' && isNew('enr', w.doc.id))) {
+      if (enrolsFor.has(w.doc.id)) continue;
+      const id = await repo.newId('ms');
+      w.doc.ms = id;
+      writes.push({ type: 'moodle_sync', doc: lmsCallDoc(id, 'enrol', w.doc), coll: 'ms' });
+    }
     for (const w of withdrawals) {
       if (cancelsFor.has(w.enr)) continue;
       const e = batchItems('enr').find((x) => x.d.id === w.enr)!.d;
       const id = await repo.newId('ms');
       writes.push({ type: 'moodle_sync', doc: lmsCallDoc(id, 'cancel', e), coll: 'ms' });
       jobs.push({ kind: 'moodle_sync', id });
+      cancelsFor.add(e.id);
+    }
+    // Repair historical withdrawn orders that lack a cancel outbox record.
+    // Existing pending/failed/received cancellations retain their original record and retry history.
+    for (const enrId of refundCancellations) {
+      if (cancelsFor.has(enrId)) continue;
+      const calls = await repo.many<any>('moodle_sync', 'ref1=?', [enrId]);
+      if (calls.some((m) => m.op === 'cancel')) continue;
+      const e = await repo.get<any>('enrollment', enrId);
+      const id = await repo.newId('ms');
+      writes.push({ type: 'moodle_sync', doc: lmsCallDoc(id, 'cancel', e), coll: 'ms' });
+      jobs.push({ kind: 'moodle_sync', id });
+      cancelsFor.add(enrId);
     }
   }
 
@@ -689,6 +839,7 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
         || (doc.refund !== undefined && refundProblem(doc.refund))
         || (doc.refund && !ALL_ROLES.includes(doc.refund.approver) ? 'Refund approver must be a role' : '')
         || (doc.targets !== undefined && targetsProblem(doc.targets, counsellors))
+        || (doc.recTargets !== undefined && recTargetsProblem(doc.recTargets, new Set(staffList.filter((x) => x.role === 'Reception').map((x) => x.id as string))))
         || (doc.lms !== undefined && lmsProblem(doc.lms));
       if (problem) { rejected.push({ coll: 'settings', id: 'cfg', reason: problem }); continue; }
       if (doc.emailTpls !== undefined) {
@@ -699,12 +850,24 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
       const mail = checkMailSettings(doc.mailOut, doc.mailIn, branches);
       if ('problem' in mail) { rejected.push({ coll: 'settings', id: 'cfg', reason: mail.problem }); continue; }
       Object.assign(doc, mail);
+      // The SMTP server is changed only through PUT /api/v1/mail/smtp (it keeps the password server-side)
+      const smtpNow = (cur as any)?.mailOut?.smtp;
+      if (doc.mailOut && typeof doc.mailOut === 'object') { if (smtpNow) doc.mailOut.smtp = smtpNow; else delete doc.mailOut.smtp; }
+      else if (smtpNow) doc.mailOut = { ...(cur as any).mailOut };
+      const auto = checkMailAuto(doc.mailAuto, (cur as any)?.mailAuto);
+      if ('problem' in auto) { rejected.push({ coll: 'settings', id: 'cfg', reason: auto.problem }); continue; }
+      if (auto.mailAuto) doc.mailAuto = auto.mailAuto;
     }
     settingWrites.push({ key: s.key, doc });
   }
 
   if (rejected.length) return { ok: false as const, rejected };
+  if (opts.dryRun) return { ok: true as const, dryRun: true as const, docs: writes.map((w) => ({ coll: w.coll, doc: w.doc })), notices: [], jobs: [] as Job[], settings: [] as string[] };
 
+  const feeWrites = writes.filter((w) => w.coll === 'fees' && !w.doc.__delete);
+  if (feeWrites.length && !writes.some((w) => w.coll === 'audit')) {
+    writes.push({ type: 'audit', coll: 'audit', doc: { id: await repo.newId('audit'), at: now, by: user.name, act: 'Configuration changed', ref: feeWrites.map((w) => w.doc.id).join(', '), det: 'Fee saved' } });
+  }
   if (repo.isTest) for (const w of writes) if (!w.doc.__delete) w.doc.test = true; // Testing console records
   for (const p of receiptFor) p.rc = p.test ? `RC-TEST-${p.id}` : `RC-${p.branch}-26-${String(await repo.next('rc_' + p.branch)).padStart(4, '0')}`;
 
@@ -714,6 +877,8 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   try {
     await repo.putMany(puts.map((w) => ({ type: w.type, doc: w.doc })));
   } catch (e: any) {
+    if (/duplicate student email/.test(String(e?.message))) return { ok: false as const, rejected: [{ coll: 'students', id: '', reason: 'This student email already belongs to a CRM profile. Use Existing student to select that profile.' }] };
+    if (/duplicate LMS credit/.test(String(e?.message))) return { ok: false as const, rejected: [{ coll: 'enr', id: '', reason: 'This student already has one or more Credits in this package reserved or purchased. Select a different package.' }] };
     if (/overpayment/.test(String(e?.message))) return { ok: false as const, rejected: [{ coll: 'pay', id: '', reason: 'Payment exceeds the outstanding balance (another payment was just recorded)' }] };
     if (/immutable/.test(String(e?.message))) return { ok: false as const, rejected: [{ coll: '', id: '', reason: 'Payments and audit entries cannot be changed' }] };
     throw e;
@@ -763,9 +928,20 @@ export async function applySync(env: Env, repo: Repo, user: User, perms: any, ch
   const extra: { coll: string; doc: any }[] = extraDocs;
   for (const enrId of postPaymentsFor) {
     const e = await recalcEnrollment(repo, enrId);
-    if (e) extra.push({ coll: 'enr', doc: e });
+    if (e) {
+      extra.push({ coll: 'enr', doc: e });
+      for (const id of await activatePaidLms(repo, e)) {
+        jobs.push({ kind: 'moodle_sync', id });
+        extra.push({ coll: 'ms', doc: await repo.get('moodle_sync', id) });
+      }
+    }
   }
 
   const docs = [...puts.map((w) => ({ coll: w.coll, doc: w.doc })), ...extra];
+  // An unchanged retry must still acknowledge canonical fees (including server metadata).
+  for (const c of changes) if (c.coll === 'fees' && c.op === 'upsert' && !docs.some((x) => x.coll === 'fees' && x.doc.id === c.id)) {
+    const current = oldOf('fees', c.id);
+    if (current) docs.push({ coll: 'fees', doc: current });
+  }
   return { ok: true as const, docs, notices: notices.slice(0, 5), jobs, settings: settingWrites.map((s) => s.key) };
 }

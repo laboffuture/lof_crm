@@ -17,7 +17,8 @@ class Stmt {
     const results = this.s().all(...(this.args as any[])).map((r: any) => ({ ...r })) as T[];
     return { results, success: true, meta: { changes: 0 } };
   }
-  async run() {
+  async run() { return this.runSync(); }
+  runSync() {
     // Like D1, run() on a query (or RETURNING) gives its rows – batch() of SELECTs relies on this
     if (/^\s*(select|with)\b/i.test(this.sql) || /\breturning\b/i.test(this.sql)) {
       const results = this.s().all(...(this.args as any[]));
@@ -38,7 +39,7 @@ export class TestD1 {
     this.db.exec('BEGIN');
     try {
       const out: any[] = [];
-      for (const s of stmts) out.push(await s.run());
+      for (const s of stmts) out.push(s.runSync());
       this.db.exec('COMMIT');
       return out;
     } catch (e) {

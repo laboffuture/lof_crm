@@ -1,10 +1,35 @@
-# Copy to .dev.vars for `wrangler dev`. Never commit real values.
+# Copy to .dev.vars for wrangler dev. Keep real credentials out of Git.
+
+# Test mode
 APP_ENV=development
+APP_BASE_URL=http://localhost:8787
 INTEGRATION_MODE=mock
 ALLOW_IMPERSONATION=true
-# Two-step verification is off locally; production requires it for System Administrator and Management
 MFA_REQUIRED_ROLES=
-APP_BASE_URL=http://localhost:8787
+LMS_URL=
+# Optional allowlisted non-production LMS endpoint. Defaults to the LOF UAT endpoint.
+LMS_UAT_URL=
+LMS_TOKEN=
+EASEBUZZ_ENV=test
+EASEBUZZ_KEY=
+EASEBUZZ_SALT=
+
+# Production mode
+# Use these settings in the production server environment with its own secrets.
+# Set LMS_URL and LMS_TOKEN after the client supplies the live LMS details.
+# APP_ENV=production
+# APP_BASE_URL=https://crm.laboffuture.com
+# INTEGRATION_MODE=auto
+# ALLOW_IMPERSONATION=false
+# MFA_REQUIRED_ROLES="System Administrator,Management"
+# LMS_URL=
+# LMS_TOKEN=
+# EASEBUZZ_ENV=prod
+# EASEBUZZ_KEY=
+# EASEBUZZ_SALT=
+
+# Shared settings
+PAYMENTS_INR_PROVIDER=easebuzz
 JWT_SECRET=dev-only-change-me-32-chars-minimum!!
 WEBSITE_FORM_SECRET=dev-website-secret
 META_APP_SECRET=dev-meta-app-secret
@@ -16,11 +41,9 @@ WHATSAPP_VERIFY_TOKEN=dev-wa-verify
 EXOTEL_API_KEY=
 EXOTEL_API_TOKEN=
 EXOTEL_WEBHOOK_TOKEN=dev-exotel-token
-LMS_TOKEN=
 TELR_AUTH_KEY=
 RAZORPAY_KEY_SECRET=
 RAZORPAY_WEBHOOK_SECRET=dev-razorpay-webhook
 ERPNEXT_API_KEY=
 ERPNEXT_API_SECRET=
 GCAL_SERVICE_ACCOUNT_JSON=
-RESEND_API_KEY=

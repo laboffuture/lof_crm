@@ -1,21 +1,33 @@
 import type { Env } from '../types';
 
 export type Mode = 'live' | 'mock';
-export type IntegrationKey = 'website' | 'meta' | 'whatsapp' | 'exotel' | 'lms' | 'telr' | 'razorpay' | 'erpnext' | 'gcal' | 'email';
+export type IntegrationKey = 'website' | 'meta' | 'whatsapp' | 'gupshup' | 'exotel' | 'lms' | 'telr' | 'razorpay' | 'easebuzz' | 'erpnext' | 'gcal' | 'email';
 
 /** Integration → configuration toggle (cfg.integ.<key>.on) and required secrets/vars. */
 export const INTEGRATIONS: Record<IntegrationKey, { label: string; cfgKey: string | null; needs: (keyof Env)[] }> = {
   website: { label: 'Website lead capture', cfgKey: 'web', needs: ['WEBSITE_FORM_SECRET'] },
   meta: { label: 'Meta Lead Ads (Facebook / Instagram)', cfgKey: 'meta', needs: ['META_APP_SECRET', 'META_VERIFY_TOKEN', 'META_PAGE_ACCESS_TOKEN'] },
   whatsapp: { label: 'WhatsApp Business (Cloud API)', cfgKey: 'wa', needs: ['WHATSAPP_PHONE_NUMBER_ID', 'WHATSAPP_ACCESS_TOKEN', 'WHATSAPP_APP_SECRET', 'WHATSAPP_VERIFY_TOKEN'] },
+  gupshup: { label: 'WhatsApp templates (Gupshup)', cfgKey: 'wa', needs: ['GUPSHUP_CLIENT_ID', 'GUPSHUP_API_TOKEN', 'GUPSHUP_TEMPLATE_IDS'] },
   exotel: { label: 'Telephony – Exotel', cfgKey: 'tel', needs: ['EXOTEL_SID', 'EXOTEL_API_KEY', 'EXOTEL_API_TOKEN', 'EXOTEL_CALLER_ID', 'EXOTEL_WEBHOOK_TOKEN'] },
   lms: { label: 'LMS – LOF Booking Platform', cfgKey: 'lms', needs: ['LMS_URL', 'LMS_TOKEN'] },
   telr: { label: 'Payment gateway – Telr (AED)', cfgKey: 'pay', needs: ['TELR_STORE_ID', 'TELR_AUTH_KEY'] },
   razorpay: { label: 'Payment gateway – Razorpay (INR)', cfgKey: 'pay', needs: ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] },
+  easebuzz: { label: 'Payment gateway – Easebuzz', cfgKey: 'pay', needs: ['EASEBUZZ_KEY', 'EASEBUZZ_SALT'] },
   erpnext: { label: 'ERPNext Accounts', cfgKey: 'erp', needs: ['ERPNEXT_URL', 'ERPNEXT_API_KEY', 'ERPNEXT_API_SECRET', 'ERPNEXT_PAID_TO_AED', 'ERPNEXT_PAID_TO_INR'] },
   gcal: { label: 'Google Calendar', cfgKey: 'cal', needs: ['GCAL_SERVICE_ACCOUNT_JSON', 'GCAL_CALENDAR_ID'] },
-  email: { label: 'E-mail (Resend)', cfgKey: null, needs: ['RESEND_API_KEY', 'EMAIL_FROM'] },
+  email: { label: 'E-mail (SMTP)', cfgKey: null, needs: [] }, // ready when Configuration → Email Outgoing → SMTP server is complete
 };
+
+/** Legacy payment providers are available only to reconcile existing links. */
+export const ACTIVE_INTEGRATIONS: IntegrationKey[] = (Object.keys(INTEGRATIONS) as IntegrationKey[])
+  .filter((key) => key !== 'telr' && key !== 'razorpay');
+
+/** SMTP settings still to fill in (Configuration → Email Outgoing); empty when e-mail can be sent. */
+export function smtpMissing(cfg: any): string[] {
+  const s = cfg?.mailOut?.smtp || {};
+  return [['SMTP server', s.host], ['Username', s.user], ['Password', s.passSet], ['From address', s.from]].filter(([, v]) => !v).map(([k]) => k as string);
+}
 
 export function missingSecrets(env: Env, key: IntegrationKey): string[] {
   return INTEGRATIONS[key].needs.filter((n) => !String(env[n] ?? '').trim()) as string[];
@@ -30,6 +42,7 @@ export function enabledInConfig(cfg: any, key: IntegrationKey): boolean {
 export function modeFor(env: Env, cfg: any, key: IntegrationKey, isTest = false): Mode {
   if (env.INTEGRATION_MODE === 'mock') return 'mock';
   if (isTest && env.APP_ENV === 'production') return 'mock'; // Testing console records never reach live providers in production
+  if (key === 'email' && smtpMissing(cfg).length) return 'mock';
   return enabledInConfig(cfg, key) && missingSecrets(env, key).length === 0 ? 'live' : 'mock';
 }
 
@@ -43,6 +56,8 @@ export interface ApiCall {
   ref?: string;
   secrets?: (string | undefined)[];
   timeoutMs?: number;
+  /** Some providers return application failures with HTTP 200. */
+  acceptResponse?: (json: any) => boolean;
 }
 export interface ApiResult {
   ok: boolean;
@@ -58,10 +73,11 @@ export function redact(s: string, secrets: (string | undefined)[] = []): string 
   for (const sec of secrets) if (sec && sec.length >= 4) out = out.split(sec).join('***');
   out = out.replace(/(authorization["']?\s*[:=]\s*["']?)(Bearer|Basic|token)\s+[^"',\s]+/gi, '$1$2 ***');
   out = out.replace(/(wstoken=)[^&\s"]+/gi, '$1***').replace(/(access_token=)[^&\s"]+/gi, '$1***').replace(/("authkey"\s*:\s*")[^"]+/gi, '$1***');
+  out = out.replace(/("(?:hash|salt|cardnum|card_number|card_token|name_on_card|upi_va)"\s*:\s*")[^"]*/gi, '$1***');
   return out;
 }
 
-const envSecrets = (env: Env) => Object.entries(env).filter(([k, v]) => typeof v === 'string' && v.length >= 6 && /TOKEN|SECRET|KEY|PASSWORD|AUTH/.test(k) && !/_ID$/.test(k)).map(([, v]) => v as string);
+const envSecrets = (env: Env) => Object.entries(env).filter(([k, v]) => typeof v === 'string' && v.length >= 6 && /TOKEN|SECRET|KEY|PASSWORD|AUTH|SALT/.test(k) && !/_ID$/.test(k)).map(([, v]) => v as string);
 
 export async function writeLog(
   env: Env,
@@ -97,6 +113,7 @@ export async function callApi(env: Env, c: ApiCall, isTest = false): Promise<Api
   } catch (e: any) {
     error = e?.name === 'TimeoutError' ? `Timeout after ${(c.timeoutMs ?? 20000) / 1000}s` : String(e?.message || e);
   }
+  if (!error && status >= 200 && status < 300 && c.acceptResponse && !c.acceptResponse(json)) error = 'Provider rejected the request';
   const ok = !error && status >= 200 && status < 300;
   await writeLog(env, {
     integration: c.integration, direction: 'out', operation: c.operation, mode: 'live', method, url: redact(c.url, secrets), status, ok, ms: Date.now() - t0,

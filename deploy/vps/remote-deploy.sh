@@ -12,6 +12,7 @@ STATE_DIR="${LOF_STATE_DIR:-/var/lib/lof-crm/state}"
 ENV_FILE="${LOF_ENV_FILE:-/etc/lof-crm/env}"
 BRANCH="${LOF_BRANCH:-main}"
 PORT="${LOF_PORT:-8787}"
+NAME="${LOF_NAME:-lof-crm}"   # pm2 process name – lof-crm-uat for the UAT copy
 REF=""; DATA="masters"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -19,7 +20,7 @@ while [ $# -gt 0 ]; do
     *) REF="$1"; shift ;;
   esac
 done
-export LOF_STATE_DIR="$STATE_DIR" LOF_ENV_FILE="$ENV_FILE" LOF_PORT="$PORT" WRANGLER_SEND_METRICS=false CI=1
+export LOF_STATE_DIR="$STATE_DIR" LOF_ENV_FILE="$ENV_FILE" LOF_PORT="$PORT" LOF_NAME="$NAME" WRANGLER_SEND_METRICS=false CI=1
 
 cd "$APP_DIR"
 step() { echo; echo "▶ $*"; }
@@ -32,7 +33,7 @@ git clean -fdq -e node_modules -e .wrangler
 git log -1 --format='  %h %s (%an, %ar)'
 
 step "Stopping the CRM"
-pm2 stop lof-crm >/dev/null 2>&1 && echo "  stopped" || echo "  not running yet"
+pm2 stop "$NAME" >/dev/null 2>&1 && echo "  stopped" || echo "  not running yet"
 
 step "Dependencies"
 npm ci --no-audit --no-fund --loglevel=error
@@ -67,6 +68,6 @@ for _ in $(seq 1 30); do
   if body=$(curl -fsS "http://127.0.0.1:$PORT/health" 2>/dev/null); then echo "  $body"; echo; echo "✔ LOF CRM updated"; exit 0; fi
   sleep 2
 done
-echo "✘ /health did not answer – last log lines:"; pm2 logs lof-crm --lines 40 --nostream || true
+echo "✘ /health did not answer – last log lines:"; pm2 logs "$NAME" --lines 40 --nostream || true
 exit 1
 }

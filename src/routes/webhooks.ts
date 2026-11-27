@@ -1,20 +1,26 @@
 // Public webhook endpoints. Each one authenticates the sender (signature or shared token), is idempotent,
-// logs the request in integration_logs (Testing Console → Logs) and returns quickly.
+// and logs the request in integration_logs (Testing Console → Logs).
 import { Hono } from 'hono';
+import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env, Job } from '../types';
 import { HttpError } from '../types';
 import { Repo, nowIso } from '../lib/db';
 import { normPhone } from '../lib/indexing';
-import { hmacSha256Hex, safeEqual } from '../lib/crypto';
-import { createLead, addEv, addAudit, notify } from '../domain/core';
+import { hmacSha256Hex, safeEqual, sha256Hex } from '../lib/crypto';
+import { createLead, addEv, addAudit, notify, type NewLeadInput } from '../domain/core';
 import { allow, clientIp } from '../lib/ratelimit';
-import { logInbound, settleLink } from '../domain/workflows';
+import { logInbound, settleLink, linkExpired, reopenTelrOrder } from '../domain/workflows';
+import { money } from '../domain/core';
 import { dispatch } from '../jobs';
 import { modeFor } from '../integrations/base';
 import { verifyHubSignature, parseWebhook } from '../integrations/whatsapp';
+import { parseGupshupSubmission } from '../integrations/gupshup';
 import { parseLeadgenWebhook, fetchLead, mapLead } from '../integrations/meta';
 import { parseStatus } from '../integrations/exotel';
 import { razorpayVerifyWebhook, telrCheck } from '../integrations/payments';
+import { easebuzzVerifyResponse } from '../integrations/easebuzz';
+import { confirmEasebuzz } from '../domain/easebuzz-payments';
+import { parseWebsiteSubmission, websiteLeadRoute, WEBSITE_SUBMISSIONS, WEBSITE_SUBMISSION_MAX_BYTES } from '../integrations/website-submissions';
 
 type WEnv = { Bindings: Env; Variables: { isTest: boolean } };
 export const webhooks = new Hono<WEnv>();
@@ -95,6 +101,76 @@ webhooks.options('/website', async (c) => {
   return c.body(null, 204, { 'access-control-allow-origin': origin, 'access-control-allow-methods': 'POST', 'access-control-allow-headers': 'content-type' });
 });
 
+// ------------------------------------------------------------------ Website dashboard submissions
+const websiteLeads = new Hono<WEnv>();
+websiteLeads.onError((error, c) => {
+  if (error instanceof HttpError) {
+    return c.json({ ok: false, error: error.message, message: error.message, details: error.details }, error.status as ContentfulStatusCode);
+  }
+  const ref = crypto.randomUUID();
+  console.error('Website lead webhook failed', ref, error);
+  return c.json({
+    ok: false, error: 'Internal error', ref,
+    message: 'The CRM could not process the submission. Please try sending it again.',
+  }, 500);
+});
+
+websiteLeads.post('/', async (c) => {
+  const secret = c.env.WEBSITE_LEAD_WEBHOOK_SECRET?.trim();
+  if (!secret) throw new HttpError(503, 'The website connection is missing its access token. Please contact your CRM administrator.');
+  const token = c.req.header('authorization')?.match(/^Bearer (.+)$/i)?.[1];
+  if (!token) throw new HttpError(401, 'The website access token is missing. Please check the website’s connection to the CRM.', { field: 'Authorization' });
+  if (!safeEqual(token, secret)) throw new HttpError(401, 'The website access token is invalid. Please check the website’s connection to the CRM.', { field: 'Authorization' });
+  if (c.req.header('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json')
+    throw new HttpError(415, 'Please send the form details in JSON format.', { field: 'Content-Type' });
+  if (Number(c.req.header('content-length')) > WEBSITE_SUBMISSION_MAX_BYTES)
+    throw new HttpError(413, 'Website submission exceeds 32 KiB');
+  const raw = await c.req.arrayBuffer();
+  if (raw.byteLength > WEBSITE_SUBMISSION_MAX_BYTES) throw new HttpError(413, 'Website submission exceeds 32 KiB');
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(raw));
+  } catch {
+    throw new HttpError(400, 'The form details could not be read. Please send valid JSON.');
+  }
+  const submission = parseWebsiteSubmission(body);
+  const repo = new Repo(c.env.DB, 'Website dashboard', isTestReq(c));
+  const provider = WEBSITE_SUBMISSIONS[repo.isTest ? 1 : 0];
+  const id = await sha256Hex(submission.submissionId);
+  const event = c.env.DB.prepare('SELECT result FROM webhook_events WHERE provider=? AND event_id=?').bind(provider, id);
+  const duplicate = (reference: string) => c.json({
+    ok: true, reference, duplicate: true, message: 'Duplicate submission. The existing CRM lead was returned.',
+  });
+  const previous = await event.first<string>('result');
+  if (previous) return duplicate(previous);
+  const cfg = await repo.setting<any>('cfg');
+  if (!cfg.integ?.web?.on) throw new HttpError(503, 'Website lead capture is disabled');
+
+  let reference: string;
+  try {
+    const source = submission.source.toLowerCase();
+    const src = source ? cfg.sources?.find(({ n }: { n: string }) => n.toLowerCase() === source)?.n : 'Website';
+    if (!src) throw new HttpError(422, 'Please select a lead source that is set up in the CRM.', { field: 'source' });
+    const route = await websiteLeadRoute(repo, submission);
+    const camp = submission.input.camp || (src === 'Website' ? 'Website Organic' : undefined);
+    const { lead } = await createLead(repo, { ...submission.input, ...route, src, camp }, repo.actor, {
+      allowUnrouted: true, noAutoMessages: true, webhookEvent: { provider, id },
+    });
+    reference = lead.id;
+  } catch (error) {
+    const committed = await event.first<string>('result');
+    if (committed) return duplicate(committed);
+    throw error;
+  }
+  await logInbound(c.env, 'website', 'dashboard.lead.submit', true, { form: submission.input.external.website.form }, { lead: reference }, reference, repo.isTest, undefined, 201);
+  return c.json({ ok: true, reference, message: 'Website lead created successfully.' }, 201);
+});
+websiteLeads.all('/', (c) => {
+  c.header('Allow', 'POST');
+  throw new HttpError(405, 'Use POST to submit a website lead');
+});
+webhooks.route('/website/leads', websiteLeads);
+
 // ------------------------------------------------------------------ Meta Lead Ads
 webhooks.get('/meta', (c) => {
   if (c.req.query('hub.mode') === 'subscribe' && c.env.META_VERIFY_TOKEN && safeEqual(c.req.query('hub.verify_token') || '', c.env.META_VERIFY_TOKEN)) return c.text(c.req.query('hub.challenge') || '');
@@ -109,34 +185,214 @@ webhooks.post('/meta', async (c) => {
   const repo = new Repo(c.env.DB, 'Meta Lead Ads', isTestReq(c));
   const cfg = await repo.setting<any>('cfg');
   const changes = parseLeadgenWebhook(JSON.parse(raw));
+  const [branches, programs] = await Promise.all([repo.many<any>('branch'), repo.many<any>('program')]);
   const created: string[] = [];
-  // Meta expects a fast 200; process in the background
-  const work = (async () => {
-    const [branches, programs] = await Promise.all([repo.many<any>('branch'), repo.many<any>('program')]);
-    const jobs: Job[] = [];
-    for (const ch of changes) {
-      if (!(await firstTime(c.env, 'meta', ch.leadgenId))) continue;
-      try {
-        if (!cfg.integ?.meta?.on && !repo.isTest) throw new Error('Meta lead integration is disabled in Configuration');
-        // Test events (Testing Console) carry a fake leadgen id, so their lead details come from the mock
-        const lead = await fetchLead({ env: c.env, cfg, mode: repo.isTest ? 'mock' : modeFor(c.env, cfg, 'meta'), isTest: repo.isTest }, ch.leadgenId, ch.formId);
-        const input = mapLead(cfg, lead, branches, programs);
-        const r = await createLead(repo, input, 'Meta Lead Ads');
-        created.push(r.lead.id);
-        jobs.push(...r.queuedComms.map((id) => ({ kind: 'send_comm' as const, id })));
-        await c.env.DB.prepare('UPDATE webhook_events SET result=? WHERE provider=? AND event_id=?').bind(r.lead.id, 'meta', ch.leadgenId).run();
-      } catch (e: any) {
-        await c.env.DB.prepare('UPDATE webhook_events SET result=? WHERE provider=? AND event_id=?').bind('error: ' + e.message, 'meta', ch.leadgenId).run();
-        await notify(repo, { type: 'none', sev: 'crit', text: `Meta lead ${ch.leadgenId} could not be imported: ${e.message}`, route: { page: 'testing' }, roles: ['System Administrator', 'Admissions Head'] });
+  const failed: { id: string; error: string }[] = [];
+  const jobs: Job[] = [];
+  for (const ch of changes) {
+    const event = c.env.DB.prepare("SELECT result FROM webhook_events WHERE provider='meta' AND event_id=?").bind(ch.leadgenId);
+    const previous = await event.first<{ result: string | null }>();
+    if (previous?.result && !previous.result.startsWith('error: ')) continue;
+
+    if (previous) {
+      // Older versions reserved the event before importing and saved the result separately.
+      const saved = await c.env.DB.prepare("SELECT id FROM docs WHERE type='lead' AND is_test=? AND json_extract(data,'$.external.metaLeadId')=? LIMIT 1")
+        .bind(+repo.isTest, ch.leadgenId).first<string>('id');
+      if (saved) {
+        await c.env.DB.prepare("UPDATE webhook_events SET result=? WHERE provider='meta' AND event_id=?").bind(saved, ch.leadgenId).run();
+        continue;
       }
+      await c.env.DB.prepare("DELETE FROM webhook_events WHERE provider='meta' AND event_id=? AND (result IS NULL OR result LIKE 'error: %')")
+        .bind(ch.leadgenId).run();
     }
-    await logInbound(c.env, 'meta', 'leadgen.webhook', true, raw, { leads: created }, created.join(','), repo.isTest);
-    await dispatch(c.env, waitOf(c), jobs);
-  })();
-  c.executionCtx.waitUntil(work);
-  if (isTestReq(c)) await work; // the Testing Console waits so it can show the result
-  return c.json({ ok: true, received: changes.length, leads: created });
+
+    try {
+      if (!cfg.integ?.meta?.on && !repo.isTest) throw new Error('Meta lead integration is disabled in Configuration');
+      // The Testing Console uses synthetic lead IDs and mock Graph responses.
+      const lead = await fetchLead({ env: c.env, cfg, mode: repo.isTest ? 'mock' : modeFor(c.env, cfg, 'meta'), isTest: repo.isTest }, ch.leadgenId, ch.formId);
+      const input = mapLead(cfg, lead, branches, programs, ch);
+      const r = await createLead(repo, input, 'Meta Lead Ads', { webhookEvent: { provider: 'meta', id: ch.leadgenId } });
+      created.push(r.lead.id);
+      jobs.push(...r.queuedComms.map((id) => ({ kind: 'send_comm' as const, id })));
+    } catch (e) {
+      // A concurrent delivery may already have committed the event and its lead.
+      if (await event.first<string>('result')) continue;
+      failed.push({ id: ch.leadgenId, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  const ok = failed.length === 0;
+  const status = ok ? 200 : 503;
+  await logInbound(c.env, 'meta', 'leadgen.webhook', ok, raw, { leads: created, failed }, created.join(','), repo.isTest, failed[0]?.error, status);
+  await dispatch(c.env, waitOf(c), jobs);
+  if (!ok) {
+    c.executionCtx.waitUntil(Promise.all(failed.map(({ id, error }) =>
+      notify(repo, { type: 'none', sev: 'crit', text: `Meta lead ${id} could not be imported: ${error}`, route: { page: 'testing' }, roles: ['System Administrator', 'Admissions Head'] }),
+    )));
+  }
+  // Meta retries failed requests. Completed entries in a partially failed batch are safe to redeliver.
+  return c.json({ ok, received: changes.length, leads: created, ...(ok ? {} : { error: 'Meta lead import incomplete' }) }, status);
 });
+
+// ------------------------------------------------------------------ Gupshup WhatsApp Flow submissions
+webhooks.post('/gupshup/leads', async (c) => {
+  const secret = c.env.GUPSHUP_WEBHOOK_SECRET;
+  if (!secret) throw new HttpError(503, 'Gupshup lead capture is not configured');
+  const token = c.req.header('authorization')?.match(/^Bearer (.+)$/i)?.[1];
+  if (!token || !safeEqual(token, secret)) throw new HttpError(401, 'Invalid Gupshup webhook token');
+
+  const raw = await c.req.text();
+  if (raw.length > 16_384) throw new HttpError(413, 'Gupshup submission is too large');
+  const { id, input } = parseGupshupSubmission(JSON.parse(raw));
+  const repo = new Repo(c.env.DB, 'Gupshup', isTestReq(c));
+  const provider = repo.isTest ? 'gupshup-test' : 'gupshup';
+  const event = c.env.DB.prepare('SELECT result FROM webhook_events WHERE provider=? AND event_id=?').bind(provider, id);
+  const duplicate = (reference: string) => c.json({ ok: true, reference, duplicate: true });
+  const existing = await event.first<string>('result');
+  if (existing) return duplicate(existing);
+
+  let reference: string;
+  try {
+    const { lead } = await createLead(repo, input, repo.actor, { noAutoMessages: true, webhookEvent: { provider, id } });
+    reference = lead.id;
+  } catch (error) {
+    // A simultaneous retry can commit the same submission while this request is being prepared.
+    const committed = await event.first<string>('result');
+    if (committed) return duplicate(committed);
+    throw error;
+  }
+  await logInbound(c.env, 'gupshup', 'lead.submit', true, {}, { lead: reference }, reference, repo.isTest);
+  return c.json({ ok: true, reference });
+});
+
+// ------------------------------------------------------------------ LMS lead submissions
+const LMS_LEAD_MAX_BYTES = 16_384;
+const LMS_UTM_FIELDS = {
+  source: 'UTM Source',
+  medium: 'UTM Medium',
+  campaign: 'UTM Campaign',
+  term: 'UTM Term',
+  content: 'UTM Content',
+};
+
+function lmsEnquiryTime(timestamp: string) {
+  const parts = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?$/.exec(timestamp);
+  if (!parts) throw new HttpError(400, 'Timestamp must include a date and time, for example 2026-10-30T16:55:59+05:30');
+  const [, day, time, fraction = '', offset = '+05:30'] = parts;
+  const local = `${day}T${time}${fraction}`;
+  const wallClock = new Date(local + 'Z');
+  if (!Number.isFinite(wallClock.getTime()) || wallClock.toISOString().slice(0, 19) !== `${day}T${time}`)
+    throw new HttpError(400, 'Timestamp is not a valid date and time');
+
+  const submitted = new Date(local + offset);
+  if (!Number.isFinite(submitted.getTime())) throw new HttpError(400, 'Invalid LMS timestamp offset');
+  return submitted.toISOString();
+}
+
+async function parseLmsLead(body: unknown): Promise<{
+  id: string;
+  input: Omit<NewLeadInput, 'src'>;
+  utmSource?: string;
+}> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Expected a JSON object');
+  const fieldKey = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const fields = Object.entries(body).map(([key, value]) => [fieldKey(key), value] as const);
+  const field = (name: string, max: number, allowNumber = false) => {
+    const key = fieldKey(name);
+    const matches = fields.filter(([fieldName]) => fieldName === key);
+    if (matches.length > 1) throw new HttpError(400, `Send only one ${name} field`);
+    const raw = matches[0]?.[1];
+    if (raw == null) return '';
+    if (typeof raw !== 'string' && !(allowNumber && Number.isSafeInteger(raw)))
+      throw new HttpError(400, `${name} must be ${allowNumber ? 'text or an integer' : 'text'}`);
+    const value = String(raw).trim();
+    if (value.length > max) throw new HttpError(400, `${name} must be at most ${max} characters`);
+    return value;
+  };
+
+  const parent = field('Parent Name', 120);
+  const phone = field('Phone', 25, true);
+  const email = field('Email', 160);
+  const timestamp = field('Timestamp', 35);
+  if (!parent || !phone || !timestamp) throw new HttpError(400, 'Timestamp, Parent Name and Phone are required');
+  if (!/^\+?\d{7,15}$/.test(phone.replace(/[\s()-]/g, ''))) throw new HttpError(400, 'Phone must contain 7 to 15 digits');
+  if (email && !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email)) throw new HttpError(400, 'Enter a valid e-mail address');
+  const enq = lmsEnquiryTime(timestamp);
+  const childAge = field('Child Age', 40, true);
+  const interest = field('Interest', 500);
+  const submissionId = field('Submission ID', 512, true);
+  const notes: string[] = [];
+  if (childAge) notes.push(`Child age: ${childAge}`);
+  if (interest) notes.push(`Interest: ${interest}`);
+  const utm: Record<string, string> = {};
+  for (const [key, label] of Object.entries(LMS_UTM_FIELDS)) {
+    const value = field(label, 200);
+    if (!value) continue;
+    utm[key] = value;
+    notes.push(`${label}: ${value}`);
+  }
+  const id = submissionId
+    ? `id:${submissionId}`
+    : `payload:${await sha256Hex(JSON.stringify([enq, parent, phone, email, childAge, interest, utm]))}`;
+  return {
+    id,
+    utmSource: utm.source,
+    input: {
+      student: parent, parent, phone, email, enq,
+      branch: field('Branch', 60) || 'BLR',
+      prog: field('Programme', 60) || 'ROB',
+      age: /^\d{1,2}$/.test(childAge) ? Number(childAge) : undefined,
+      camp: utm.campaign, notes: notes.join(' · '),
+      external: {
+        lms: submissionId ? { submissionId } : undefined,
+        childAge: childAge || undefined,
+        interest: interest || undefined,
+        utm: Object.keys(utm).length ? utm : undefined,
+      },
+    },
+  };
+}
+
+webhooks.post('/lms/leads', async (c) => {
+  const secret = c.env.LMS_LEAD_WEBHOOK_SECRET?.trim();
+  if (!secret) throw new HttpError(503, 'LMS lead webhook is not configured');
+  const token = c.req.header('authorization')?.match(/^Bearer (.+)$/i)?.[1];
+  if (!token || !safeEqual(token, secret)) throw new HttpError(401, 'Invalid LMS lead webhook token');
+
+  const raw = await c.req.arrayBuffer();
+  if (raw.byteLength > LMS_LEAD_MAX_BYTES) throw new HttpError(413, 'LMS lead submission is too large');
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(raw));
+  } catch {
+    throw new HttpError(400, 'Invalid UTF-8 JSON body');
+  }
+  const { id, input, utmSource } = await parseLmsLead(body);
+  const repo = new Repo(c.env.DB, 'LMS', isTestReq(c));
+  const provider = repo.isTest ? 'lms-leads-test' : 'lms-leads';
+  const event = c.env.DB.prepare('SELECT result FROM webhook_events WHERE provider=? AND event_id=?').bind(provider, id);
+  const duplicate = (reference: string) => c.json({ ok: true, reference, duplicate: true });
+  const existing = await event.first<string>('result');
+  if (existing) return duplicate(existing);
+
+  let reference: string;
+  try {
+    const cfg = await repo.setting<{ sources?: { n: string }[] }>('cfg');
+    const source = utmSource?.toLowerCase();
+    const src = cfg.sources?.find(({ n }) => n.toLowerCase() === source)?.n || 'Website';
+    const { lead } = await createLead(repo, { ...input, src }, repo.actor, {
+      noAutoMessages: true, webhookEvent: { provider, id },
+    });
+    reference = lead.id;
+  } catch (error) {
+    // The event and lead commit together, including when two deliveries race.
+    const committed = await event.first<string>('result');
+    if (committed) return duplicate(committed);
+    throw error;
+  }
+  await logInbound(c.env, 'lms-leads', 'lead.submit', true, {}, { lead: reference }, reference, repo.isTest);
+  return c.json({ ok: true, reference });
+});
+webhooks.all('/lms/leads', (c) => c.json({ error: 'Use POST to submit an LMS lead' }, 405, { Allow: 'POST' }));
 
 // ------------------------------------------------------------------ WhatsApp Cloud API
 webhooks.get('/whatsapp', (c) => {
@@ -154,7 +410,7 @@ webhooks.post('/whatsapp', async (c) => {
   const result = { statuses: 0, messages: 0, unmatched: 0 };
   const ORDER = ['sent', 'delivered', 'read'];
   for (const s of ev.statuses) {
-    const row = await c.env.DB.prepare("SELECT data FROM docs WHERE type='comm' AND ref2=?").bind(s.id).first<{ data: string }>();
+    const row = await c.env.DB.prepare("SELECT data FROM docs WHERE type='comm' AND ref2=? AND COALESCE(json_extract(data,'$.waProvider'),'meta')='meta'").bind(s.id).first<{ data: string }>();
     if (!row) { result.unmatched++; continue; }
     const cm = JSON.parse(row.data);
     const cur = String(cm.waStatus || 'sent');
@@ -271,7 +527,7 @@ webhooks.post('/razorpay', async (c) => {
     else {
       const methods: Record<string, string> = { upi: 'UPI', card: 'Card', netbanking: 'Bank transfer', wallet: 'Online' };
       result = await settleLink(c.env, repo, link.id, { amount: pay.amount / 100, txnRef: pay.id, method: methods[pay.method] || 'Online' });
-      if (result.paymentId) await dispatch(c.env, waitOf(c), [{ kind: 'erp_payment', id: result.paymentId }]);
+      await dispatch(c.env, waitOf(c), [...(result.jobs || []), ...(result.paymentId ? [{ kind: 'erp_payment' as const, id: result.paymentId }] : [])]);
     }
   } else if (['payment_link.cancelled', 'payment_link.expired'].includes(body.event)) {
     const pl = body.payload.payment_link.entity;
@@ -279,8 +535,32 @@ webhooks.post('/razorpay', async (c) => {
     result = { updated: body.event };
   }
   await logInbound(c.env, 'razorpay', body.event, true, raw, result, result.paymentId, repo.isTest);
-  return c.json({ ok: true, ...result, payment: undefined });
+  return c.json({ ok: true, ...result, payment: undefined, jobs: undefined });
 });
+
+// ------------------------------------------------------------------ Easebuzz (signed callback + independent transaction check)
+async function easebuzzCallback(c: any, browserReturn: boolean) {
+  const raw = await c.req.text();
+  if (raw.length > 65536) throw new HttpError(413, 'Payment response is too large');
+  const fields = Object.fromEntries(new URLSearchParams(raw));
+  const logFields = Object.fromEntries(['txnid', 'amount', 'status', 'key', 'hash', 'easepayid', 'easebuzz_id', 'mode', 'productinfo'].filter(k => fields[k] !== undefined).map(k => [k, fields[k]]));
+  if (!(await easebuzzVerifyResponse(c.env, fields))) {
+    await logInbound(c.env, 'easebuzz', 'payment.callback', false, logFields, {}, undefined, false, 'Invalid response hash');
+    throw new HttpError(401, 'Invalid Easebuzz response hash');
+  }
+  try {
+    const result = await confirmEasebuzz(c.env, fields.txnid);
+    await logInbound(c.env, 'easebuzz', 'payment.callback', true, logFields, { status: result.status, paymentId: result.paymentId }, result.link.id, !!result.link.is_test);
+    if (!result.sandbox) await dispatch(c.env, waitOf(c), [...result.jobs, ...(result.paymentId ? [{ kind: 'erp_payment' as const, id: result.paymentId }] : [])]);
+    if (browserReturn) return c.redirect('/webhooks/pay/return?link=' + encodeURIComponent(result.link.id), 303);
+    return c.json({ ok: true, status: result.status });
+  } catch (error: any) {
+    await logInbound(c.env, 'easebuzz', 'payment.callback', false, logFields, {}, fields.txnid, false, error.message);
+    throw error;
+  }
+}
+webhooks.post('/easebuzz', c => easebuzzCallback(c, false));
+webhooks.post('/easebuzz/return', c => easebuzzCallback(c, true));
 
 // ------------------------------------------------------------------ Telr (transaction advice + customer return)
 async function telrVerify(c: any, linkId: string, mockPaid: boolean) {
@@ -295,8 +575,8 @@ async function telrVerify(c: any, linkId: string, mockPaid: boolean) {
   const st = await telrCheck({ env: c.env, mode }, link.provider_ref, mockPaid ? { amount: link.amount, currency: link.currency } : undefined);
   if (st.paid) {
     const r = await settleLink(c.env, repo, link.id, { amount: st.amount || link.amount, txnRef: st.txnRef, method: 'Card' });
-    if (r.paymentId) await dispatch(c.env, waitOf(c), [{ kind: 'erp_payment', id: r.paymentId }]);
-    return { link, status: 'paid', ...r };
+    await dispatch(c.env, waitOf(c), [...((r as any).jobs || []), ...(r.paymentId ? [{ kind: 'erp_payment' as const, id: r.paymentId }] : [])]);
+    return { link, status: 'paid', ...r, jobs: undefined };
   }
   if (st.final) await c.env.DB.prepare("UPDATE payment_links SET status=? WHERE id=? AND status='created'").bind(st.status, link.id).run();
   return { link, status: st.status };
@@ -310,13 +590,62 @@ webhooks.post('/telr', async (c) => {
   return c.text('OK');
 });
 
+/** Small page for parents (same look as the return page). */
+const parentPage = (c: any, title: string, msg: string, status = 200) => {
+  c.header('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+  c.header('cache-control', 'no-store');
+  const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' } as any)[ch]);
+  return c.html(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><body style="font-family:Arial,sans-serif;display:grid;place-items:center;min-height:90vh;margin:0;background:#f3f5f9;color:#1b2633"><div style="background:#fff;border:1px solid #e1e6ee;border-radius:10px;padding:28px;max-width:420px;text-align:center"><h1 style="font-size:18px;color:#1d3557;margin:0 0 6px">Lab of Future</h1><h2 style="font-size:16px;margin:0 0 10px">${esc(title)}</h2><p style="margin:0;line-height:1.5">${esc(msg)}</p></div></body>`, status);
+};
+
+/**
+ * The payment link parents receive. Paid → "Payment already done"; past its 24 hours, or replaced by the next
+ * reminder → "Payment link expired"; otherwise on to the gateway's payment page.
+ */
+webhooks.get('/pay/l/:id', async (c) => {
+  const id = c.req.param('id');
+  let link = /^(TST-)?PL-[A-Z0-9]{6,20}$/.test(id) ? await c.env.DB.prepare('SELECT * FROM payment_links WHERE id=?').bind(id).first<any>() : null;
+  if (!link) return parentPage(c, 'Payment link not found', 'We could not find this payment link. Please contact the centre.', 404);
+  const repo = new Repo(c.env.DB, 'Payment gateway', !!link.is_test);
+  const paidPage = (l: any) => parentPage(c, 'Payment already done', `A payment of ${money(l.amount, l.currency)} has already been made using this link${l.paid_at ? ` on ${new Date(l.paid_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Dubai' })}` : ''}. Thank you – nothing more is due on this link.`);
+  if (link.status === 'paid') return paidPage(link);
+  if (linkExpired(link)) {
+    await c.env.DB.prepare("UPDATE payment_links SET status='expired' WHERE id=? AND status='created'").bind(link.id).run();
+    link = { ...link, status: 'expired' };
+  }
+  if (link.status !== 'created') {
+    return parentPage(c, 'Payment link expired', link.status === 'replaced'
+      ? 'This payment link is no longer active – a newer link has been sent to you. Please use the latest link, or contact the centre.'
+      : 'This payment link has expired. Please contact the centre for a new link.');
+  }
+  // Telr: confirm the order is still open (it may already be paid, or closed on Telr's side) before sending the parent there
+  if (link.provider === 'telr') {
+    try {
+      const cfg = await repo.setting<any>('cfg');
+      const st = await telrCheck({ env: c.env, mode: modeFor(c.env, cfg, 'telr', !!link.is_test), isTest: !!link.is_test }, link.provider_ref);
+      if (st.paid) {
+        const r: any = await settleLink(c.env, repo, link.id, { amount: st.amount || link.amount, txnRef: st.txnRef, method: 'Card' });
+        await dispatch(c.env, waitOf(c), [...(r.jobs || []), ...(r.paymentId ? [{ kind: 'erp_payment' as const, id: r.paymentId }] : [])]);
+        return paidPage({ ...link, paid_at: nowIso() });
+      }
+      if (st.final) return c.redirect(await reopenTelrOrder(c.env, repo, link), 302);
+    } catch (e) { console.error('pay link check', link.id, e); }
+  }
+  return c.redirect(link.url, 302);
+});
+
 /** Customer lands here after Telr / Razorpay checkout. */
 webhooks.get('/pay/return', async (c) => {
   const linkId = c.req.query('link') || '';
   const link = await c.env.DB.prepare('SELECT * FROM payment_links WHERE id=?').bind(linkId).first<any>();
   let msg = 'We could not find this payment.';
   if (link) {
-    if (link.provider.startsWith('telr')) {
+    if (link.provider.startsWith('easebuzz')) {
+      // Read the recorded result only. GET parameters cannot settle a payment.
+      msg = link.status === 'paid'
+        ? 'Payment confirmed. You can close this page.'
+        : 'Your payment has not been confirmed. Please contact the centre if you completed checkout.';
+    } else if (link.provider.startsWith('telr')) {
       const r = await telrVerify(c, linkId, c.req.query('mock') === '1' && link.provider.endsWith('-mock'));
       msg = r.status === 'paid' ? 'Thank you – your payment was received. A receipt will follow.' : r.status === 'created' ? 'Your payment is being confirmed. You may close this page.' : 'The payment was not completed. Please contact the centre.';
     } else {
