@@ -11,6 +11,7 @@ import { requireAuth, type AppEnv } from '../lib/auth';
 import { allow } from '../lib/ratelimit';
 import { HttpError } from '../types';
 import { addAudit } from '../domain/core';
+import { renameBranch, branchIdEditable } from '../domain/branch-rename';
 
 interface Dataset { label: string; group: 'Business' | 'Settings' | 'System'; src: string; cols: string[]; order: string; branch?: boolean; test?: boolean; key?: string; docType?: string; note?: string }
 
@@ -168,4 +169,13 @@ admin.get('/db/backup', async (c) => {
   };
   await addAudit(c.get('repo'), 'Data backup downloaded', 'Database', `${body.docs.length} records, ${body.settings.length} settings`);
   return new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json', 'content-disposition': `attachment; filename="lof-crm-backup-${body.exportedAt.slice(0, 10)}.json"`, 'cache-control': 'no-store' } });
+});
+
+// Change a branch Short ID (Configuration → Branches → Edit). Off on the live site unless ALLOW_BRANCH_ID_EDIT=true.
+admin.post('/branches/rename', async (c) => {
+  if (!branchIdEditable(c.env)) throw new HttpError(403, 'Changing a branch Short ID is switched off');
+  const body = await c.req.json<{ from?: string; to?: string }>().catch(() => ({}) as { from?: string; to?: string });
+  const r = await renameBranch(c.get('repo'), body.from, body.to);
+  await addAudit(c.get('repo'), 'Branch Short ID changed', r.to, `${r.from} → ${r.to}, ${r.records} records moved`);
+  return c.json({ ok: true, ...r });
 });

@@ -7,6 +7,8 @@ export interface Env {
   APP_BASE_URL: string;
   INTEGRATION_MODE: 'auto' | 'mock' | string;
   ALLOW_IMPERSONATION: string;
+  /** 'true' lets a System Administrator change a branch Short ID on production too (always allowed elsewhere). */
+  ALLOW_BRANCH_ID_EDIT?: string;
 
   /** Server secret (≥ 32 chars): webhook test marker, MFA secret encryption. Name kept for compatibility. */
   JWT_SECRET: string;

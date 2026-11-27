@@ -12,7 +12,7 @@ function applyBootstrap(b, keepUi) {
     S[c] = b.data[c] || [];
   });
   S.paymentSandbox = b.server.payments?.easebuzzSandbox ?? true;
-  S.uatCheckoutBranches = b.server.payments?.uatCheckoutBranches || [];
+  S.branchIdEdit = !!b.server.branchIdEdit; // System Administrator may change a branch Short ID (not on the live site)
   S.checkoutPayments = b.data.checkoutPayments || [];
   S.checkoutLms = b.data.checkoutLms || [];
   S.checkoutOrderIds = new Set(S.enr.filter((enrollment) => enrollment.sandboxSource).map((enrollment) => enrollment.id));
@@ -23,6 +23,7 @@ function applyBootstrap(b, keepUi) {
   SETTINGS.forEach(function (k) {
     S[k] = b.data[k] || {};
   });
+  S.uatCheckoutBranches = b.server.payments?.uatCheckoutBranches || [];
   if (S.wiz) wizReconcileStudent();
   S.user = b.me.id;
   if (b.me && b.me.role === 'Reception' && S.perms && S.perms.reports) {
