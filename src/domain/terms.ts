@@ -2,7 +2,6 @@
 // The CRM screens use the same formulas (prototype: buildSched / instStatus / refundCalc / lmsPayload);
 // the server recomputes everything that matters so a browser can never choose its own schedule or refund.
 import { r2 } from './core';
-import type { Purchase, TrackItem, SkillsLabItem } from '../integrations/lms';
 
 export interface PayTerm { id: string; name: string; split: number[]; gap: number; minFirst: number; grace: number; active: boolean }
 export interface Instalment { n: number; due: string; pct: number; amt: number }
@@ -97,22 +96,7 @@ export function targetsProblem(T: any, staffIds: Set<string>): string {
   return '';
 }
 
-/** Reception targets: per month and receptionist, the collections they should record (in their branch currency). */
-export function recTargetsProblem(T: any, staffIds: Set<string>): string {
-  if (!Array.isArray(T) || T.length > 5000) return 'Reception targets are invalid';
-  const seen = new Set<string>();
-  for (const t of T) {
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(t?.m)) || !staffIds.has(t.c)) return 'Each reception target needs a month (YYYY-MM) and an existing receptionist';
-    if (typeof t.col !== 'number' || !(t.col >= 0) || t.col > 1e9) return 'Reception targets: collections must be 0 or more';
-    const k = t.m + '|' + t.c;
-    if (seen.has(k)) return 'A receptionist has two targets for the same month';
-    seen.add(k);
-  }
-  return '';
-}
-
 const CODE = /^[A-Za-z0-9._-]{1,64}$/;
-const isLmsCode = (value: unknown): value is string => typeof value === 'string' && CODE.test(value);
 export function lmsProblem(L: any): string {
   if (!L || typeof L !== 'object') return 'LMS settings are missing';
   if (!(+L.validMonths >= 1 && +L.validMonths <= 60)) return 'LMS access validity must be 1–60 months';
@@ -123,54 +107,21 @@ export function lmsProblem(L: any): string {
     if (new Set(c.credits).size !== c.credits.length) return `Duplicate LMS Credit code for ${p}`;
   }
   for (const v of Object.values<any>(L.branchMap || {})) if (v && !CODE.test(String(v))) return 'LMS branch codes may use letters, digits, . _ - only';
-  for (const packages of Object.values<any>(L.packages || {})) {
-    if (!packages || typeof packages !== 'object' || Array.isArray(packages)) return 'LMS package mappings must be objects';
-    for (const mapping of Object.values<any>(packages)) {
-      if (!mapping || typeof mapping !== 'object') return 'Invalid LMS package mapping';
-      const items = mapping.items || (mapping.track ? [{ track: mapping.track, credits: mapping.credits }] : []);
-      if (!Array.isArray(items) || items.some((x: any) => !x || !CODE.test(x.track) || !Array.isArray(x.credits) || !x.credits.length || x.credits.some((v: any) => !CODE.test(v)) || new Set(x.credits).size !== x.credits.length)) return 'Each package Track needs its exact, unique Credit codes';
-      if (!Array.isArray(mapping.skillslabs || []) || (mapping.skillslabs || []).some((x: any) => !x || !CODE.test(x.program) || !Number.isInteger(x.sessions) || x.sessions <= 0 || (x.valid_until && !validLmsDate(x.valid_until)))) return 'Each Skills Lab needs a program code and a positive whole session count';
-    }
-  }
   return '';
 }
 
 export const LMS_MUST = ['reference', 'student_id', 'student_first_name', 'student_last_name', 'student_email', 'student_phone', 'student_dob', 'branch', 'valid_until'] as const;
 
-/** Date-only LMS values are interpreted through end-of-day in Asia/Kolkata by Moodle. */
-export function validLmsDate(value: unknown): boolean {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const d = new Date(value + 'T12:00:00Z');
-  return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === value;
-}
-
-/** November v1.1 purchase body. Legacy programme mappings remain readable, never rewritten. */
-export function lmsEnrolPayload(
-  e: any, s: any, program: any, L: any,
-  productCodes: { programmeCode?: string; courseId?: string } = {},
-): Purchase {
+/** The enrol call body from the "LOF Booking Platform – what ERPNext sends us" sheet (v3). No payment data. */
+export function lmsEnrolPayload(e: any, s: any, program: any, L: any) {
   const p = s?.parents?.[0] || {};
-  const code = e.lmsAccess || L?.packages?.[e.prog]?.[e.pkg] || L?.programmes?.[e.prog] || {};
-  const product_name = `${program?.name || e.prog} – ${e.pkg}`;
-  const items = structuredClone<TrackItem[]>(code.items || (code.track ? [{ product_name, track: code.track, credits: code.credits || [] }] : []));
-  const skillslabs = structuredClone<SkillsLabItem[]>(code.skillslabs || []);
-  const programmeCode = String(productCodes.programmeCode ?? '').trim();
-  const courseId = String(productCodes.courseId ?? '').trim();
-  const codes = [
-    programmeCode && `Unique programme code: ${programmeCode}`,
-    courseId && `Course ID: ${courseId}`,
-  ].filter(Boolean).join(', ');
-  if (codes) {
-    for (const line of [...items, ...skillslabs]) {
-      line.product_name = `${line.product_name || product_name} (${codes})`;
-    }
-  }
+  const code = L?.programmes?.[e.prog] || {};
   return {
     reference: e.id,
     student_id: s.id,
-    student_first_name: String(s.first || '').trim(),
-    student_last_name: String(s.last || '').trim(),
-    student_email: String(s.email || '').trim(),
+    student_first_name: s.first || '',
+    student_last_name: s.last || '',
+    student_email: s.email || p.email || '',
     student_phone: s.mobile || p.mobile || '',
     student_dob: s.dob || '',
     parent_id: s.fam || '',
@@ -178,43 +129,16 @@ export function lmsEnrolPayload(
     parent_email: p.email || '',
     parent_phone: p.mobile || '',
     branch: L?.branchMap?.[e.branch] || '',
-    valid_until: e.lmsValidUntil || addDays(addMonthsDay(e.date, +(L?.validMonths || 12)), -1),
-    items,
-    skillslabs,
+    valid_until: addDays(addMonthsDay(e.date, +(L?.validMonths || 12)), -1),
+    products: [{ product_name: `${program?.name || e.prog} – ${e.pkg}`, track: code.track || '', credits: (code.credits || []).slice() }],
   };
 }
 
 export function lmsMissing(pl: ReturnType<typeof lmsEnrolPayload>): string[] {
   const m: string[] = LMS_MUST.filter((k) => !String((pl as any)[k] || '').trim());
-  if (pl.student_email && !/^\S+@\S+\.\S+$/.test(pl.student_email)) m.push('valid student_email');
-  if (pl.parent_email && !/^\S+@\S+\.\S+$/.test(pl.parent_email)) m.push('valid parent_email');
-  if (pl.student_email && pl.parent_email && pl.student_email.trim().toLowerCase() === pl.parent_email.trim().toLowerCase()) m.push('student_email must differ from parent_email');
-  if (pl.student_phone && !/^\+[1-9][\d\s()-]{6,19}$/.test(pl.student_phone)) m.push('student_phone with country code');
-  for (const k of ['student_dob', 'valid_until'] as const) if (pl[k] && !validLmsDate(pl[k])) m.push(`valid ${k} (YYYY-MM-DD)`);
-  if (pl.branch && !isLmsCode(pl.branch)) m.push('valid branch code');
-  if (!Array.isArray(pl.items) || !Array.isArray(pl.skillslabs)) return [...m, 'valid Track and Skills Lab lists'];
-  if (!pl.items.length && !pl.skillslabs.length) m.push('at least one Track or Skills Lab line');
-  const seen = new Map<string, Set<string>>();
-  pl.items.forEach((x, i) => {
-    if (!isLmsCode(x?.track)) m.push(`items[${i}].track`);
-    if (!Array.isArray(x?.credits) || !x.credits.length || x.credits.some((c) => !isLmsCode(c))) {
-      m.push(`items[${i}].credits`);
-      return;
-    }
-    const codes = seen.get(x.track) || new Set<string>();
-    for (const credit of x.credits) {
-      if (codes.has(credit)) m.push(`Credit ${x.track}/${credit} appears more than once`);
-      codes.add(credit);
-    }
-    seen.set(x.track, codes);
-  });
-  pl.skillslabs.forEach((x, i) => {
-    if (!isLmsCode(x?.program)) {
-      m.push(`skillslabs[${i}].program`);
-      return;
-    }
-    if (!Number.isInteger(x.sessions) || x.sessions <= 0) m.push(`skillslabs[${i}].sessions`);
-    if (x.valid_until && !validLmsDate(x.valid_until)) m.push(`skillslabs[${i}].valid_until`);
+  pl.products.forEach((x, i) => {
+    if (!x.track) m.push(`products[${i}].track`);
+    if (!x.credits.length) m.push(`products[${i}].credits`);
   });
   return m;
 }
@@ -238,7 +162,6 @@ export function cfgDefaults(programs: any[], branches: any[]) {
     lms: {
       validMonths: 12, confirmed: false,
       programmes: Object.fromEntries(programs.map((p) => [p.id, { track: '', credits: [] as string[] }])),
-      packages: {},
       branchMap: Object.fromEntries(branches.map((b) => [b.id, ''])),
     },
     lmsInteg: { on: false, retryMax: 3, retryMin: 15, notify: 'Admissions Head, System Administrator' },

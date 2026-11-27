@@ -73,8 +73,6 @@ Sessions are stored server-side (only a SHA-256 hash of the token), end after **
 | GET | `/lms/calls` | LMS call log (`status`, `op` = enrol \| cancel). Enrolments → View. `/moodle/syncs` is kept as an alias |
 | GET | `/lms/calls/:id` | One call with its history |
 | POST | `/lms/calls/:id/retry` | Re-sends a failed call now → the updated call. A successful call cannot be re-run; an enrol call for a withdrawn enrolment is closed without sending |
-| POST | `/lms/catalogue` | Read-only LMS catalogue; optional `{ track }`; Configuration → View |
-| POST | `/lms/students/:id/lookup` | Read-only student lookup; Students → View and student branch scope |
 | GET | `/lms/preview/:enrollmentId` | `{ enrol, cancel, missing, mode }` – exactly what the enrol and cancel calls would send, and any required field still missing |
 | GET | `/enrollments/:id/instalments` | `{ term, currency, total, paid, instalments:[{ n, due, pct, amt, paid, bal, st }] }`; `st` = Paid, Due, Partly paid, Upcoming, Overdue, Overdue (part paid), Closed. Payments → View |
 | GET | `/refunds/suggest?enrollmentId=&sessions=` | Suggested refund from the refund rules: `{ days, sessions, rule, pct, net, base, tax, reg, admin, gross, suggested, approver, confirmed }` |
@@ -86,18 +84,20 @@ Sessions are stored server-side (only a SHA-256 hash of the token), end after **
 **Rules applied in `PUT /sync`.**
 - *Enrolments*: `term` must be an active payment term (default when omitted); the instalment schedule (`sched`) and the counsellor credited (`cslr`, from the linked opportunity) are set by the server and cannot be edited; a withdrawn enrolment cannot be reactivated.
 - *Refunds*: `sessions` (attended) is required; the server stores `days`, `suggested` (what is left of the rule-based suggestion after earlier requests), `rule`, `exception` and `approverRole`. An exception can be processed or rejected only by the approver role and not by the person who requested it.
-- *LMS calls* (`coll: 'ms'`): one server-owned `op: 'enrol'` record with a new enrolment, waiting until full payment; `op: 'cancel'` with a withdrawal (created by the server if the client does not send it). Exact purchased Track/Credit and Skills Lab entitlements come from Settings → LMS Integration package mappings.
+- *LMS calls* (`coll: 'ms'`): one `op: 'enrol'` record with a new enrolment; `op: 'cancel'` with a withdrawal (created by the server if the client does not send it). Track and Credit codes always come from Settings → LMS Integration.
 - *Settings (`cfg`)*: payment terms (split adds up to 100, first instalment ≥ minimum, active default), refund rules, counsellor targets and LMS codes are validated; LMS credentials are never stored in settings.
 
-### LMS calls under the November 2026 guide
+### LMS call bodies (sent to `LMS_URL`, `Authorization: Bearer <LMS_TOKEN>`)
 
-All requests to `LMS_URL` use POST with `application/x-www-form-urlencoded` and server-only `wstoken`, `wsfunction`, `moodlewsrestformat=json`. The connection test uses `local_lofplatform_erp_catalogue`; student lookup uses `local_lofplatform_erp_student_lookup` with `student_id`.
-
-Purchase uses `local_lofplatform_erp_purchase`. Student/order/parent fields are flat; Track lines use `items[0][track]` and `items[0][credits][0]`; Skills Labs use `skillslabs[0][program]`, `skillslabs[0][sessions]` and optional per-line `valid_until`. No financial fields are sent. Cancellation uses `local_lofplatform_erp_cancel` with the original `reference` and optional reason.
-
-HTTP 200 is not proof of acceptance. `errorcode`/`exception` are failures. Accepted warnings are retained for staff review and cannot be resent from either retry route. `duplicate:true` is acknowledged without applying another purchase. `purchaseknown:false` requires reference review. Success means received, not that access has already been processed.
-
-New enrolments get a server-owned call record waiting for full payment; no purchase is sent for an unpaid or partly paid order. Both counter and gateway payments activate it after full settlement. Existing enrolments are never backfilled automatically. See [LMS implementation and verification](LMS-Integration.md).
+```json
+{ "call": "enrol", "reference": "EN-26-0123", "student_id": "LOF-26-000041", "student_first_name": "Aarav", "student_last_name": "Sharma",
+  "student_email": "aarav.sharma@example.com", "student_phone": "+91 98765 43210", "student_dob": "2014-07-15",
+  "parent_id": "FAM-26-0019", "parent_name": "Rohit Sharma", "parent_email": "rohit.sharma@example.com", "parent_phone": "+91 98765 11111",
+  "branch": "BLR01", "valid_until": "2027-09-18",
+  "products": [ { "product_name": "Robotics – Term (24 sessions)", "track": "ROB-TRK-10021", "credits": ["ROB-TRK-10021-C3", "ROB-TRK-10021-C4", "ROB-TRK-10021-C5"] } ] }
+{ "call": "cancel", "reference": "EN-26-0123" }
+```
+The number of credits is the number of Credit codes. No amount, price, invoice, payment method or refund value is ever sent. The connection test sends `{ "call": "ping" }`.
 
 ## Testing console (`/testing`, System Administrator only)
 
@@ -131,8 +131,6 @@ Datasets: `leads, opportunities, students, enrollments, instalments, payments, r
 | `POST /webhooks/website` | Website form | `X-LOF-Signature` (HMAC-SHA256 hex) or allowed `Origin` |
 | `GET/POST /webhooks/meta` | Meta Lead Ads | `hub.verify_token`; `X-Hub-Signature-256` |
 | `GET/POST /webhooks/whatsapp` | WhatsApp Cloud API | `hub.verify_token`; `X-Hub-Signature-256` |
-| `POST /webhooks/gupshup/leads` | Gupshup WhatsApp Flow submission | `Authorization: Bearer <GUPSHUP_WEBHOOK_SECRET>` |
-| `POST /webhooks/lms/leads` | LMS enquiry form submission | `Authorization: Bearer <LMS_LEAD_WEBHOOK_SECRET>` |
 | `GET/POST /webhooks/exotel/incoming` | Exotel passthru | `?token=` |
 | `POST /webhooks/exotel/status` | Exotel status callback | `?token=` |
 | `POST /webhooks/razorpay` | Razorpay | `X-Razorpay-Signature` |
@@ -140,67 +138,6 @@ Datasets: `leads, opportunities, students, enrollments, instalments, payments, r
 | `GET /webhooks/pay/return` | Customer return page | Status re-checked with the gateway |
 
 All webhooks are idempotent (provider event IDs are recorded) and logged with secrets redacted. Signatures are compared in constant time. Optional: `EXOTEL_ALLOWED_IPS` (comma-separated) restricts the Exotel endpoints; `TURNSTILE_SECRET` adds Cloudflare Turnstile to the website form.
-
-### Gupshup WhatsApp enquiry form
-
-1. Set a new random `GUPSHUP_WEBHOOK_SECRET` in the CRM runtime (Cloudflare secret or VPS environment). Enable **WhatsApp** under **Configuration → Lead Sources & Campaigns**.
-2. In the Gupshup WhatsApp Flows Journey for the enquiry form, map the submitted answers in `system_var.message_meta` to the JSON fields below. Add an API node before the terminal node to POST to `https://<crm-host>/webhooks/gupshup/leads` with `Content-Type: application/json` and `Authorization: Bearer <GUPSHUP_WEBHOOK_SECRET>`. [Gupshup WhatsApp Flows guide](https://console-docs.gupshup.io/docs/whatsapp-flows-static-2-way)
-3. Submit the form once from WhatsApp and verify the returned lead reference in **Leads → Source → WhatsApp**.
-
-```json
-{
-  "submission_id": "wamid.EXAMPLE_FORM_REPLY",
-  "student": "Aisha Example",
-  "parent": "Mariam Example",
-  "phone": "+971509991234",
-  "branch": "KRM",
-  "prog": "SPA",
-  "email": "mariam@example.com",
-  "wa_consent": true
-}
-```
-
-The first six fields are required. Use the inbound WhatsApp message ID for `submission_id`. Keep it stable on retries and unique to each submitted form. Map `phone` to the WhatsApp sender number or the contact number collected by the form, including the country code. Map `branch` and `prog` to CRM IDs for a branch and one of its offered programmes.
-
-`email`, `school`, `grade`, `notes`, `campaign`, `wa_consent`, and `email_consent` are optional. Consent fields are JSON booleans and default to false. The CRM creates an open lead with source **WhatsApp** and category **Warm**, then applies normal counsellor routing. The Flow Journey can send the submission acknowledgement.
-
-Successful submissions return HTTP 200 with `{ "ok": true, "reference": "LD-26-…" }`. A retry returns the same reference with `"duplicate": true`. HTTP 400 indicates an invalid payload, 401 indicates failed authentication, 422 indicates a CRM lead rule rejected the submission, and 503 indicates the webhook secret is missing.
-
-### LMS enquiry form webhook
-
-The LMS sends the complete form submission to `POST /webhooks/lms/leads` over HTTPS. The CRM creates a **New Lead** and matches **UTM Source** to its configured lead sources regardless of case. For example, `facebook` appears as **Facebook**. A blank or unmatched value uses **Website**. The original timestamp is saved as **Enquiry**, and child age, interest and UTM values appear in **Overview → Notes**. The sheet supplies the parent’s name, which the CRM also uses as the lead’s display name. Automatic WhatsApp and email messages are disabled for this import.
-
-Generate a bearer token with `openssl rand -hex 32`. Save it as `LMS_LEAD_WEBHOOK_SECRET` in `.dev.vars` for local development or in the CRM server environment for UAT and production.
-
-#### Test in Postman
-
-1. For local testing, set `LMS_LEAD_WEBHOOK_SECRET` in `.dev.vars`. Run `npm run db:migrate:local` if the local database is new, then run `npm run dev`.
-2. Send **POST** to `http://127.0.0.1:8787/webhooks/lms/leads`. For UAT, use the deployed CRM’s HTTPS URL.
-3. Under **Authorization**, choose **Bearer Token** and paste the value of `LMS_LEAD_WEBHOOK_SECRET` from the environment you are testing.
-4. Under **Body**, choose **raw → JSON** and send this sample.
-
-```json
-{
-  "submission_id": "lms-test-001",
-  "Timestamp": "2026-10-30T16:55:59+05:30",
-  "Parent Name": "Postman Test Parent",
-  "Phone": "9000000042",
-  "Email": "parent@example.com",
-  "Child Age": "11-15",
-  "Interest": "Robotics & Engineering",
-  "utm_source": "facebook",
-  "utm_medium": "paid_social",
-  "utm_campaign": "robotics-october",
-  "utm_term": "robotics",
-  "utm_content": "carousel"
-}
-```
-
-5. Expect **HTTP 200** with `{ "ok": true, "reference": "LD-26-…" }`. Search that reference in **CRM → Leads**. Send the same request again to verify it returns the same reference with `"duplicate": true`.
-
-`Timestamp`, `Parent Name`, and `Phone` are required. Send one UTF-8 JSON object per request, up to 16 KiB (16,384 bytes). JSON keys may also use snake_case, such as `parent_name` and `utm_source`. Use a single spelling per field in each request. The CRM reads timestamps such as `2026-10-30 16:55:59` as India time. Include a UTC offset if the sender uses another timezone.
-
-Submissions default to Bengaluru Robotics (`BLR` / `ROB`). Send the optional `Branch` and `Programme` CRM IDs to route a submission elsewhere. Use a unique `submission_id` for each submission and reuse it on retries. If it is omitted, the CRM deduplicates identical mapped submissions using the timestamp and form fields.
 
 ## Other
 

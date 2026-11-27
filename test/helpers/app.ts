@@ -1,10 +1,9 @@
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { vi } from 'vitest';
 import { TestD1 } from './d1';
 import { app } from '../../src/index';
 import type { Env } from '../../src/types';
-import { easebuzzResponseHash } from '../../src/integrations/easebuzz';
 
 const root = new URL('../../', import.meta.url);
 const seedPath = new URL('migrations/0002_seed.sql', root);
@@ -14,8 +13,11 @@ function seedSql() {
   if (!existsSync(seedPath)) execFileSync(process.execPath, ['scripts/build-seed.mjs'], { cwd: root });
   return readFileSync(seedPath, 'utf8');
 }
-const migrations = readdirSync(new URL('migrations/', root)).filter((name) => name.endsWith('.sql')).sort();
-const migrationSql = migrations.map((name) => name === '0002_seed.sql' ? seedSql() : readFileSync(new URL('migrations/' + name, root), 'utf8'));
+const SEED = seedSql();
+const SCHEMA = readFileSync(new URL('migrations/0001_schema.sql', root), 'utf8');
+const VIEWS = readFileSync(new URL('migrations/0003_reporting_views.sql', root), 'utf8');
+const SECURITY = readFileSync(new URL('migrations/0004_security.sql', root), 'utf8');
+const DATA_VIEWS = readFileSync(new URL('migrations/0005_data_views.sql', root), 'utf8');
 
 export const PASSWORD = 'Welcome@LOF2026';
 export const USERS = {
@@ -56,6 +58,8 @@ export const SECRETS = {
   ERPNEXT_API_SECRET: 'erp-secret',
   ERPNEXT_PAID_TO_AED: 'Bank AED - LOF',
   ERPNEXT_PAID_TO_INR: 'Bank INR - LOF',
+  RESEND_API_KEY: 're_test',
+  EMAIL_FROM: 'LOF <no-reply@lof.test>',
 };
 
 export interface TestCtx {
@@ -70,7 +74,11 @@ export interface TestCtx {
 /** Fresh in-memory database with schema + prototype seed, and an app caller that awaits background work. */
 export async function setup(overrides: Partial<Env> = {}, opts: { keepMustChange?: boolean; strictIds?: boolean } = {}): Promise<TestCtx> {
   const d1 = new TestD1();
-  for (const sql of migrationSql) d1.db.exec(sql);
+  d1.db.exec(SCHEMA);
+  d1.db.exec(SEED);
+  d1.db.exec(VIEWS);
+  d1.db.exec(SECURITY);
+  d1.db.exec(DATA_VIEWS);
   // Demo logins must change their password; most tests start from accounts that already did
   if (!opts.keepMustChange) d1.db.exec('UPDATE staff_auth SET must_change=0');
   // Sync tests write hand-picked ids (RF-26-0009, CL-900 …). In the app those numbers come from /seq first;
@@ -132,49 +140,4 @@ export function stubFetch(routes: [RegExp, (req: { url: string; method: string; 
   });
   vi.stubGlobal('fetch', fn);
   return { calls, fn };
-}
-
-/** An isolated provider double. No test contacts Easebuzz or another integration. */
-export async function setupEasebuzz() {
-  const t = await setup({
-    INTEGRATION_MODE: 'auto', APP_BASE_URL: 'https://crm.example.com',
-    EASEBUZZ_ENV: 'prod', EASEBUZZ_KEY: 'fixture-easebuzz-key', EASEBUZZ_SALT: 'fixture-easebuzz-salt',
-  });
-  await t.setCfg((cfg) => {
-    for (const config of Object.values(cfg.integ) as { on: boolean }[]) config.on = false;
-    cfg.integ.pay.on = true;
-  });
-  const transactions = new Map<string, { amount: string; status: string }>();
-  stubFetch([
-    [/^https:\/\/pay\.easebuzz\.in\/payment\/initiateLink$/, ({ body }) => {
-      const fields = new URLSearchParams(body);
-      transactions.set(fields.get('txnid')!, { amount: fields.get('amount')!, status: 'pending' });
-      return { json: { status: 1, data: 'fixture-hosted-checkout' } };
-    }],
-    [/^https:\/\/dashboard\.easebuzz\.in\/transaction\/v2\/retrieve$/, ({ body }) => {
-      const txnid = new URLSearchParams(body).get('txnid')!;
-      const transaction = transactions.get(txnid);
-      return transaction ? { json: { status: true, msg: [{ ...transaction, txnid, currency: 'INR', easepayid: 'paid-' + txnid, mode: 'UPI' }] } }
-        : { json: { status: false, msg: 'Transaction not found.' } };
-    }],
-  ]);
-  return {
-    ...t,
-    async pay(id: string) {
-      const transaction = transactions.get(id);
-      if (!transaction) throw new Error('The fixture link does not exist');
-      transaction.status = 'success';
-      const fields = { txnid: id, key: t.env.EASEBUZZ_KEY!, status: 'success', amount: transaction.amount };
-      const hash = await easebuzzResponseHash(fields, t.env.EASEBUZZ_SALT!);
-      return t.call('POST', '/webhooks/easebuzz', {
-        raw: new URLSearchParams({ ...fields, hash }).toString(),
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      });
-    },
-  };
-}
-
-/** Reuse the seeded fixtures for payment tests while using the currently supported checkout currency. */
-export async function useInrFixtures(t: TestCtx, branch: string) {
-  await t.d1.prepare("UPDATE docs SET data=json_set(data,'$.cur','INR') WHERE branch=? AND type IN ('fee','enrollment')").bind(branch).run();
 }

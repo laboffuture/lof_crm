@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { hmacSha256Hex, signJwt, verifyJwt, hashPassword, verifyPassword, safeEqual } from '../../src/lib/crypto';
 import { calcFee, feeFor, templateParams, msgFrom } from '../../src/domain/core';
-import { buildSched, instStatus, refundCalc, termProblem, lmsEnrolPayload, lmsMissing, targetsProblem, recTargetsProblem, refundProblem } from '../../src/domain/terms';
+import { buildSched, instStatus, refundCalc, termProblem, lmsEnrolPayload, lmsMissing, targetsProblem, refundProblem } from '../../src/domain/terms';
 import { parseStatus } from '../../src/integrations/exotel';
 import { clientIp } from '../../src/lib/ratelimit';
 import { mapLead, parseLeadgenWebhook } from '../../src/integrations/meta';
@@ -33,9 +33,7 @@ describe('crypto', () => {
 describe('fees', () => {
   const fee = { amt: 2400, tax: 5, extra: { amt: 100 }, active: true, prog: 'ROB', branch: 'KRM', pkg: 'Term', from: '2026-09-01', to: '' };
   it('adds registration for new students and VAT on the net', () => {
-    expect(calcFee(fee, null, true)).toEqual({ base: 2400, extra: 100, disc: 0, net: 2500, tax: 125, total: 2625, taxPct: 5 });
-    // a branch with CGST + SGST replaces the fee's own tax %
-    expect(calcFee(fee, null, true, { cgst: 9, sgst: 9 })).toMatchObject({ taxPct: 18, tax: 450, total: 2950 });
+    expect(calcFee(fee, null, true)).toEqual({ base: 2400, extra: 100, disc: 0, net: 2500, tax: 125, total: 2625 });
     expect(calcFee(fee, null, false).total).toBe(2520);
   });
   it('applies percentage and capped flat discounts to the programme fee only', () => {
@@ -102,34 +100,25 @@ describe('refund rules', () => {
     expect(targetsProblem([{ m: '2026-10', c: 'S99', enr: 2, rev: 1, conv: 10 }], new Set(['S01']))).not.toBe('');
     expect(targetsProblem([{ m: '2026-10', c: 'S01', enr: 2, rev: 1000, conv: 10 }], new Set(['S01']))).toBe('');
   });
-  it('checks reception (collections) targets', () => {
-    const rec = new Set(['S10']);
-    expect(recTargetsProblem([{ m: '2026-11', c: 'S10', col: 25000 }], rec)).toBe('');
-    expect(recTargetsProblem([{ m: '2026-11', c: 'S01', col: 25000 }], rec)).not.toBe('');
-    expect(recTargetsProblem([{ m: '2026-11', c: 'S10', col: -5 }], rec)).not.toBe('');
-    expect(recTargetsProblem([{ m: '2026-11', c: 'S10', col: '9' }], rec)).not.toBe('');
-    expect(recTargetsProblem([{ m: '2026-11', c: 'S10', col: 1 }, { m: '2026-11', c: 'S10', col: 2 }], rec)).not.toBe('');
-  });
 });
 
 describe('LMS enrol call payload', () => {
   const L = { validMonths: 12, programmes: { ROB: { track: 'ROB-TRK-10021', credits: ['ROB-TRK-10021-C3', 'ROB-TRK-10021-C4'] } }, branchMap: { BLR: 'BLR01' } };
   const e = { id: 'EN-26-0123', prog: 'ROB', pkg: 'Term (24 sessions)', branch: 'BLR', date: '2026-09-19', total: 9999, paid: 9999 };
-  const s = { id: 'LOF-26-000041', first: 'Aarav', last: 'Sharma', email: 'aarav@example.com', dob: '2014-07-15', fam: 'FAM-26-0019', parents: [{ name: 'Rohit Sharma', email: 'rohit@example.com', mobile: '+91 98765 11111' }] };
-  it('matches the CRM-to-LMS purchase contract and carries no payment data', () => {
+  const s = { id: 'LOF-26-000041', first: 'Aarav', last: 'Sharma', dob: '2014-07-15', fam: 'FAM-26-0019', parents: [{ name: 'Rohit Sharma', email: 'rohit@example.com', mobile: '+91 98765 11111' }] };
+  it('matches the LOF booking platform sheet (v3) and carries no payment data', () => {
     const p = lmsEnrolPayload(e, s, { name: 'Robotics' }, L);
     expect(p).toEqual({
-      reference: 'EN-26-0123', student_id: 'LOF-26-000041', student_first_name: 'Aarav', student_last_name: 'Sharma', student_email: 'aarav@example.com', student_phone: '+91 98765 11111', student_dob: '2014-07-15',
+      reference: 'EN-26-0123', student_id: 'LOF-26-000041', student_first_name: 'Aarav', student_last_name: 'Sharma', student_email: 'rohit@example.com', student_phone: '+91 98765 11111', student_dob: '2014-07-15',
       parent_id: 'FAM-26-0019', parent_name: 'Rohit Sharma', parent_email: 'rohit@example.com', parent_phone: '+91 98765 11111', branch: 'BLR01', valid_until: '2027-09-18',
-      skillslabs: [],
-      items: [{ product_name: 'Robotics – Term (24 sessions)', track: 'ROB-TRK-10021', credits: ['ROB-TRK-10021-C3', 'ROB-TRK-10021-C4'] }],
+      products: [{ product_name: 'Robotics – Term (24 sessions)', track: 'ROB-TRK-10021', credits: ['ROB-TRK-10021-C3', 'ROB-TRK-10021-C4'] }],
     });
     expect(JSON.stringify(p)).not.toMatch(/9999|amount|price|paid|invoice/i);
     expect(lmsMissing(p)).toEqual([]);
   });
   it('lists missing required fields instead of sending an incomplete call', () => {
-    const p = lmsEnrolPayload({ ...e, branch: 'HYD', prog: 'AI' }, { ...s, dob: '', email: '' }, { name: 'AI' }, L);
-    expect(lmsMissing(p)).toEqual(['student_email', 'student_dob', 'branch', 'at least one Track or Skills Lab line']);
+    const p = lmsEnrolPayload({ ...e, branch: 'HYD', prog: 'AI' }, { ...s, dob: '' }, { name: 'AI' }, L);
+    expect(lmsMissing(p)).toEqual(['student_dob', 'branch', 'products[0].track', 'products[0].credits']);
   });
 });
 
@@ -177,9 +166,9 @@ describe('integration plumbing', () => {
     expect(modeFor({ ...env, LMS_TOKEN: '' }, { integ: { lms: { on: true } } }, 'lms')).toBe('mock');
     expect(modeFor({ ...env, INTEGRATION_MODE: 'mock' }, { integ: { lms: { on: true } } }, 'lms')).toBe('mock');
   });
-  it('selects Easebuzz for new checkout links', () => {
-    expect(gatewayFor('AED')).toBe('easebuzz');
-    expect(gatewayFor('INR')).toBe('easebuzz');
+  it('routes AED to Telr and INR to Razorpay', () => {
+    expect(gatewayFor('AED')).toBe('telr');
+    expect(gatewayFor('INR')).toBe('razorpay');
   });
   it('indexes leads by normalised phone and child records by parent branch', () => {
     expect(normPhone('+971 50-555 0107')).toBe('505550107');

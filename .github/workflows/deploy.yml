@@ -20,7 +20,7 @@ on:
         default: masters
 concurrency: deploy-${{ inputs.environment }}
 jobs:
-  check:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,8 +28,9 @@ jobs:
         with: { node-version: 22, cache: npm }
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
   deploy:
-    needs: check
+    needs: test
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
