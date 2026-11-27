@@ -57,19 +57,11 @@ export class Repo {
   }
 
   /** Insert a new server-generated record; fails instead of overwriting if the id is already taken. */
-  async createStmt(type: string, doc: any, relatedBranch?: string) {
-    const c = indexFor(type, doc, () => relatedBranch ?? null);
-    let branch = c.branch;
-    if (relatedBranch === undefined) {
-      if (type === 'task' || type === 'call' || type === 'comm') branch = await this.branchOf('lead', doc.lead);
-      if (type === 'moodle_sync' || type === 'refund') branch = await this.branchOf('enrollment', doc.enr);
-    }
-    return this.db.prepare('INSERT INTO docs (type,id,branch,status,owner,ref1,ref2,at,data,is_test,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(type, doc.id, branch, c.status, c.owner, c.ref1, c.ref2, c.at, JSON.stringify(doc), this.isTest || doc.test ? 1 : 0, this.actor);
-  }
-
   async create(type: string, doc: any) {
-    await (await this.createStmt(type, doc)).run();
+    const c = indexFor(type, doc, () => null);
+    const branchRel = type === 'task' || type === 'call' || type === 'comm' ? await this.branchOf('lead', doc.lead) : type === 'moodle_sync' || type === 'refund' ? await this.branchOf('enrollment', doc.enr) : c.branch;
+    await this.db.prepare('INSERT INTO docs (type,id,branch,status,owner,ref1,ref2,at,data,is_test,updated_by) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(type, doc.id, branchRel, c.status, c.owner, c.ref1, c.ref2, c.at, JSON.stringify(doc), this.isTest || doc.test ? 1 : 0, this.actor).run();
     return doc;
   }
 
@@ -98,17 +90,14 @@ export class Repo {
     return r ? JSON.parse(r.data) : ({} as T);
   }
 
-  putSettingStmt(key: string, data: unknown) {
-    return this.db
+  async putSetting(key: string, data: unknown) {
+    await this.db
       .prepare(
         `INSERT INTO settings (key,data,updated_by) VALUES (?,?,?)
          ON CONFLICT(key) DO UPDATE SET data=excluded.data,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),updated_by=excluded.updated_by`,
       )
-      .bind(key, JSON.stringify(data), this.actor);
-  }
-
-  async putSetting(key: string, data: unknown) {
-    await this.putSettingStmt(key, data).run();
+      .bind(key, JSON.stringify(data), this.actor)
+      .run();
   }
 
   // ---------- sequences ----------
@@ -139,11 +128,9 @@ export class Repo {
     return Object.fromEntries((r.results || []).map((x) => [x.name, x.value]));
   }
 
-  /** Test records (Testing Console) get TST- ids so business sequences stay gapless. Several ids of one kind are
-   *  often made in the same millisecond (a simulated lead and its messages), so the random part is 6 characters
-   *  (~2 billion values) – 2 characters collided about once in 200 runs. */
+  /** Test records (Testing Console) get TST- ids so business sequences stay gapless. */
   testId(seq: string): string {
-    return `TST-${seq.toUpperCase()}-${crypto.randomUUID().replace(/-/g, '').toUpperCase()}`;
+    return `TST-${seq.toUpperCase()}-${Date.now().toString(36).toUpperCase()}${Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0')}`;
   }
 
   async newId(seq: keyof typeof ID_FORMAT | string): Promise<string> {

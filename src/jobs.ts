@@ -1,20 +1,15 @@
 import { Repo, nowIso } from './lib/db';
 import type { Env, Job } from './types';
 import { processSync, sendComm, sendStudentMail, pushPaymentToErp, calendarForTask, settleLink } from './domain/workflows';
-import { addAudit, addEv, notify, money, recalcEnrollment, needsFirstCall } from './domain/core';
+import { addAudit, addEv, notify, money } from './domain/core';
 import { instStatus } from './domain/terms';
 import { modeFor } from './integrations/base';
 import { telrCheck } from './integrations/payments';
-import { confirmEasebuzz } from './domain/easebuzz-payments';
-import { runMailAutomations } from './domain/mail-send';
-import { LMS_CONTRACT, activatePaidLms } from './domain/lms-orders';
-import { pollMailbox } from './domain/mail';
-import { WEBSITE_SUBMISSIONS } from './integrations/website-submissions';
 
 export async function runJob(env: Env, job: Job) {
   const repo = new Repo(env.DB, 'System');
   switch (job.kind) {
-    case 'moodle_sync': return processSync(env, repo, job.id, { queued: true });
+    case 'moodle_sync': return processSync(env, repo, job.id);
     case 'send_comm': return sendComm(env, repo, job.id);
     case 'send_student_mail': return sendStudentMail(env, repo, job.studentId, job.index);
     case 'erp_payment': return pushPaymentToErp(env, repo, job.id);
@@ -55,10 +50,10 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
   const now = Date.now();
   const jobs: Job[] = [];
 
-  // First-call SLA: notify on breach, escalate after escMins (not for Manual / walk-in leads)
+  // First-call SLA: notify on breach, escalate after escMins
   const open = await repo.many<any>('lead', 'status=?', ['Open']);
   for (const l of open) {
-    if (l.fc || !needsFirstCall(l)) continue;
+    if (l.fc) continue;
     const el = (now - new Date(l.enq).getTime()) / 6e4;
     let dirty = false;
     if (el >= cfg.sla.mins && !l.slaNotified) {
@@ -103,81 +98,40 @@ export async function cron(env: Env, waitUntil: (p: Promise<unknown>) => void) {
 
   // LMS call auto-retry
   const retryMin = cfg.integ?.lms?.retryMin ?? 15, retryMax = cfg.integ?.lms?.retryMax ?? 3;
-  const waiting = await repo.many<any>('moodle_sync', "status='Awaiting Payment' AND json_extract(data,'$.contract')=?", [LMS_CONTRACT]);
-  for (const id of new Set<string>(waiting.map((m) => m.enr))) {
-    const order = await repo.get<any>('enrollment', id);
-    if (order?.lmsContract !== LMS_CONTRACT) continue;
-    const e = await recalcEnrollment(repo, id);
-    for (const syncId of await activatePaidLms(repo, e)) jobs.push({ kind: 'moodle_sync', id: syncId });
-  }
-  // Recover new-contract outbox records only; do not backfill/re-send historical orders.
-  const recovery = await repo.many<any>('moodle_sync', "json_extract(data,'$.contract')=? AND status IN ('Pending','Processing')", [LMS_CONTRACT]);
-  for (const m of recovery) {
-    const last = Date.parse(m.status === 'Processing' ? m.processingAt || m.last : m.last);
-    if (now - last < 2 * 6e4) continue;
-    const status = (m.attempts || 0) >= retryMax ? 'Retry Required' : 'Failed', at = nowIso();
-    const err = 'Delivery was interrupted; retry the original reference and payload';
-    await env.DB.prepare("UPDATE docs SET status=?, data=json_insert(json_set(data,'$.status',?,'$.last',?,'$.err',?),'$.hist[#]',json(?)) WHERE type='moodle_sync' AND id=? AND status=? AND COALESCE(json_extract(data,?),json_extract(data,'$.last'))=?")
-      .bind(status, status, at, err, JSON.stringify({ at, s: status, msg: err }), m.id, m.status, m.status === 'Processing' ? '$.processingAt' : '$.last', m.status === 'Processing' ? m.processingAt || m.last : m.last).run();
-  }
-  const failed = await repo.many<any>('moodle_sync', "status='Failed' AND json_extract(data,'$.contract')=?", [LMS_CONTRACT]);
+  const failed = await repo.many<any>('moodle_sync', "status='Failed'");
   for (const m of failed) {
     if ((m.attempts || 0) >= retryMax) continue;
     if (now - new Date(m.last).getTime() < retryMin * 6e4) continue;
-    const at = nowIso();
-    const claimed = await env.DB.prepare("UPDATE docs SET status='Pending', data=json_insert(json_set(data,'$.status','Pending','$.last',?),'$.hist[#]',json(?)) WHERE type='moodle_sync' AND id=? AND status='Failed' AND json_extract(data,'$.last')=?")
-      .bind(at, JSON.stringify({ at, s: 'Pending', msg: `Automatic retry ${m.attempts} of ${retryMax}` }), m.id, m.last).run();
-    if (claimed.meta.changes) jobs.push({ kind: 'moodle_sync', id: m.id });
+    m.status = 'Pending';
+    m.hist.push({ at: nowIso(), s: 'Pending', msg: `Automatic retry ${m.attempts} of ${retryMax}` });
+    await repo.put('moodle_sync', m);
+    jobs.push({ kind: 'moodle_sync', id: m.id });
   }
 
   // Unsent payments → ERPNext retry (up to 5 attempts)
   const pays = await repo.many<any>('payment', "json_extract(data,'$.erp.error') IS NOT NULL");
   for (const p of pays) if ((p.erp.attempts || 0) < 5) jobs.push({ kind: 'erp_payment', id: p.id });
 
-  // Links past their 24 hours stop working (reminder links have no time limit – the next reminder replaces them)
-  await env.DB.prepare("UPDATE payment_links SET status='expired' WHERE status='created' AND expires_at IS NOT NULL AND expires_at < ?").bind(nowIso()).run();
-
-  // Telr reconciliation (Telr's transaction advice is optional, so poll open orders – and ones closed on our side
-  // in the last days, in case the parent paid at Telr just before the link expired or was replaced)
-  const links = await env.DB.prepare("SELECT * FROM payment_links WHERE status IN ('created','expired','replaced') AND provider='telr' AND created_at > ?")
+  // Telr reconciliation (Telr's transaction advice is optional, so poll open orders)
+  const links = await env.DB.prepare("SELECT * FROM payment_links WHERE status='created' AND provider='telr' AND created_at > ?")
     .bind(new Date(now - 3 * 864e5).toISOString()).all<any>();
   for (const link of links.results || []) {
     try {
       const st = await telrCheck({ env, mode: modeFor(env, cfg, 'telr') }, link.provider_ref);
-      if (st.paid) {
-        const r: any = await settleLink(env, repo, link.id, { amount: st.amount, txnRef: st.txnRef, method: 'Card' });
-        jobs.push(...(r.jobs || []), ...(r.paymentId ? [{ kind: 'erp_payment' as const, id: r.paymentId }] : []));
-      }
-      else if (st.final && link.status === 'created') await env.DB.prepare("UPDATE payment_links SET status=? WHERE id=? AND status='created'").bind(st.status, link.id).run();
+      if (st.paid) await settleLink(env, repo, link.id, { amount: st.amount, txnRef: st.txnRef, method: 'Card' });
+      else if (st.final) await env.DB.prepare('UPDATE payment_links SET status=? WHERE id=?').bind(st.status, link.id).run();
     } catch (e) { console.error('telr reconcile', link.id, e); }
-  }
-
-  // Recover missed Easebuzz callbacks against the original transaction and environment.
-  const easebuzzProvider = env.EASEBUZZ_ENV === 'prod' ? 'easebuzz' : 'easebuzz-test';
-  const easebuzzLinks = await env.DB.prepare("SELECT provider_ref FROM payment_links WHERE status IN ('created','expired','replaced') AND provider=? AND created_at > ? AND (? <> 'production' OR provider='easebuzz') ORDER BY COALESCE((SELECT MAX(id) FROM integration_logs WHERE integration='easebuzz' AND operation='transaction.retrieve' AND ref=payment_links.provider_ref),0) ASC LIMIT 25")
-    .bind(easebuzzProvider, new Date(now - 3 * 864e5).toISOString(), env.APP_ENV).all<any>();
-  for (const link of easebuzzLinks.results || []) {
-    try {
-      const r = await confirmEasebuzz(env, link.provider_ref);
-      if (!r.sandbox) jobs.push(...r.jobs, ...(r.paymentId ? [{ kind: 'erp_payment' as const, id: r.paymentId }] : []));
-    } catch (e) { console.error('easebuzz reconcile', link.provider_ref, e instanceof Error ? e.message : 'Confirmation failed'); }
   }
 
   // Data retention: integration logs 30 days, webhook ids 90 days, sessions and rate counters when expired
   const d = (days: number) => new Date(now - days * 864e5).toISOString();
   await env.DB.batch([
     env.DB.prepare('DELETE FROM integration_logs WHERE at < ?').bind(d(30)),
-    env.DB.prepare('DELETE FROM webhook_events WHERE received_at < ? AND provider NOT IN (?,?)').bind(d(90), ...WEBSITE_SUBMISSIONS),
+    env.DB.prepare('DELETE FROM webhook_events WHERE received_at < ?').bind(d(90)),
     env.DB.prepare('DELETE FROM sessions WHERE expires_at < ? OR revoked_at < ?').bind(d(1), d(30)),
     env.DB.prepare('DELETE FROM rate_limits WHERE window_start < ?').bind(Math.floor(now / 1000) - 86400),
     env.DB.prepare('DELETE FROM call_events WHERE at < ?').bind(d(2)),
   ]);
-
-  // Configuration → Email Automation (payment reminders, birthdays, welcome, quotations, receipts)
-  try { jobs.push(...(await runMailAutomations(env, now)).jobs); } catch (e) { console.error('mail automation failed', e); }
-
-  // Configuration → Email Incoming: new e-mails from the mailbox, filed on students and leads
-  try { jobs.push(...(await pollMailbox(env)).jobs); } catch (e) { console.error('mailbox check failed', e); }
 
   await dispatch(env, waitUntil, jobs);
   return { leadsChecked: open.length, overdue: tasks.length, overdueInstalments: overdueInst, lmsRetries: jobs.filter((j) => j.kind === 'moodle_sync').length };

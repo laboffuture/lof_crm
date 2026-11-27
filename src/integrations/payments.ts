@@ -1,4 +1,4 @@
-// New checkouts use Easebuzz only. Legacy adapters remain for outstanding links.
+// Payment gateways: Telr hosted payment page (AED branches) and Razorpay Payment Links (INR branches)
 import type { Env } from '../types';
 import { basicAuth, callApi, logMock, type Mode } from './base';
 import { hmacSha256Hex, safeEqual } from '../lib/crypto';
@@ -8,12 +8,10 @@ export interface LinkInput {
   linkId: string; amount: number; currency: string; description: string;
   customer: { name: string; email?: string; phone?: string };
   returnUrl: string; callbackUrl: string;
-  /** Unix seconds after which the gateway stops taking payment (Razorpay). */
-  expireBy?: number;
 }
-export interface LinkResult { providerRef: string; url: string; provider: 'telr' | 'razorpay' | 'easebuzz' }
+export interface LinkResult { providerRef: string; url: string; provider: 'telr' | 'razorpay' }
 
-export const gatewayFor = (_currency: string, _env?: Env): 'easebuzz' => 'easebuzz';
+export const gatewayFor = (currency: string): 'telr' | 'razorpay' => (currency === 'INR' ? 'razorpay' : 'telr');
 
 // ---------------- Telr ----------------
 const TELR_URL = 'https://secure.telr.com/gateway/order.json';
@@ -69,7 +67,6 @@ export async function razorpayCreate(p: PayCtx, i: LinkInput): Promise<LinkResul
     amount: Math.round(i.amount * 100), currency: i.currency, accept_partial: false, reference_id: i.linkId, description: i.description.slice(0, 2048),
     customer: { name: i.customer.name, email: i.customer.email, contact: i.customer.phone }, notify: { sms: true, email: !!i.customer.email },
     reminder_enable: true, callback_url: i.returnUrl, callback_method: 'get', notes: { crm_link: i.linkId },
-    ...(i.expireBy ? { expire_by: i.expireBy } : {}),
   };
   if (p.mode === 'mock') {
     const id = 'plink_MOCK' + Date.now().toString(36);
@@ -79,12 +76,6 @@ export async function razorpayCreate(p: PayCtx, i: LinkInput): Promise<LinkResul
   const r = await callApi(p.env, { integration: 'razorpay', operation: 'payment_links.create', method: 'POST', url: `${RZP}/payment_links`, headers: { authorization: rzpAuth(p.env), 'content-type': 'application/json' }, body: JSON.stringify(body), ref: i.linkId, secrets: [p.env.RAZORPAY_KEY_SECRET] }, p.isTest);
   if (!r.ok) throw new Error(`Razorpay: ${r.json?.error?.description || r.status}`);
   return { providerRef: r.json.id, url: r.json.short_url, provider: 'razorpay' };
-}
-
-/** Closes a Razorpay link that was replaced (Razorpay also sends links to parents itself). Best effort. */
-export async function razorpayCancel(p: PayCtx, id: string) {
-  if (p.mode === 'mock') { await logMock(p.env, 'razorpay', 'payment_links.cancel', { id }, { id, status: 'cancelled' }, id, p.isTest); return; }
-  await callApi(p.env, { integration: 'razorpay', operation: 'payment_links.cancel', method: 'POST', url: `${RZP}/payment_links/${id}/cancel`, headers: { authorization: rzpAuth(p.env) }, ref: id, secrets: [p.env.RAZORPAY_KEY_SECRET] }, p.isTest);
 }
 
 export async function razorpayFetchLink(p: PayCtx, id: string) {

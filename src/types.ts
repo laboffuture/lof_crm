@@ -19,7 +19,6 @@ export interface Env {
   /** Optional comma-separated IPs allowed to call the Exotel webhooks. */
   EXOTEL_ALLOWED_IPS?: string;
   WEBSITE_FORM_SECRET?: string;
-  WEBSITE_LEAD_WEBHOOK_SECRET?: string;
 
   META_GRAPH_VERSION?: string;
   META_APP_SECRET?: string;
@@ -31,10 +30,6 @@ export interface Env {
   WHATSAPP_APP_SECRET?: string;
   WHATSAPP_VERIFY_TOKEN?: string;
   WHATSAPP_TEMPLATE_LANG?: string;
-  GUPSHUP_CLIENT_ID?: string;
-  GUPSHUP_API_TOKEN?: string;
-  GUPSHUP_TEMPLATE_IDS?: string;
-  GUPSHUP_WEBHOOK_SECRET?: string;
 
   EXOTEL_SUBDOMAIN?: string;
   EXOTEL_SID?: string;
@@ -44,10 +39,7 @@ export interface Env {
   EXOTEL_WEBHOOK_TOKEN?: string;
 
   LMS_URL?: string;
-  /** Optional allowlisted UAT endpoint for full-flow sandbox checkout. */
-  LMS_UAT_URL?: string;
   LMS_TOKEN?: string;
-  LMS_LEAD_WEBHOOK_SECRET?: string;
 
   TELR_STORE_ID?: string;
   TELR_AUTH_KEY?: string;
@@ -56,12 +48,6 @@ export interface Env {
   RAZORPAY_KEY_ID?: string;
   RAZORPAY_KEY_SECRET?: string;
   RAZORPAY_WEBHOOK_SECRET?: string;
-
-  /** Legacy setting, ignored for new checkouts: Easebuzz is the sole provider. */
-  PAYMENTS_INR_PROVIDER?: string;
-  EASEBUZZ_KEY?: string;
-  EASEBUZZ_SALT?: string;
-  EASEBUZZ_ENV?: 'test' | 'prod' | string;
 
   ERPNEXT_URL?: string;
   ERPNEXT_API_KEY?: string;
@@ -73,6 +59,8 @@ export interface Env {
   GCAL_CALENDAR_ID?: string;
   GCAL_SERVICE_ACCOUNT_JSON?: string;
 
+  RESEND_API_KEY?: string;
+  EMAIL_FROM?: string;
 }
 
 export type Role =
